@@ -1,0 +1,15 @@
+{
+  "hubHost": "escapehub.local",
+  "mqttBroker": "escapehub.local",
+  "mqttPort": 1883,
+  "puzzleName": "Mirror_Puzzle",
+  "heartbeatIntervalMs": 2000,
+  "debug": false,
+  "printData": true,
+  "outputs": {
+    "Password": {
+      "type": "string",
+      "data": "1234ht"
+    }
+  }
+}

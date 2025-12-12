@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Screensaver</title>
+    <style>
+        :root { --bg:#111111; --muted:#8aa2b8; }
+        * { box-sizing: border-box; }
+        html, body { margin:0; padding:0; width:100%; height:100%; }
+        body { display:flex; align-items:center; justify-content:center; background:var(--bg); color:#e6eef7; font-family:"Segoe UI", Tahoma, Geneva, Verdana, sans-serif; }
+        .wrapper { text-align:center; padding:0; width:100%; height:100%; display:flex; align-items:center; justify-content:center; }
+        img { max-width:90vw; max-height:90vh; object-fit:contain; border-radius:12px; box-shadow:0 14px 40px rgba(0,0,0,0.4); }
+        iframe { width:100vw; height:100vh; border:none; border-radius:0; box-shadow:none; background:transparent; }
+        .fallback { color:var(--muted); font-size:16px; letter-spacing:0.4px; }
+    </style>
+</head>
+<body>
+    <div class="wrapper" id="wrapper">
+        <div class="fallback">Screensaver</div>
+    </div>
+
+    <script>
+        const params = new URLSearchParams(window.location.search);
+        const returnUrl = params.get('return') || '/';
+        const mode = (params.get('type') || 'player').toLowerCase();
+        const screenParam = params.get('screen') || '';
+        const wrapper = document.getElementById('wrapper');
+        const wasMissing = params.has('_miss');
+        let saverUrl = null;
+        let redirected = false;
+        let missingHandled = false;
+        let lastMissingReload = 0;
+        let victoryActive = false;
+        let navigationLocked = false;
+        let lastGameStart = null;
+
+        function navigateOnce(url) {
+            if (navigationLocked) return;
+            navigationLocked = true;
+            window.location.replace(url);
+        }
+
+        function getReturnSlug() {
+            const clean = (returnUrl.split('?')[0] || '').replace(/^\/+/, '');
+            return clean.split('/')[0] || '';
+        }
+
+        function handleMissing() {
+            if (missingHandled) return;
+            if (navigationLocked) return;
+            missingHandled = true;
+            const now = Date.now();
+            if (now - lastMissingReload < 2000) return; // avoid rapid reload loops
+            lastMissingReload = now;
+            try {
+                if (window.opener && !window.opener.closed) {
+                    window.opener.location.reload();
+                }
+            } catch (e) { /* ignore */ }
+            try { window.close(); } catch (e) { /* ignore */ }
+            const newUrl = new URL(window.location.href);
+            newUrl.searchParams.set('_miss', Date.now());
+            setTimeout(() => { navigateOnce(newUrl.toString()); }, 800);
+        }
+
+        function applySaver(url) {
+            if (!url || url === saverUrl) return;
+            saverUrl = url;
+            wrapper.innerHTML = '';
+            if (/\.html?(\?|$)/i.test(url)) {
+                const iframe = document.createElement('iframe');
+                iframe.src = url;
+                iframe.title = 'Screensaver';
+                wrapper.appendChild(iframe);
+            } else {
+                const img = document.createElement('img');
+                img.src = url;
+                img.alt = 'Screensaver';
+                wrapper.appendChild(img);
+            }
+        }
+
+        async function poll() {
+            try {
+                const targetPath = returnUrl || '/';
+                const targetSlug = getReturnSlug();
+
+                if (targetSlug) {
+                    const targetRes = await fetch(`/api/screens/${encodeURIComponent(targetSlug)}/status`, { cache: 'no-store' });
+                    if (!targetRes.ok) {
+                        handleMissing();
+                        return;
+                    }
+                    const targetStatus = await targetRes.json();
+                    if (!targetStatus?.exists) {
+                        redirected = true;
+                        const missingUrl = new URL(targetPath, window.location.origin);
+                        missingUrl.searchParams.set('_r', Date.now());
+                        navigateOnce(missingUrl.toString());
+                        return;
+                    }
+                }
+
+                if (wasMissing && !missingHandled) {
+                    const headRes = await fetch(targetPath, { method: 'HEAD', cache: 'no-store' });
+                    if (headRes.ok) {
+                        redirected = true;
+                        const newUrl = new URL(targetPath, window.location.origin);
+                        newUrl.searchParams.set('_r', Date.now());
+                        navigateOnce(newUrl.toString());
+                        return;
+                    }
+                }
+                const [statusRes, settingsRes] = await Promise.all([
+                    fetch('/api/runtime/room/status', { cache: 'no-store' }),
+                    fetch('/api/system/settings', { cache: 'no-store' })
+                ]);
+                const status = await statusRes.json();
+                const settings = await settingsRes.json();
+                const total = status?.puzzles?.total || 0;
+                const solved = status?.puzzles?.solved || 0;
+                const solvedAll = total > 0 && solved >= total;
+                const running = !!status.running;
+                const startTs = status?.gameStartTime || null;
+                if (startTs) {
+                    if (lastGameStart === null) lastGameStart = startTs;
+                } else if (!running) {
+                    lastGameStart = null;
+                }
+                const victoryUrl = settings.settings?.victoryScreen || null;
+                const forceVictory = mode === 'victory';
+                const shouldShowVictory = victoryUrl && (solvedAll || forceVictory);
+                const screenSaverUrl = settings.settings?.screenSaverImage || null;
+                const baseSaverType = screenParam ? 'hint' : 'player';
+                const gameRestarted = lastGameStart !== null && startTs !== null && startTs !== lastGameStart;
+
+                if (mode === 'victory' && (!running || !solvedAll || gameRestarted)) {
+                    redirected = true;
+                    victoryActive = false;
+                    const fallback = new URL('/screensaver.html', window.location.origin);
+                    fallback.searchParams.set('type', baseSaverType);
+                    if (screenParam) fallback.searchParams.set('screen', screenParam);
+                    fallback.searchParams.set('return', returnUrl);
+                    fallback.searchParams.set('_r', Date.now());
+                    navigateOnce(fallback.toString());
+                    return;
+                }
+
+                if (startTs) {
+                    lastGameStart = startTs;
+                }
+
+                if (shouldShowVictory) {
+                    victoryActive = true;
+                    redirected = false;
+                    applySaver(victoryUrl);
+                    return;
+                }
+
+                // room stopped or reset: clear victory and show normal saver
+                if (victoryActive && (!running || !solvedAll)) {
+                    victoryActive = false;
+                    redirected = false;
+                }
+
+                if (screenSaverUrl && !victoryActive) {
+                    applySaver(screenSaverUrl);
+                }
+
+                if (!redirected) {
+                    if (mode === 'player') {
+                        if (status.running && !solvedAll) {
+                            redirected = true;
+                            navigateOnce(returnUrl);
+                            return;
+                        }
+                    } else {
+                        const hintEndpoint = screenParam ? `/api/hints/${encodeURIComponent(screenParam)}` : '/api/hints';
+                        const hintRes = await fetch(hintEndpoint, { cache: 'no-store' });
+                        if (hintRes.ok) {
+                            const hintData = await hintRes.json();
+                            const hints = hintData.hints || [];
+                            if (!solvedAll && hints.length > 0) {
+                                redirected = true;
+                                navigateOnce(returnUrl);
+                                return;
+                            }
+                        } else if (hintRes.status === 404) {
+                            handleMissing();
+                            return;
+                        }
+                    }
+                }
+            } catch (e) {
+                // transient errors should not force reload; retry on next poll
+            }
+        }
+
+        poll();
+        setInterval(poll, 2000);
+    </script>
+</body>
+</html>

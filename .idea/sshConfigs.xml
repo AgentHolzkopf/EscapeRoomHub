@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="SshConfigs">
+    <configs>
+      <sshConfig authType="PASSWORD" connectionConfig="{&quot;serverAliveInterval&quot;:300}" host="admin@escapeHub.local" id="b59842c4-7eb8-48a5-9b6f-f8e2cdeb67f1" port="22" customName="EscpapeHubPi" nameFormat="CUSTOM" username="admin" useOpenSSHConfig="true">
+        <option name="customName" value="EscpapeHubPi" />
+      </sshConfig>
+    </configs>
+  </component>
+</project>

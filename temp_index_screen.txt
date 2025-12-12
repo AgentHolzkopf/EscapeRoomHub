@@ -1,0 +1,10 @@
+>                     <label for="prop-screen-role">Role</label>
+>                     <select id="prop-screen-role">
+                          <option value="hint">Hint Screen</option>
+                          <option value="player">Player Input</option>
+>                     <label for="prop-screen-path">Page Path</label>
+                      <div class="path-input">
+                          <span class="path-prefix">http://escapehub.local/</span>
+>                         <input type="text" id="prop-screen-path" placeholder="mein-screen">
+                      </div>
+                  </div>

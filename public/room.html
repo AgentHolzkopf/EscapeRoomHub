@@ -1,0 +1,781 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Room Monitor</title>
+    <link rel="stylesheet" href="style.css?v=dev">
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: #1c1c1c;
+            color: #eaeaea;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        .monitor-container {
+            display: grid;
+            grid-template-rows: auto 1fr;
+            grid-template-columns: 1fr 360px;
+            gap: 14px;
+            height: 100vh;
+            padding: 16px;
+            box-sizing: border-box;
+        }
+        .monitor-header {
+            grid-column: 1 / 3;
+            background: #2b2b2b;
+            border: 1px solid #444;
+            border-radius: 10px;
+            padding: 12px 16px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .room-title { margin: 0; font-size: 20px; font-weight: 700; }
+        .room-sub { margin: 2px 0 0; font-size: 12px; color: #9aa6b5; }
+        .room-title-row { display: flex; align-items: center; gap: 10px; }
+        .settings-btn {
+            width: 32px; height: 32px; border-radius: 8px; border: 1px solid #444;
+            background: #303030; color: #d7e0ec; display: grid; place-items: center;
+            cursor: pointer; transition: all 0.15s ease;
+        }
+        .settings-btn:hover { border-color: #3b82f6; color: #fff; background: #374151; }
+        .settings-btn svg { width: 18px; height: 18px; }
+        .header-left { display: flex; flex-direction: column; }
+        .header-actions { display: flex; gap: 8px; align-items: center; }
+        .monitor-btn {
+            border: 1px solid #555; border-radius: 6px; background: #3a3a3a; color: #eee;
+            padding: 8px 12px; font-weight: 600; cursor: pointer; transition: all 0.15s ease;
+        }
+        .monitor-btn.primary { background: #2c77d1; border-color: #2c77d1; }
+        .monitor-btn.primary:hover { background: #1f5fa8; }
+        .monitor-btn.danger { background: #9b3535; border-color: #7c2929; }
+        .monitor-btn.danger:hover { background: #b54141; }
+        .monitor-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: #c7d2de; }
+
+        /* Flow area */
+        .flow-panel {
+            background: #2a2a2a;
+            border: 1px solid #3d3d3d;
+            border-radius: 10px;
+            padding: 12px;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        .flow-scroll {
+            overflow-y: auto;
+            padding-right: 6px;
+        }
+        .stage {
+            margin-bottom: 12px;
+            padding-bottom: 10px;
+            border-bottom: 1px dashed #444;
+        }
+        .stage:last-child { border-bottom: none; }
+        .stage-title { font-size: 13px; font-weight: 700; color: #9fb5c9; margin: 0 0 8px; text-transform: uppercase; letter-spacing: 0.6px; }
+        .stage-row { display: flex; gap: 10px; flex-wrap: wrap; }
+
+        .puzzle-card {
+            background: #303030;
+            border: 1px solid #3f3f3f;
+            border-radius: 10px;
+            padding: 10px;
+            min-width: 220px;
+            max-width: 280px;
+            flex: 1 1 220px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            cursor: default;
+            transition: border-color 0.15s ease, transform 0.15s ease;
+        }
+        .puzzle-card.selected { border-color: #2c77d1; box-shadow: 0 0 0 1px #2c77d1; transform: translateY(-2px); }
+        .puzzle-header { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+        .puzzle-name { font-weight: 700; font-size: 14px; color: #f2f2f2; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .badge { padding: 2px 8px; border-radius: 6px; font-size: 11px; font-weight: 700; text-transform: uppercase; }
+        .badge.locked { background: #444; color: #aaa; }
+        .badge.running { background: #2c77d1; color: #fff; }
+        .badge.solved { background: #2b8a3e; color: #fff; }
+        .badge.offline { background: #7a2b2b; color: #fff; }
+        .badge.analog { background: #555; color: #ddd; }
+        .info-line { display: flex; align-items: center; gap: 8px; font-size: 12px; color: #cfd7e0; }
+        .dot { width: 10px; height: 10px; border-radius: 50%; background: #888; }
+        .dot.online { background: #43b05c; }
+        .dot.offline { background: #c44; }
+        .chip { padding: 2px 6px; background: #252525; border: 1px solid #444; border-radius: 4px; font-size: 11px; color: #cfd7e0; }
+        .card-footer { display: flex; gap: 6px; flex-wrap: wrap; }
+        .card-action {
+            border: 1px solid #4a4a4a; background: #3a3a3a; color: #eee; border-radius: 6px;
+            padding: 6px 8px; font-size: 12px; cursor: pointer; transition: all 0.15s ease;
+        }
+        .card-action:hover { border-color: #2c77d1; color: #fff; }
+        .card-action.disabled { opacity: 0.5; pointer-events: none; }
+
+        /* Data panel */
+        .detail-panel {
+            background: #2a2a2a;
+            border: 1px solid #3d3d3d;
+            border-radius: 10px;
+            padding: 12px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        .detail-title { font-size: 16px; font-weight: 700; margin: 0; }
+        .data-list { display: flex; flex-direction: column; gap: 8px; overflow-y: auto; max-height: calc(100vh - 200px); padding-right: 6px; }
+        .data-row {
+            background: #242424;
+            border: 1px solid #3a3a3a;
+            border-radius: 8px;
+            padding: 10px;
+            display: grid;
+            grid-template-columns: 1fr auto;
+            gap: 6px 12px;
+            align-items: center;
+        }
+        .data-row .meta { font-size: 12px; color: #9fb5c9; display: flex; gap: 8px; align-items: center; }
+        .data-row .key { font-weight: 700; color: #f2f2f2; }
+        .data-row .value { color: #cfd7e0; font-family: 'Consolas','Courier New',monospace; word-break: break-all; }
+        .data-row .type { color: #e6eef7; padding: 2px 6px; border-radius: 4px; font-size: 11px; border: 1px solid #12324f; background: #1f2f44; text-transform: capitalize; }
+        .data-row .type[data-type="string"] { background: var(--type-string-bg); border-color: var(--type-string-border); color: #f4e299; }
+        .data-row .type[data-type="number"] { background: var(--type-number-bg); border-color: var(--type-number-border); color: #d6e6ff; }
+        .data-row .type[data-type="boolean"] { background: var(--type-boolean-bg); border-color: var(--type-boolean-border); color: #efd9ff; }
+        .data-row .type[data-type="action"], .data-row .type[data-type="-1"] { background: var(--type-action-bg); border-color: var(--type-action-border); color: #e8e8ff; }
+        .data-row .ts { font-size: 11px; color: #8aa0b5; }
+
+        /* Scrollbars */
+        .flow-scroll::-webkit-scrollbar,
+        .detail-panel::-webkit-scrollbar,
+        .data-list::-webkit-scrollbar {
+            width: 8px;
+        }
+        .flow-scroll::-webkit-scrollbar-track,
+        .detail-panel::-webkit-scrollbar-track,
+        .data-list::-webkit-scrollbar-track {
+            background: #1f1f1f;
+            border-radius: 6px;
+        }
+        .flow-scroll::-webkit-scrollbar-thumb,
+        .detail-panel::-webkit-scrollbar-thumb,
+        .data-list::-webkit-scrollbar-thumb {
+            background: linear-gradient(180deg, #2c6aa3, #1f4f7a);
+            border-radius: 6px;
+            border: 1px solid #12324f;
+        }
+        .flow-scroll::-webkit-scrollbar-thumb:hover,
+        .detail-panel::-webkit-scrollbar-thumb:hover,
+        .data-list::-webkit-scrollbar-thumb:hover {
+            background: linear-gradient(180deg, #3587d4, #236299);
+        }
+        .settings-modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: none; align-items: center; justify-content: center; z-index: 4000; }
+        .settings-modal { width: min(520px, 95vw); background: #1f1f1f; border: 1px solid #3b3b3b; border-radius: 12px; box-shadow: 0 18px 50px rgba(0,0,0,0.6); color: #eaeaea; display: flex; flex-direction: column; overflow: hidden; }
+        .settings-modal-header { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; background: #2b2b2b; border-bottom: 1px solid #3d3d3d; }
+        .settings-modal-header h3 { margin: 0; font-size: 18px; }
+        .settings-close-btn { background: none; border: 1px solid #4a4a4a; color: #cfd7e0; width: 32px; height: 32px; border-radius: 8px; cursor: pointer; }
+        .settings-close-btn:hover { border-color: #3b82f6; color: #fff; }
+        .settings-modal-body { padding: 16px; display: flex; flex-direction: column; gap: 16px; }
+        .settings-section { border: 1px solid #333; border-radius: 10px; padding: 12px; background: #262626; }
+        .settings-title { font-weight: 700; font-size: 14px; }
+        .settings-sub { color: #9aa6b5; font-size: 12px; margin-top: 4px; }
+        .settings-field { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+        .settings-input { background: #1c1c1c; border: 1px solid #444; color: #fff; border-radius: 6px; padding: 8px 10px; min-width: 120px; }
+        .settings-label-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+        .file-label { flex: 1; min-width: 200px; }
+        /* Hint modal */
+        .hint-modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: none; align-items: center; justify-content: center; z-index: 4500; }
+        .hint-modal { width: min(520px, 95vw); background: #2f2f2f; border: 1px solid #0f2f45; border-radius: 12px; box-shadow: 0 18px 50px rgba(0,0,0,0.6); color: #eaeaea; display: flex; flex-direction: column; overflow: hidden; }
+        .hint-modal-header { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; background: #2f2f2f; border-bottom: 1px solid #0f2f45; }
+        .hint-modal-header h3 { margin: 0; font-size: 18px; }
+        .hint-modal-body { padding: 14px 16px; display: flex; flex-direction: column; gap: 12px; background: #3a3a3a; border: 1px solid #0f2f45; }
+        .hint-textarea {
+            width: 100%;
+            min-height: 140px;
+            background: #0a3d57;
+            border: 1px solid #0f2f45;
+            color: #e6e6e6;
+            border-radius: 8px;
+            padding: 10px;
+            font-family: inherit;
+            resize: vertical;
+            box-shadow: none;
+            transition: border-color 0.15s ease, outline 0.15s ease;
+        }
+        .hint-textarea::placeholder { color: #b5c2cc; }
+        .hint-textarea:focus { outline: 1px solid #0f82c4; border-color: #0f82c4; }
+        .hint-modal-footer { padding: 12px 16px; display: flex; justify-content: flex-end; gap: 8px; border-top: 1px solid #0f2f45; background: #2f2f2f; }
+        .hint-btn { border: 1px solid #555; border-radius: 6px; background: #3a3a3a; color: #eee; padding: 8px 12px; font-weight: 600; cursor: pointer; transition: all 0.15s ease; }
+        .hint-btn.primary { background: #2c77d1; border-color: #2c77d1; }
+        .hint-btn.primary:disabled { opacity: 0.6; cursor: not-allowed; }
+        .hint-btn:hover:not(:disabled) { border-color: #3b82f6; color: #fff; }
+    </style>
+</head>
+<body>
+    <div class="monitor-container">
+        <div class="monitor-header">
+            <div class="header-left">
+                <div class="room-title-row">
+                    <div class="room-title" id="room-name">No Room</div>
+                    <button class="settings-btn" id="open-settings-btn" title="System Settings">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <circle cx="12" cy="12" r="3"></circle>
+                            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.65 1.65 0 0 0 15 19.4a1.65 1.65 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82-.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.65 1.65 0 0 0 1 1.5 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9c.57 0 1.08.23 1.46.6.38.38.6.9.6 1.46s-.23 1.08-.6 1.46A1.65 1.65 0 0 0 19.4 15z"></path>
+                        </svg>
+                    </button>
+                </div>
+                <div class="room-sub" id="room-sub">Monitoring</div>
+            </div>
+            <div class="header-actions">
+                <label class="monitor-toggle switch">
+                    <input type="checkbox" id="auto-restart-toggle">
+                    <span class="slider"></span>
+                    <span class="switch-label">Auto-Restart</span>
+                </label>
+                <input type="number" id="auto-restart-delay" min="0" value="5" style="width:70px;" title="Delay (s)">
+                <button class="monitor-btn primary" id="restart-btn">Restart Room</button>
+                <button class="monitor-btn danger" id="exit-btn">Exit</button>
+            </div>
+        </div>
+
+        <div class="flow-panel">
+            <div class="flow-scroll" id="flow-container">
+                <div class="loading">Loading flow...</div>
+            </div>
+        </div>
+
+    <div class="detail-panel" id="detail-panel">
+        <h3 class="detail-title">Data Monitor</h3>
+        <div id="data-list" class="data-list">
+            <div class="data-row">
+                <div class="key">Waiting for data...</div>
+                    <div class="meta"><span class="type">--</span><span class="ts"></span></div>
+                    <div class="value">--</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="settings-modal-overlay" id="settings-modal">
+        <div class="settings-modal">
+            <div class="settings-modal-header">
+                <h3>System Settings</h3>
+                <button class="settings-close-btn" id="settings-close-btn" aria-label="Close">X</button>
+            </div>
+            <div class="settings-modal-body">
+                <div class="settings-section">
+                    <div class="settings-title">Screen Saver</div>
+                    <div class="settings-sub">Open the file explorer and select an HTML file. It will be stored on the server.</div>
+                    <div class="settings-field">
+                        <input type="text" id="screen-saver-file-label" class="settings-input file-label" placeholder="No file selected" readonly>
+                        <button class="monitor-btn" id="choose-screen-saver-btn">Choose HTML</button>
+                        <input type="file" id="screen-saver-input" accept=".html,text/html" style="display:none;">
+                    </div>
+                    <div class="settings-sub" id="screen-saver-status"></div>
+                </div>
+                <div class="settings-section">
+                    <div class="settings-title">Victory Screen</div>
+                    <div class="settings-sub">Open the file explorer and select an HTML file shown when the room is completed.</div>
+                    <div class="settings-field">
+                        <input type="text" id="victory-file-label" class="settings-input file-label" placeholder="No file selected" readonly>
+                        <button class="monitor-btn" id="choose-victory-btn">Choose HTML</button>
+                        <input type="file" id="victory-input" accept=".html,text/html" style="display:none;">
+                    </div>
+                    <div class="settings-sub" id="victory-status"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="hint-modal-overlay" id="hint-modal">
+        <div class="hint-modal">
+            <div class="hint-modal-header">
+                <h3 id="hint-modal-title">Give Hint</h3>
+                <button class="hint-btn" id="hint-modal-cancel">Close</button>
+            </div>
+            <div class="hint-modal-body">
+                <label class="switch hint-toggle" style="align-self:flex-start;">
+                    <input type="checkbox" id="hint-show-assignment-toggle" checked>
+                    <span class="slider"></span>
+                    <span class="switch-label">Show Puzzle Assignment</span>
+                </label>
+                <textarea id="hint-text" class="hint-textarea" placeholder="Enter hint text..."></textarea>
+            </div>
+            <div class="hint-modal-footer">
+                <button class="hint-btn primary" id="hint-modal-send" disabled>Send</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let puzzleFlow = [];
+        let puzzleStatuses = {};
+        let dataSnapshot = [];
+        let autoRestart = false;
+        let autoRestartDelay = 5;
+
+        const flowContainer = document.getElementById('flow-container');
+        const dataList = document.getElementById('data-list');
+        const autoRestartToggle = document.getElementById('auto-restart-toggle');
+        const autoRestartDelayInput = document.getElementById('auto-restart-delay');
+        const settingsModal = document.getElementById('settings-modal');
+        const settingsOpenBtn = document.getElementById('open-settings-btn');
+        const settingsCloseBtn = document.getElementById('settings-close-btn');
+        const screenSaverInput = document.getElementById('screen-saver-input');
+        const screenSaverBtn = document.getElementById('choose-screen-saver-btn');
+        const screenSaverLabel = document.getElementById('screen-saver-file-label');
+        const screenSaverStatus = document.getElementById('screen-saver-status');
+        const victoryInput = document.getElementById('victory-input');
+        const victoryBtn = document.getElementById('choose-victory-btn');
+        const victoryLabel = document.getElementById('victory-file-label');
+        const victoryStatus = document.getElementById('victory-status');
+        let systemSettings = { screenSaverImage: null, victoryScreen: null };
+        const hintModal = document.getElementById('hint-modal');
+        const hintModalTitle = document.getElementById('hint-modal-title');
+        const hintModalCancel = document.getElementById('hint-modal-cancel');
+        const hintModalSend = document.getElementById('hint-modal-send');
+        const hintText = document.getElementById('hint-text');
+        const hintShowAssignmentToggle = document.getElementById('hint-show-assignment-toggle');
+        let currentHintPuzzleId = null;
+        let currentHintPuzzleName = '';
+
+        function normalizeDataType(type) {
+            const t = (type ?? "string").toString().toLowerCase();
+            if (t === "event" || t === "action" || t === "-1") return "action";
+            if (["string", "number", "boolean"].includes(t)) return t;
+            return "string";
+        }
+
+        function formatValue(value) {
+            if (value === null || value === undefined) return "--";
+            if (typeof value === "object") {
+                try { return JSON.stringify(value); } catch (e) { return String(value); }
+            }
+            return String(value);
+        }
+
+        function applyAutoRestartUI() {
+            autoRestartToggle.checked = autoRestart;
+            autoRestartDelayInput.value = autoRestartDelay;
+        }
+
+        function applySystemSettingsUI() {
+            if (screenSaverStatus) {
+                screenSaverStatus.textContent = systemSettings.screenSaverImage ? `Aktuell: ${systemSettings.screenSaverImage}` : '';
+            }
+            if (screenSaverLabel && !screenSaverLabel.value && systemSettings.screenSaverImage) {
+                screenSaverLabel.value = systemSettings.screenSaverImage.split('/').pop();
+            }
+            if (victoryStatus) {
+                victoryStatus.textContent = systemSettings.victoryScreen ? `Aktuell: ${systemSettings.victoryScreen}` : '';
+            }
+            if (victoryLabel && !victoryLabel.value && systemSettings.victoryScreen) {
+                victoryLabel.value = systemSettings.victoryScreen.split('/').pop();
+            }
+        }
+
+        function openHintModal(puzzleId, puzzleName) {
+            currentHintPuzzleId = puzzleId;
+            currentHintPuzzleName = puzzleName || 'Puzzle';
+            hintModalTitle.textContent = `Give Hint – ${currentHintPuzzleName}`;
+            hintText.value = '';
+            hintModalSend.disabled = true;
+            hintShowAssignmentToggle.checked = true;
+            hintModal.style.display = 'flex';
+            hintText.focus();
+        }
+
+        function closeHintModal() {
+            currentHintPuzzleId = null;
+            currentHintPuzzleName = '';
+            hintModal.style.display = 'none';
+        }
+
+        function onHintTextChange() {
+            const hasText = hintText.value.trim().length > 0;
+            hintModalSend.disabled = !hasText;
+        }
+
+        async function sendCustomHint() {
+            const text = hintText.value.trim();
+            if (!currentHintPuzzleId || !text) return;
+            hintModalSend.disabled = true;
+            try {
+                const res = await fetch(`/api/runtime/puzzles/${currentHintPuzzleId}/hint/custom`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text, showAssignment: hintShowAssignmentToggle.checked })
+                });
+                const data = await res.json();
+                if (!res.ok || data.success === false) {
+                    throw new Error(data.error || 'Send failed');
+                }
+                closeHintModal();
+            } catch (err) {
+                alert('Hint send failed: ' + err.message);
+                hintModalSend.disabled = false;
+            }
+        }
+
+        async function loadSystemSettingsFromServer() {
+            try {
+                const res = await fetch('/api/system/settings');
+                const data = await res.json();
+                if (!res.ok || data.success === false) throw new Error(data.error || 'Konnte Einstellungen nicht laden');
+                if (data.settings) {
+                    systemSettings = { ...systemSettings, ...data.settings };
+                }
+                applySystemSettingsUI();
+            } catch (err) {
+                console.error('Settings fetch failed', err);
+            }
+        }
+
+        function openSettingsModal() {
+            applySystemSettingsUI();
+            settingsModal.style.display = 'flex';
+        }
+
+        function closeSettingsModal() {
+            settingsModal.style.display = 'none';
+        }
+
+        function fileToDataUrl(file) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => resolve(reader.result);
+                reader.onerror = reject;
+                reader.readAsDataURL(file);
+            });
+        }
+
+        async function uploadScreenSaver(file) {
+            if (!file) return;
+            const isHtml = (file.type === 'text/html') || /\.html?$/i.test(file.name || '');
+            if (!isHtml) {
+                alert('Please select an HTML file.');
+                return;
+            }
+            screenSaverLabel.value = file.name;
+            screenSaverStatus.textContent = 'Uploading...';
+            screenSaverBtn.disabled = true;
+            try {
+                const dataUrl = await fileToDataUrl(file);
+                const res = await fetch('/api/system/screen-saver', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ imageName: file.name, data: dataUrl })
+                });
+                const data = await res.json();
+                if (!res.ok || data.success === false) {
+                    throw new Error(data.error || 'Upload failed');
+                }
+                systemSettings.screenSaverImage = data.path || data.location || systemSettings.screenSaverImage;
+                screenSaverStatus.textContent = `Saved: ${systemSettings.screenSaverImage}`;
+            } catch (err) {
+                screenSaverStatus.textContent = '';
+                alert('File could not be saved: ' + err.message);
+            } finally {
+                screenSaverBtn.disabled = false;
+            }
+        }
+
+        async function uploadVictoryScreen(file) {
+            if (!file) return;
+            const isHtml = (file.type === 'text/html') || /\.html?$/i.test(file.name || '');
+            if (!isHtml) {
+                alert('Please select an HTML file.');
+                return;
+            }
+            victoryLabel.value = file.name;
+            victoryStatus.textContent = 'Uploading...';
+            victoryBtn.disabled = true;
+            try {
+                const dataUrl = await fileToDataUrl(file);
+                const res = await fetch('/api/system/victory-screen', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ imageName: file.name, data: dataUrl })
+                });
+                const data = await res.json();
+                if (!res.ok || data.success === false) throw new Error(data.error || 'Upload failed');
+                systemSettings.victoryScreen = data.path || data.location || systemSettings.victoryScreen;
+                victoryStatus.textContent = `Saved: ${systemSettings.victoryScreen}`;
+            } catch (err) {
+                victoryStatus.textContent = '';
+                alert('File could not be saved: ' + err.message);
+            } finally {
+                victoryBtn.disabled = false;
+            }
+        }
+
+        async function persistAutoRestartSettings() {
+            autoRestart = !!autoRestartToggle.checked;
+            const parsed = parseInt(autoRestartDelayInput.value, 10);
+            autoRestartDelay = Number.isFinite(parsed) && parsed >= 0 ? parsed : autoRestartDelay;
+            applyAutoRestartUI();
+            try {
+                const res = await fetch('/api/runtime/auto-restart', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ enabled: autoRestart, delaySec: autoRestartDelay })
+                });
+                const data = await res.json();
+                if (!res.ok || data.success === false) throw new Error(data.error || 'Update failed');
+                if (data.autoRestart) {
+                    autoRestart = !!data.autoRestart.enabled;
+                    autoRestartDelay = Number.isFinite(data.autoRestart.delaySec) ? data.autoRestart.delaySec : autoRestartDelay;
+                    applyAutoRestartUI();
+                }
+            } catch (err) {
+                console.error('Auto-restart update failed', err);
+                alert('Auto-Restart konnte nicht aktualisiert werden.');
+                applyAutoRestartUI();
+            }
+        }
+
+        function statusBadge(state) {
+            const cls = state === 'solved' ? 'solved' : state === 'running' ? 'running' : state === 'offline' ? 'offline' : 'locked';
+            const label = state === 'solved' ? 'Solved' : state === 'running' ? 'Running' : state === 'offline' ? 'Offline' : 'Locked';
+            return `<span class="badge ${cls}">${label}</span>`;
+        }
+
+        function deriveState(puzzle) {
+            const st = puzzleStatuses[puzzle.id] || {};
+            if (st.solved) return 'solved';
+            if (st.running || st.active) return 'running';
+            if (st.online === false) return 'offline';
+            return 'locked';
+        }
+
+        function heartbeatText(status) {
+            if (status.online === false) return 'Offline';
+            if (status.lastSeen) {
+                const delta = Math.max(0, Math.floor((Date.now() - status.lastSeen) / 1000));
+                return `Last seen ${delta}s ago`;
+            }
+            return status.online ? 'Online' : 'Unknown';
+        }
+
+        function renderFlow() {
+            if (!puzzleFlow.length) {
+                flowContainer.innerHTML = '<div class="loading">No puzzles found</div>';
+                return;
+            }
+            const rowsByDepth = {};
+            puzzleFlow.forEach(p => {
+                const d = p.depth || 0;
+                if (!rowsByDepth[d]) rowsByDepth[d] = [];
+                rowsByDepth[d].push(p);
+            });
+            const depths = Object.keys(rowsByDepth).map(Number).sort((a,b)=>a-b);
+            let html = '';
+            depths.forEach(depth => {
+                html += `<div class="stage"><div class="stage-title">Stage ${depth+1}</div><div class="stage-row">`;
+                rowsByDepth[depth].forEach(p => {
+                    const st = puzzleStatuses[p.id] || {};
+                    const state = deriveState(p);
+                    const online = st.online !== false;
+                    const analog = !!p.isAnalog;
+                    const solved = state === 'solved';
+                    const hintDisabled = solved || !p.hintAvailable;
+                    const hintBtnClass = hintDisabled ? "card-action disabled" : "card-action";
+                    const hintBtnAttrs = hintDisabled ? 'disabled title="No hints available or puzzle solved"' : '';
+                    const giveHintDisabled = !p.hintScreenPath;
+                    const giveHintClass = giveHintDisabled ? "card-action disabled" : "card-action";
+                    const giveHintAttrs = giveHintDisabled ? 'disabled title="Hint system not configured"' : '';
+                    html += `
+                        <div class="puzzle-card" data-id="${p.id}">
+                            <div class="puzzle-header">
+                                <div class="puzzle-name" title="${p.name || p.title || 'Puzzle'}">${p.name || p.title || 'Puzzle'}</div>
+                                ${statusBadge(state)}
+                            </div>
+                            <div class="info-line"><span class="dot ${online?'online':'offline'}"></span><span>${heartbeatText(st)}</span></div>
+                            <div class="info-line"><span class="chip">${analog?'Analog':'Digital'}</span><span class="chip">${p.device || 'No Device'}</span></div>
+                            <div class="card-footer">
+                                <button class="card-action" data-action="activate" data-id="${p.id}">Activate</button>
+                                <button class="${hintBtnClass}" data-action="hint" data-id="${p.id}" ${hintBtnAttrs}>Trigger Hint</button>
+                                <button class="${giveHintClass}" data-action="give-hint" data-id="${p.id}" data-name="${p.name || p.title || 'Puzzle'}" ${giveHintAttrs}>Give Hint</button>
+                                <button class="card-action" data-action="solve" data-id="${p.id}">Mark Solved</button>
+                            </div>
+                        </div>`;
+                });
+                html += `</div></div>`;
+            });
+            flowContainer.innerHTML = html;
+
+            flowContainer.querySelectorAll('.card-action').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    const id = parseInt(btn.dataset.id,10);
+                    const action = btn.dataset.action;
+                    handleCardAction(action, id);
+                });
+            });
+        }
+
+        async function handleCardAction(action, id) {
+            if(action === 'solve') {
+                await markPuzzleSolved(id);
+            } else if(action === 'hint') {
+                try {
+                    const res = await fetch('/api/runtime/puzzle/hint', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ puzzleId: id })
+                    });
+                    const data = await res.json();
+                    if (!res.ok || data.success === false) {
+                        throw new Error(data.error || 'Hint trigger failed');
+                    }
+                    await loadPuzzleFlow(); // refresh hint availability
+            } catch (err) {
+                alert('Hint trigger fehlgeschlagen: ' + err.message);
+            }
+        } else if(action === 'give-hint') {
+            const puzzle = puzzleFlow.find(p => p.id === id);
+            const name = puzzle?.name || puzzle?.title || 'Puzzle';
+            openHintModal(id, name);
+        } else if(action === 'activate') {
+            alert('Activate endpoint not implemented.');
+        }
+    }
+
+        async function loadPuzzleFlow(showSpinner = false) {
+            if (showSpinner) {
+                flowContainer.innerHTML = '<div class="loading">Loading flow...</div>';
+            }
+            try {
+                const res = await fetch('/api/runtime/puzzle-flow');
+                const data = await res.json();
+                puzzleFlow = data.puzzles || [];
+                if (data.roomName) document.getElementById('room-name').textContent = data.roomName.replace('.json','');
+                autoRestart = !!data.autoRestart;
+                if (Number.isFinite(data.autoRestartDelay)) {
+                    autoRestartDelay = data.autoRestartDelay;
+                }
+                applyAutoRestartUI();
+                await updatePuzzleStatuses();
+                renderFlow();
+                await updateDataSnapshot();
+                renderDataList();
+            } catch (err) {
+                console.error(err);
+                flowContainer.innerHTML = '<div class="loading">Failed to load flow.</div>';
+            }
+        }
+
+        async function updatePuzzleStatuses() {
+            try {
+                const res = await fetch('/api/runtime/status');
+                puzzleStatuses = await res.json();
+            } catch (err) {
+                console.error('status fetch failed', err);
+            }
+        }
+
+        async function markPuzzleSolved(id) {
+            try {
+                const response = await fetch('/api/runtime/puzzle/solve', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ puzzleId: id })
+                });
+                const data = await response.json();
+                if (!response.ok || !data.success) throw new Error(data.error || 'Solve failed');
+                await updatePuzzleStatuses();
+                renderFlow();
+            } catch (err) {
+                alert('Error marking puzzle solved: ' + err.message);
+            }
+        }
+
+        async function restartRoom() {
+            try {
+                await fetch('/api/runtime/reset', { method:'POST', headers:{'Content-Type':'application/json'} });
+                const start = await fetch('/api/room/start', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ force:true }) });
+                const data = await start.json();
+                if(!start.ok || data.status!=="ok") throw new Error(data.error || 'Start failed');
+                await loadPuzzleFlow();
+                await updateDataSnapshot();
+                renderDataList();
+            } catch (err) {
+                alert('Restart failed: ' + err.message);
+            }
+        }
+
+        async function updateDataSnapshot() {
+            try {
+                const res = await fetch('/api/runtime/data');
+                const data = await res.json();
+                dataSnapshot = data.puzzles || [];
+            } catch (err) {
+                console.error('data fetch failed', err);
+                dataSnapshot = [];
+            }
+        }
+
+        function renderDataList() {
+            if (!dataList) return;
+            if (!dataSnapshot.length) {
+                dataList.innerHTML = `<div class="data-row"><div class="key">No outputs configured</div><div class="meta"><span class="type">--</span><span class="ts"></span></div><div class="value">--</div></div>`;
+                return;
+            }
+            const orderMap = {};
+            puzzleFlow.forEach((p,idx)=>{ orderMap[p.name||p.title||p.id]=idx; });
+            const sorted = [...dataSnapshot].sort((a,b)=> (orderMap[a.name]||0)-(orderMap[b.name]||0));
+            let html = '';
+            let rows = 0;
+            sorted.forEach((p, idx) => {
+                const outputs = (p.outputs && p.outputs.length) ? p.outputs : [];
+                outputs.forEach(out => {
+                    const ts = out.updatedAt ? new Date(out.updatedAt).toLocaleTimeString() : 'Pending';
+                    const value = formatValue(out.data);
+                    const typeKey = normalizeDataType(out.type);
+                    const name = p.name || ('Puzzle ' + (idx+1));
+                    const keyText = out.key ? ` | ${out.key}` : '';
+                    const targetText = out.target ? ` -> ${out.target}` : '';
+                    rows++;
+                    html += `
+                        <div class="data-row">
+                            <div class="key">${name}${keyText}${targetText}</div>
+                            <div class="meta"><span class="type" data-type="${typeKey}">${typeKey}</span><span class="ts">${ts}</span></div>
+                            <div class="value">${value}</div>
+                        </div>`;
+                });
+            });
+            dataList.innerHTML = rows ? html : `<div class="data-row"><div class="key">No outputs configured</div><div class="meta"><span class="type">--</span><span class="ts"></span></div><div class="value">--</div></div>`;
+        }
+
+        autoRestartToggle.addEventListener('change', persistAutoRestartSettings);
+        autoRestartDelayInput.addEventListener('change', persistAutoRestartSettings);
+        document.getElementById('restart-btn').addEventListener('click', restartRoom);
+        document.getElementById('exit-btn').addEventListener('click', async ()=>{
+            try { await fetch('/api/runtime/reset', { method:'POST', headers:{'Content-Type':'application/json'} }); } catch(e){}
+            window.location.href='index.html';
+        });
+        settingsOpenBtn.addEventListener('click', openSettingsModal);
+        settingsCloseBtn.addEventListener('click', closeSettingsModal);
+        settingsModal.addEventListener('click', (e)=>{ if (e.target === settingsModal) closeSettingsModal(); });
+        screenSaverBtn.addEventListener('click', ()=> screenSaverInput.click());
+        screenSaverInput.addEventListener('change', ()=> uploadScreenSaver(screenSaverInput.files[0]));
+        victoryBtn.addEventListener('click', ()=> victoryInput.click());
+        victoryInput.addEventListener('change', ()=> uploadVictoryScreen(victoryInput.files[0]));
+        hintModalCancel.addEventListener('click', closeHintModal);
+        hintModal.addEventListener('click', (e)=>{ if (e.target === hintModal) closeHintModal(); });
+        hintText.addEventListener('input', onHintTextChange);
+        hintModalSend.addEventListener('click', sendCustomHint);
+        hintShowAssignmentToggle.addEventListener('change', onHintTextChange);
+
+        // poll statuses and data (includes updated puzzle flow for hint availability)
+        setInterval(async ()=>{
+            await loadPuzzleFlow(false);
+        }, 2000);
+
+        loadPuzzleFlow(true);
+        loadSystemSettingsFromServer();
+    </script>
+</body>
+</html>
+
