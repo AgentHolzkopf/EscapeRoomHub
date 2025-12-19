@@ -15,11 +15,12 @@
         }
         .monitor-container {
             display: grid;
-            grid-template-rows: auto 1fr;
+            grid-template-rows: auto 1fr auto;
             grid-template-columns: 1fr 360px;
             gap: 14px;
-            height: 100vh;
+            height: calc(100vh - 32px);
             padding: 16px;
+            padding-bottom: 0;
             box-sizing: border-box;
         }
         .monitor-header {
@@ -35,13 +36,6 @@
         .room-title { margin: 0; font-size: 20px; font-weight: 700; }
         .room-sub { margin: 2px 0 0; font-size: 12px; color: #9aa6b5; }
         .room-title-row { display: flex; align-items: center; gap: 10px; }
-        .settings-btn {
-            width: 32px; height: 32px; border-radius: 8px; border: 1px solid #444;
-            background: #303030; color: #d7e0ec; display: grid; place-items: center;
-            cursor: pointer; transition: all 0.15s ease;
-        }
-        .settings-btn:hover { border-color: #3b82f6; color: #fff; background: #374151; }
-        .settings-btn svg { width: 18px; height: 18px; }
         .header-left { display: flex; flex-direction: column; }
         .header-actions { display: flex; gap: 8px; align-items: center; }
         .monitor-btn {
@@ -82,9 +76,10 @@
             background: #303030;
             border: 1px solid #3f3f3f;
             border-radius: 10px;
-            padding: 10px;
+            padding: 8px;
             min-width: 220px;
             max-width: 280px;
+            min-height: 150px;
             flex: 1 1 220px;
             display: flex;
             flex-direction: column;
@@ -94,6 +89,7 @@
         }
         .puzzle-card.selected { border-color: #2c77d1; box-shadow: 0 0 0 1px #2c77d1; transform: translateY(-2px); }
         .puzzle-header { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+        .puzzle-title { display: flex; align-items: center; gap: 8px; min-width: 0; }
         .puzzle-name { font-weight: 700; font-size: 14px; color: #f2f2f2; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .badge { padding: 2px 8px; border-radius: 6px; font-size: 11px; font-weight: 700; text-transform: uppercase; }
         .badge.locked { background: #444; color: #aaa; }
@@ -105,14 +101,47 @@
         .dot { width: 10px; height: 10px; border-radius: 50%; background: #888; }
         .dot.online { background: #43b05c; }
         .dot.offline { background: #c44; }
-        .chip { padding: 2px 6px; background: #252525; border: 1px solid #444; border-radius: 4px; font-size: 11px; color: #cfd7e0; }
-        .card-footer { display: flex; gap: 6px; flex-wrap: wrap; }
+        .chip {
+            padding: 4px 8px;
+            background: #252525;
+            border: 1px solid #444;
+            border-radius: 4px;
+            font-size: 11px;
+            color: #cfd7e0;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            height: 28px;
+            min-height: 28px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .chip-ext { border-color: #2c77d1; color: #d4e5ff; background: rgba(44,119,209,0.15); }
+        .chip-ext.no { border-color: #704040; background: rgba(156,78,78,0.15); color: #f4d5d5; }
+        .chip.muted { color: #9aa6b5; border-color: #3c3c3c; }
+        .chip.status-chip { padding: 4px 8px; height: 28px; min-height: 28px; }
+        .chip.placeholder-chip { flex: 1 1 0; visibility: hidden; }
+        .status-line { gap: 8px; flex-wrap: wrap; }
+        .status-line.single .chip { flex: 0 0 50%; justify-content: flex-start; }
+        .status-line.multi .chip { flex: 1 1 0; justify-content: flex-start; }
+        .card-footer { display: flex; gap: 6px; flex-wrap: nowrap; }
         .card-action {
             border: 1px solid #4a4a4a; background: #3a3a3a; color: #eee; border-radius: 6px;
             padding: 6px 8px; font-size: 12px; cursor: pointer; transition: all 0.15s ease;
         }
+        .card-footer .card-action { flex: 1 1 0; text-align: center; }
         .card-action:hover { border-color: #2c77d1; color: #fff; }
         .card-action.disabled { opacity: 0.5; pointer-events: none; }
+        .solve-row { margin-top: 6px; }
+        .solve-btn { background: #2b8a3e; border-color: #2b8a3e; color: #fff; width: 100%; text-align: center; }
+        .solve-btn:hover { background: #247434; border-color: #247434; color: #fff; }
+        .solve-btn.solved { background: #3a3a3a; border-color: #4a4a4a; color: #bfc7d1; cursor: not-allowed; }
+        .solve-btn.solved:hover { background: #3a3a3a; color: #bfc7d1; }
+        .puzzle-card.state-running { border-color: #2c77d1; box-shadow: 0 0 0 1px rgba(44,119,209,0.25); }
+        .puzzle-card.state-solved { border-color: #2b8a3e; box-shadow: 0 0 0 1px rgba(43,138,62,0.25); }
+        .puzzle-card.state-offline { border-color: #7a2b2b; box-shadow: 0 0 0 1px rgba(122,43,43,0.25); }
+        .puzzle-card.state-locked { border-color: #3f3f3f; }
 
         /* Data panel */
         .detail-panel {
@@ -145,6 +174,97 @@
         .data-row .type[data-type="boolean"] { background: var(--type-boolean-bg); border-color: var(--type-boolean-border); color: #efd9ff; }
         .data-row .type[data-type="action"], .data-row .type[data-type="-1"] { background: var(--type-action-bg); border-color: var(--type-action-border); color: #e8e8ff; }
         .data-row .ts { font-size: 11px; color: #8aa0b5; }
+
+        /* Runtime log */
+        .runtime-log {
+            position: fixed;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: #222;
+            border-top: 1px solid #444;
+            overflow: hidden;
+            transition: max-height 0.2s ease;
+            max-height: 26px;
+            z-index: 600;
+            font-family: monospace;
+        }
+        .runtime-log.expanded { max-height: 240px; }
+        .runtime-log.collapsed { max-height: 26px; }
+        .runtime-log-header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 4px 10px;
+            background: #333;
+            border-bottom: 1px solid #111;
+            min-height: 24px;
+        }
+        .runtime-log-title { display: flex; align-items: center; gap: 8px; font-weight: 700; color: #eaeaea; font-size: 12px; }
+        .runtime-log-status {
+            font-size: 11px;
+            padding: 1px 6px;
+            border-radius: 999px;
+            background: #1f3225;
+            border: 1px solid #2e5f3a;
+            color: #9ae6b4;
+        }
+        .runtime-log-status.muted { background: #2a2a2a; border-color: #3a3a3a; color: #9aa6b5; }
+        .runtime-log-filters {
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            gap: 8px;
+            flex-wrap: wrap;
+            flex: 1 1 auto;
+        }
+        .runtime-log.collapsed .runtime-log-filters { display: none; }
+        .log-filter {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 11px;
+            color: #d7dee8;
+            padding: 2px 6px;
+            border: 1px solid #3a3a3a;
+            border-radius: 4px;
+            background: #2a2a2a;
+        }
+        .log-filter input { margin: 0; }
+        .runtime-log-toggle {
+            border: none;
+            background: none;
+            color: #e0e0e0;
+            border-radius: 4px;
+            padding: 2px 4px;
+            font-weight: 700;
+            cursor: pointer;
+            transition: all 0.15s ease;
+            margin-left: auto;
+        }
+        .runtime-log-toggle:hover { color: #fff; }
+        .runtime-log-body {
+            display: none;
+            padding: 0;
+            background: #1a1a1a;
+        }
+        .runtime-log.expanded .runtime-log-body { display: block; }
+        .runtime-log-list {
+            max-height: 200px;
+            overflow-y: auto;
+            padding: 6px 10px 8px 10px;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            color: #ccc;
+            font-size: 11px;
+            line-height: 1.5;
+        }
+        .runtime-log-entry { color: #ccc; }
+        .runtime-log-entry.log-success { color: #4caf50; }
+        .runtime-log-entry.log-warn { color: #ffc107; }
+        .runtime-log-entry.log-error { color: #ff5555; }
+        .runtime-log-empty { color: #9aa6b5; font-size: 11px; padding: 4px 0 10px 10px; }
 
         /* Scrollbars */
         .flow-scroll::-webkit-scrollbar,
@@ -218,12 +338,6 @@
             <div class="header-left">
                 <div class="room-title-row">
                     <div class="room-title" id="room-name">No Room</div>
-                    <button class="settings-btn" id="open-settings-btn" title="System Settings">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                            <circle cx="12" cy="12" r="3"></circle>
-                            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.65 1.65 0 0 0 15 19.4a1.65 1.65 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82-.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.65 1.65 0 0 0 1 1.5 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9c.57 0 1.08.23 1.46.6.38.38.6.9.6 1.46s-.23 1.08-.6 1.46A1.65 1.65 0 0 0 19.4 15z"></path>
-                        </svg>
-                    </button>
                 </div>
                 <div class="room-sub" id="room-sub">Monitoring</div>
             </div>
@@ -245,14 +359,34 @@
             </div>
         </div>
 
-    <div class="detail-panel" id="detail-panel">
-        <h3 class="detail-title">Data Monitor</h3>
-        <div id="data-list" class="data-list">
-            <div class="data-row">
-                <div class="key">Waiting for data...</div>
-                    <div class="meta"><span class="type">--</span><span class="ts"></span></div>
-                    <div class="value">--</div>
+        <div class="detail-panel" id="detail-panel">
+            <h3 class="detail-title">Data Monitor</h3>
+            <div id="data-list" class="data-list">
+                <div class="data-row">
+                    <div class="key">Waiting for data...</div>
+                        <div class="meta"><span class="type">--</span><span class="ts"></span></div>
+                        <div class="value">--</div>
+                    </div>
                 </div>
+            </div>
+        </div>
+
+        <div class="runtime-log collapsed" id="runtime-log">
+            <div class="runtime-log-header">
+                <div class="runtime-log-title">
+                    <span class="runtime-log-label">System Log</span>
+                </div>
+                <div class="runtime-log-filters">
+                    <label class="log-filter"><input type="checkbox" value="heartbeat" checked> Heartbeats</label>
+                    <label class="log-filter"><input type="checkbox" value="mqtt" checked> MQTT Messages</label>
+                    <label class="log-filter"><input type="checkbox" value="error" checked> Error Messages</label>
+                    <label class="log-filter"><input type="checkbox" value="system" checked> System Messages</label>
+                </div>
+                <button class="runtime-log-toggle" type="button" id="runtime-log-toggle" aria-label="Toggle log window">&#9650;</button>
+            </div>
+            <div class="runtime-log-body">
+                <div class="runtime-log-list" id="runtime-log-list"></div>
+                <div class="runtime-log-empty" id="runtime-log-empty" style="display:none;">No log entries yet.</div>
             </div>
         </div>
     </div>
@@ -339,6 +473,12 @@
         const hintShowAssignmentToggle = document.getElementById('hint-show-assignment-toggle');
         let currentHintPuzzleId = null;
         let currentHintPuzzleName = '';
+        const runtimeLogEl = document.getElementById('runtime-log');
+        const runtimeLogToggle = document.getElementById('runtime-log-toggle');
+        const runtimeLogList = document.getElementById('runtime-log-list');
+        const runtimeLogEmpty = document.getElementById('runtime-log-empty');
+        let runtimeLogs = [];
+        const runtimeLogFiltersState = { heartbeat: true, mqtt: true, error: true, system: true };
 
         function normalizeDataType(type) {
             const t = (type ?? "string").toString().toLowerCase();
@@ -353,6 +493,21 @@
                 try { return JSON.stringify(value); } catch (e) { return String(value); }
             }
             return String(value);
+        }
+
+        function escapeHtml(str) {
+            return (str || '').replace(/[&<>"']/g, ch => {
+                return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch] || ch;
+            });
+        }
+
+        function categorizeLog(entry) {
+            const msg = (entry?.msg || '').toLowerCase();
+            const type = (entry?.type || '').toLowerCase();
+            if (msg.includes('heartbeat')) return 'heartbeat';
+            if (msg.includes('mqtt')) return 'mqtt';
+            if (type === 'error' || msg.includes('error')) return 'error';
+            return 'system';
         }
 
         function applyAutoRestartUI() {
@@ -545,7 +700,7 @@
             const st = puzzleStatuses[puzzle.id] || {};
             if (st.solved) return 'solved';
             if (st.running || st.active) return 'running';
-            if (st.online === false) return 'offline';
+            if (!puzzle.isAnalog && st.online === false) return 'offline';
             return 'locked';
         }
 
@@ -576,8 +731,11 @@
                 rowsByDepth[depth].forEach(p => {
                     const st = puzzleStatuses[p.id] || {};
                     const state = deriveState(p);
+                    const cardStateClass = `state-${state}`;
                     const online = st.online !== false;
                     const analog = !!p.isAnalog;
+                    const externalConfigured = !!p.externalInputConfigured;
+                    const deviceLabel = p.deviceName || p.device || 'No Device';
                     const solved = state === 'solved';
                     const hintDisabled = solved || !p.hintAvailable;
                     const hintBtnClass = hintDisabled ? "card-action disabled" : "card-action";
@@ -585,25 +743,37 @@
                     const giveHintDisabled = !p.hintScreenPath;
                     const giveHintClass = giveHintDisabled ? "card-action disabled" : "card-action";
                     const giveHintAttrs = giveHintDisabled ? 'disabled title="Hint system not configured"' : '';
+                    const extBadge = externalConfigured ? `<span class="chip chip-ext">Player Input aktiv</span>` : '';
+                    const typeChip = `<span class="chip type-chip">${analog?'Analog':'Digital'}</span>`;
+                    const statusChip = analog ? '' : `<span class="chip status-chip"><span class="dot ${online?'online':'offline'}"></span><span>${deviceLabel}</span></span>`;
+                    const statusList = [statusChip, extBadge].filter(Boolean);
+                    const statusClass = statusList.length > 1 ? 'multi' : 'single';
+                    const statusContent = statusList.length ? statusList.join('') : `<span class="chip placeholder-chip"></span>`;
+                    const statusLine = `<div class="info-line status-line ${statusClass}">${statusContent}</div>`;
+                    const solveClass = solved ? "card-action solve-btn solved disabled" : "card-action solve-btn";
+                    const solveAttrs = solved ? 'disabled title="Bereits gelöst"' : '';
                     html += `
-                        <div class="puzzle-card" data-id="${p.id}">
+                        <div class="puzzle-card ${cardStateClass}" data-id="${p.id}">
                             <div class="puzzle-header">
-                                <div class="puzzle-name" title="${p.name || p.title || 'Puzzle'}">${p.name || p.title || 'Puzzle'}</div>
+                                <div class="puzzle-title">
+                                    <div class="puzzle-name" title="${p.name || p.title || 'Puzzle'}">${p.name || p.title || 'Puzzle'}</div>
+                                    ${typeChip}
+                                </div>
                                 ${statusBadge(state)}
                             </div>
-                            <div class="info-line"><span class="dot ${online?'online':'offline'}"></span><span>${heartbeatText(st)}</span></div>
-                            <div class="info-line"><span class="chip">${analog?'Analog':'Digital'}</span><span class="chip">${p.device || 'No Device'}</span></div>
+                            ${statusLine}
                             <div class="card-footer">
                                 <button class="card-action" data-action="activate" data-id="${p.id}">Activate</button>
                                 <button class="${hintBtnClass}" data-action="hint" data-id="${p.id}" ${hintBtnAttrs}>Trigger Hint</button>
                                 <button class="${giveHintClass}" data-action="give-hint" data-id="${p.id}" data-name="${p.name || p.title || 'Puzzle'}" ${giveHintAttrs}>Give Hint</button>
-                                <button class="card-action" data-action="solve" data-id="${p.id}">Mark Solved</button>
                             </div>
+                            <div class="solve-row"><button class="${solveClass}" data-action="solve" data-id="${p.id}" ${solveAttrs}>Mark Solved</button></div>
                         </div>`;
                 });
                 html += `</div></div>`;
             });
             flowContainer.innerHTML = html;
+            syncTypeChipWidths();
 
             flowContainer.querySelectorAll('.card-action').forEach(btn => {
                 btn.addEventListener('click', (e) => {
@@ -748,34 +918,109 @@
             dataList.innerHTML = rows ? html : `<div class="data-row"><div class="key">No outputs configured</div><div class="meta"><span class="type">--</span><span class="ts"></span></div><div class="value">--</div></div>`;
         }
 
+        function renderRuntimeLogs() {
+            if (!runtimeLogList) return;
+            const filtered = runtimeLogs.filter(entry => {
+                const cat = categorizeLog(entry);
+                return runtimeLogFiltersState[cat] !== false;
+            });
+            if (!filtered.length) {
+                runtimeLogList.innerHTML = '';
+                if (runtimeLogEmpty) runtimeLogEmpty.style.display = 'block';
+                return;
+            }
+            const html = filtered.map(entry => {
+                const cat = categorizeLog(entry);
+                const typeClass = (entry?.type || '').toLowerCase();
+                const cls = [
+                    'runtime-log-entry',
+                    typeClass === 'success' ? 'log-success' :
+                    typeClass === 'warn' || typeClass === 'warning' ? 'log-warn' :
+                    typeClass === 'error' ? 'log-error' :
+                    (cat === 'heartbeat' || cat === 'mqtt') ? 'log-success' : ''
+                ].filter(Boolean).join(' ');
+                const time = escapeHtml(entry.timestamp || '--:--:--');
+                const msg = escapeHtml(entry.msg || '');
+                return `<div class="${cls}">[${time}] ${msg}</div>`;
+            }).join('');
+            runtimeLogList.innerHTML = html;
+            if (runtimeLogEmpty) runtimeLogEmpty.style.display = 'none';
+        }
+
+        async function loadRuntimeLogs() {
+            try {
+                const res = await fetch('/api/logs');
+                const data = await res.json();
+                if (!Array.isArray(data)) throw new Error('Invalid log payload');
+                runtimeLogs = data;
+                renderRuntimeLogs();
+            } catch (err) {
+            }
+        }
+
+        function toggleRuntimeLog() {
+            if (!runtimeLogEl || !runtimeLogToggle) return;
+            runtimeLogEl.classList.toggle('collapsed');
+            const isCollapsed = runtimeLogEl.classList.contains('collapsed');
+            runtimeLogEl.classList.toggle('expanded', !isCollapsed);
+            runtimeLogToggle.textContent = isCollapsed ? '\u25B2' : '\u25BC';
+        }
+
+        function bindRuntimeLogFilters() {
+            document.querySelectorAll('.runtime-log-filters input[type=\"checkbox\"]').forEach(cb => {
+                const key = cb.value;
+                if (key in runtimeLogFiltersState) {
+                    runtimeLogFiltersState[key] = cb.checked;
+                }
+                cb.addEventListener('change', () => {
+                    runtimeLogFiltersState[key] = cb.checked;
+                    renderRuntimeLogs();
+                });
+            });
+        }
+
+        function syncTypeChipWidths() {
+            const chips = flowContainer.querySelectorAll('.type-chip');
+            chips.forEach(chip => {
+                chip.style.width = '';
+            });
+        }
+
         autoRestartToggle.addEventListener('change', persistAutoRestartSettings);
-        autoRestartDelayInput.addEventListener('change', persistAutoRestartSettings);
-        document.getElementById('restart-btn').addEventListener('click', restartRoom);
-        document.getElementById('exit-btn').addEventListener('click', async ()=>{
-            try { await fetch('/api/runtime/reset', { method:'POST', headers:{'Content-Type':'application/json'} }); } catch(e){}
-            window.location.href='index.html';
-        });
-        settingsOpenBtn.addEventListener('click', openSettingsModal);
-        settingsCloseBtn.addEventListener('click', closeSettingsModal);
-        settingsModal.addEventListener('click', (e)=>{ if (e.target === settingsModal) closeSettingsModal(); });
-        screenSaverBtn.addEventListener('click', ()=> screenSaverInput.click());
-        screenSaverInput.addEventListener('change', ()=> uploadScreenSaver(screenSaverInput.files[0]));
-        victoryBtn.addEventListener('click', ()=> victoryInput.click());
-        victoryInput.addEventListener('change', ()=> uploadVictoryScreen(victoryInput.files[0]));
+            autoRestartDelayInput.addEventListener('change', persistAutoRestartSettings);
+            document.getElementById('restart-btn').addEventListener('click', restartRoom);
+            document.getElementById('exit-btn').addEventListener('click', async ()=>{
+                try { await fetch('/api/runtime/reset', { method:'POST', headers:{'Content-Type':'application/json'} }); } catch(e){}
+                window.location.href='index.html';
+            });
+        if (settingsOpenBtn && settingsModal) {
+            settingsOpenBtn.addEventListener('click', openSettingsModal);
+            settingsCloseBtn?.addEventListener('click', closeSettingsModal);
+            settingsModal.addEventListener('click', (e)=>{ if (e.target === settingsModal) closeSettingsModal(); });
+            screenSaverBtn?.addEventListener('click', ()=> screenSaverInput.click());
+            screenSaverInput?.addEventListener('change', ()=> uploadScreenSaver(screenSaverInput.files[0]));
+            victoryBtn?.addEventListener('click', ()=> victoryInput.click());
+            victoryInput?.addEventListener('change', ()=> uploadVictoryScreen(victoryInput.files[0]));
+        }
         hintModalCancel.addEventListener('click', closeHintModal);
         hintModal.addEventListener('click', (e)=>{ if (e.target === hintModal) closeHintModal(); });
         hintText.addEventListener('input', onHintTextChange);
         hintModalSend.addEventListener('click', sendCustomHint);
         hintShowAssignmentToggle.addEventListener('change', onHintTextChange);
+        runtimeLogToggle?.addEventListener('click', toggleRuntimeLog);
+        if (runtimeLogToggle) runtimeLogToggle.textContent = '\u25B2';
+        bindRuntimeLogFilters();
 
         // poll statuses and data (includes updated puzzle flow for hint availability)
         setInterval(async ()=>{
             await loadPuzzleFlow(false);
         }, 2000);
+        setInterval(loadRuntimeLogs, 3000);
 
         loadPuzzleFlow(true);
         loadSystemSettingsFromServer();
+        loadRuntimeLogs();
+        window.addEventListener('resize', syncTypeChipWidths);
     </script>
 </body>
 </html>
-

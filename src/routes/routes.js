@@ -103,8 +103,30 @@ module.exports = (dbWrapper, mqttClient) => {
         }
         res.json({
             exists: true,
-            role: screen.role || "player"
+            role: screen.role || "player",
+            id: screen.id,
+            name: screen.name || slug,
+            path: screen.path || slug
         });
+    });
+    router.get('/player-input/:slug/state', async (req, res) => {
+        noCache(res);
+        const slug = req.params.slug || "";
+        const data = await gameEngine.getExternalChecksForScreen(slug);
+        if (!data.success && data.exists === false) {
+            return res.status(404).json(data);
+        }
+        res.json(data);
+    });
+    router.post('/player-input/:slug/submit', async (req, res) => {
+        const slug = req.params.slug || "";
+        const puzzleId = req.body?.puzzleId;
+        const answer = req.body?.answer;
+        const result = await gameEngine.submitExternalPlayerInput(slug, puzzleId, answer);
+        if (!result.success && result.code !== "NO_SOLUTION") {
+            return res.status(400).json(result);
+        }
+        res.json(result);
     });
     router.get('/runtime/data', (req, res) => { noCache(res); res.json(gameEngine.getDataSnapshot()); });
     router.get('/runtime/room/status', (req, res) => res.json(gameEngine.getRuntimeRoomStatus()));

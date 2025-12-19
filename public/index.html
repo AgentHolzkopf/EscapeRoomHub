@@ -172,11 +172,29 @@
                         <span class="chevron"></span>
                         <span>External Player Input</span>
                     </div>
-                    <div class="category-body" id="external-section">
+                     <div class="category-body" id="external-section">
+                         <div class="form-item puzzle-prop">
+                            <label for="prop-external-screen">Player Input Screen</label>
+                             <select id="prop-external-screen">
+                                 <option value="">- None -</option>
+                             </select>
+                         </div>
                         <div class="form-item puzzle-prop">
-                            <select id="prop-external-screen">
-                                <option value="">- None -</option>
-                            </select>
+                            <label for="prop-external-check-variable">Check variable</label>
+                            <div id="prop-external-check-variable" class="custom-dropdown typed-dropdown dropdown-disabled">
+                                <div class="dropdown-trigger typed-select" id="external-check-trigger">
+                                    <span>- None -</span>
+                                    <span class="dropdown-arrow">>></span>
+                                </div>
+                                <div class="dropdown-menu" id="external-check-menu"></div>
+                            </div>
+                        </div>
+                        <div class="form-item puzzle-prop">
+                            <label class="switch">
+                                <input type="checkbox" id="prop-external-show-assignment" checked>
+                                <span class="slider"></span>
+                                <span class="switch-label">Show Puzzle Assignment</span>
+                            </label>
                         </div>
                     </div>
                 </div>
@@ -216,6 +234,14 @@
                     <div id="outputs-list" class="io-section output-section"></div>
                 </div>
             </div>
+
+                <div class="form-item logic-prop" style="display: none;">
+                    <label>Logic Type</label> 
+                    <select id="prop-logic-type">
+                        <option value="AND">AND (All)</option>
+                        <option value="OR">OR (Any)</option>
+                    </select>
+                </div>
 
             <div class="category puzzle-prop tablet-prop logic-prop">
                 <div class="category-header" data-target="inputs-section">
@@ -268,7 +294,7 @@
                     <span class="switch-label">Show Puzzle Assignment</span>
                 </label>
                                 <button type="button" id="hint-add-btn" class="btn-primary hint-add-header">+</button>
-                                <button type="button" id="hint-modal-close" class="modal-close-btn">×</button>
+                                <button type="button" id="hint-modal-close" class="modal-close-btn">&times;</button>
                             </div>
                         </div>
                         <div class="hint-modal-body">
@@ -292,14 +318,6 @@
                     </div>
                 </div>
 
-                <div class="form-item logic-prop" style="display: none;">
-                    <label>Logic Type</label> 
-                    <select id="prop-logic-type">
-                        <option value="AND">AND (All)</option>
-                        <option value="OR">OR (Any)</option>
-                    </select>
-                </div>
-
                 <div class="form-item checkbox endnode-prop" style="display: none;">
                     <input type="checkbox" id="prop-auto-restart">
                     <label for="prop-auto-restart">Restart Room</label> 
@@ -314,8 +332,14 @@
 
     <div id="log-window" class="minimized">
         <div id="log-header">
-            <span>System Log</span>
-            <button id="toggle-log-btn">▲</button>
+            <div id="log-title"><span id="log-label">System Log</span></div>
+            <div id="log-filters" class="log-filters" aria-label="Log filters">
+                <label class="log-filter"><input type="checkbox" value="heartbeat" checked> Heartbeats</label>
+                <label class="log-filter"><input type="checkbox" value="mqtt" checked> MQTT Messages</label>
+                <label class="log-filter"><input type="checkbox" value="error" checked> Error Messages</label>
+                <label class="log-filter"><input type="checkbox" value="system" checked> System Messages</label>
+            </div>
+            <button id="toggle-log-btn" type="button" aria-label="Toggle log window">&#9650;</button>
         </div>
         <div id="log-content"></div>
     </div>
@@ -425,7 +449,7 @@
                                 });
                             }
                         } catch(e) {
-                            console.warn("Lokale Validierung übersprungen:", e);
+                            console.warn("Lokale Validierung ÃƒÂ¼bersprungen:", e);
                         }
 
                         if(clientWarnings.length) {
@@ -451,7 +475,7 @@
                     })
                     .catch(err => {
                         console.error('Start preflight failed:', err);
-                        const message = err && err.error ? err.error : (err && err.message) ? err.message : 'Vorabprüfung fehlgeschlagen.';
+                        const message = err && err.error ? err.error : (err && err.message) ? err.message : 'VorabprÃƒÂ¼fung fehlgeschlagen.';
                         alert(message);
                     });
             }
@@ -590,4 +614,3 @@
     </script>
 </body>
 </html>
-

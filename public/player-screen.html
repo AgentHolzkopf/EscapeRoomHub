@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Player Input</title>
+    <style>
+        :root {
+            --bg: #0b1220;
+            --panel: #0f172a;
+            --muted: #8aa2b8;
+            --text: #e6eef7;
+            --accent: #7dd3fc;
+            --accent-strong: #38bdf8;
+            --danger: #ef4444;
+            --success: #34d399;
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            min-height: 100vh;
+            background: radial-gradient(circle at 20% 15%, rgba(56,189,248,0.12), transparent 32%), var(--bg);
+            color: var(--text);
+            font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+            display: flex;
+            align-items: stretch;
+            justify-content: center;
+        }
+        .page {
+            width: min(1100px, 96vw);
+            margin: 32px auto;
+        }
+        .chrome {
+            background: var(--panel);
+            border: 1px solid rgba(255,255,255,0.06);
+            border-radius: 18px;
+            box-shadow: 0 18px 60px rgba(0,0,0,0.45);
+            overflow: hidden;
+        }
+        .topbar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 18px 20px 12px 20px;
+            border-bottom: 1px solid rgba(255,255,255,0.05);
+        }
+        .title {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+        .pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 12px;
+            border-radius: 999px;
+            background: rgba(56,189,248,0.12);
+            color: var(--accent-strong);
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+            font-size: 12px;
+            width: fit-content;
+        }
+        h1 {
+            margin: 0;
+            font-size: 28px;
+            letter-spacing: 0.2px;
+        }
+        .tabs {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        .tab {
+            border: 1px solid rgba(255,255,255,0.07);
+            background: rgba(255,255,255,0.02);
+            color: var(--text);
+            padding: 8px 12px;
+            border-radius: 12px;
+            cursor: pointer;
+            transition: all 0.12s ease;
+            min-width: 120px;
+            text-align: center;
+            font-weight: 600;
+        }
+        .tab.active {
+            border-color: var(--accent-strong);
+            box-shadow: 0 0 0 1px rgba(56,189,248,0.45);
+            background: rgba(56,189,248,0.08);
+        }
+        .tab:hover { border-color: var(--accent-strong); }
+        .body {
+            padding: 22px 20px 26px 20px;
+        }
+        .assignment {
+            margin: 0 0 14px 0;
+            color: var(--muted);
+            font-size: 15px;
+        }
+        .input-card {
+            background: rgba(0,0,0,0.25);
+            border: 1px solid rgba(255,255,255,0.05);
+            border-radius: 14px;
+            padding: 18px;
+        }
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(46px, 1fr));
+            gap: 8px;
+            margin-bottom: 14px;
+        }
+        .cell {
+            height: 54px;
+            border-radius: 10px;
+            border: 1px solid rgba(255,255,255,0.12);
+            background: rgba(255,255,255,0.03);
+            display: grid;
+            place-items: center;
+            font-size: 22px;
+            font-weight: 700;
+            letter-spacing: 1px;
+            color: var(--text);
+        }
+        .cell.filled {
+            border-color: var(--accent-strong);
+            background: rgba(56,189,248,0.08);
+        }
+        .answer-input {
+            position: absolute;
+            opacity: 0;
+            pointer-events: none;
+            height: 0;
+        }
+        .actions {
+            display: flex;
+            gap: 10px;
+            justify-content: flex-end;
+            align-items: center;
+        }
+        button {
+            border: 1px solid rgba(255,255,255,0.12);
+            border-radius: 10px;
+            background: rgba(255,255,255,0.06);
+            color: var(--text);
+            font-weight: 700;
+            padding: 10px 14px;
+            cursor: pointer;
+            transition: all 0.12s ease;
+        }
+        button.primary {
+            background: linear-gradient(120deg, var(--accent-strong), #60a5fa);
+            border-color: rgba(255,255,255,0.14);
+            color: #052036;
+        }
+        button:hover { filter: brightness(1.05); }
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            filter: none;
+        }
+        .status {
+            margin-top: 10px;
+            font-size: 14px;
+            min-height: 20px;
+        }
+        .status.ok { color: var(--success); }
+        .status.err { color: var(--danger); }
+        .status.warn { color: #fbbf24; }
+        .badges {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-bottom: 12px;
+        }
+        .badge {
+            border-radius: 999px;
+            padding: 6px 10px;
+            background: rgba(255,255,255,0.06);
+            border: 1px solid rgba(255,255,255,0.08);
+            font-size: 12px;
+            letter-spacing: 0.3px;
+        }
+        .badge.warn { color: var(--danger); border-color: rgba(239,68,68,0.4); }
+    </style>
+</head>
+<body>
+    <div class="page">
+        <div class="chrome" id="app">
+            <div class="topbar">
+                <div class="title">
+                    <div class="pill">Player Input</div>
+                    <h1 id="screen-title">Screen</h1>
+                </div>
+                <div class="tabs" id="tab-list"></div>
+            </div>
+            <div class="body">
+                <p class="assignment" id="assignment"></p>
+                <div class="badges" id="badge-bar"></div>
+                <div class="input-card">
+                    <div class="grid" id="grid"></div>
+                    <input id="answer-input" class="answer-input" type="text" autocomplete="off" autofocus>
+                    <div class="actions">
+                        <button type="button" id="clear-btn">Clear</button>
+                        <button type="button" class="primary" id="submit-btn">Prüfen</button>
+                    </div>
+                    <div class="status" id="status"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function sanitizeSlug(slug) {
+            return (slug || "").toString().trim().toLowerCase().replace(/[^a-z0-9-_]/g, "");
+        }
+
+        const params = new URLSearchParams(window.location.search);
+        const screenParam = params.get('screen');
+        const rawSlug = screenParam
+            ? screenParam.toString()
+            : window.location.pathname.replace(/^\/+/, '').split(/[?#]/)[0];
+        const screenSlug = sanitizeSlug(rawSlug) || 'player';
+        const stateUrl = '/api/player-input/' + encodeURIComponent(screenSlug) + '/state';
+        const submitUrl = '/api/player-input/' + encodeURIComponent(screenSlug) + '/submit';
+
+        const appEl = document.getElementById('app');
+        const tabList = document.getElementById('tab-list');
+        const assignmentEl = document.getElementById('assignment');
+        const gridEl = document.getElementById('grid');
+        const statusEl = document.getElementById('status');
+        const inputEl = document.getElementById('answer-input');
+        const submitBtn = document.getElementById('submit-btn');
+        const clearBtn = document.getElementById('clear-btn');
+        const badgeBar = document.getElementById('badge-bar');
+        const screenTitle = document.getElementById('screen-title');
+
+        let currentPuzzleId = null;
+        let expectedLength = null;
+        let currentPuzzleHasValue = true;
+        let puzzlesCache = [];
+        let settingsCache = {};
+        let roomCache = {};
+        let currentPuzzleActive = false;
+
+        function setStatus(msg, type) {
+            statusEl.textContent = msg || '';
+            statusEl.className = 'status' + (type ? ' ' + type : '');
+        }
+
+function showApp() {
+            appEl.classList.remove('hidden');
+            inputEl.focus({ preventScroll: true });
+        }
+
+        function renderTabs(puzzles) {
+            tabList.innerHTML = '';
+            puzzles.forEach(p => {
+                const tab = document.createElement('button');
+                tab.type = 'button';
+                tab.className = 'tab' + (p.id === currentPuzzleId ? ' active' : '');
+                tab.textContent = p.name || ('Puzzle ' + p.id);
+                tab.addEventListener('click', () => {
+                    currentPuzzleId = p.id;
+                    renderPuzzle(p);
+                });
+                tabList.appendChild(tab);
+            });
+        }
+
+        function renderBadges(puzzle) {
+            badgeBar.innerHTML = '';
+            if (!puzzle) return;
+            if (puzzle.variableLabel) {
+                const b = document.createElement('span');
+                b.className = 'badge';
+                b.textContent = puzzle.variableLabel;
+                badgeBar.appendChild(b);
+            }
+            if (!puzzle.valueDefined) {
+                const warn = document.createElement('span');
+                warn.className = 'badge warn';
+                warn.textContent = 'Kein Lösungswort definiert';
+                badgeBar.appendChild(warn);
+            }
+        }
+
+        function renderGrid(value, len) {
+            const clean = (value || '').toString();
+            const length = len || Math.max(clean.length, 6);
+            gridEl.innerHTML = '';
+            for (let i = 0; i < length; i++) {
+                const cell = document.createElement('div');
+                cell.className = 'cell' + (clean[i] ? ' filled' : '');
+                cell.textContent = clean[i] ? clean[i].toUpperCase() : '';
+                gridEl.appendChild(cell);
+            }
+        }
+
+        function renderPuzzle(puzzle) {
+            if (!puzzle) {
+                setStatus('Kein aktives Rätsel.', '');
+                renderGrid('', 6);
+                assignmentEl.textContent = '';
+                renderBadges(null);
+                expectedLength = null;
+                currentPuzzleHasValue = false;
+                currentPuzzleActive = false;
+                return;
+            }
+            currentPuzzleId = puzzle.id;
+            currentPuzzleActive = !!puzzle.active;
+            expectedLength = puzzle.expectedLength || null;
+            currentPuzzleHasValue = puzzle.valueDefined !== false;
+            renderBadges(puzzle);
+            assignmentEl.textContent = puzzle.showAssignment !== false ? `Rätsel: ${puzzle.name}` : 'Eingabe erforderlich';
+            const value = inputEl.value || '';
+            renderGrid(value, expectedLength);
+            if (!currentPuzzleActive) {
+                setStatus('Warten auf Aktivierung...', 'warn');
+            } else if (!currentPuzzleHasValue) {
+                setStatus('Kein Lösungswort hinterlegt.', 'err');
+            } else {
+                setStatus('', '');
+            }
+        }
+
+        function syncControls() {
+            const val = inputEl.value || '';
+            renderGrid(val, expectedLength);
+            const lengthOk = !expectedLength || val.length === expectedLength;
+            submitBtn.disabled = !currentPuzzleId || !val.trim() || !lengthOk || !currentPuzzleHasValue || !currentPuzzleActive;
+        }
+
+        async function submitAnswer() {
+            if (!currentPuzzleId) return;
+            if (!currentPuzzleActive) {
+                setStatus('Noch nicht aktiv.', 'warn');
+                return;
+            }
+            const answer = (inputEl.value || '').trim();
+            if (!answer) return;
+            submitBtn.disabled = true;
+            setStatus('Prüfe...', '');
+            try {
+                const res = await fetch(submitUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ puzzleId: currentPuzzleId, answer })
+                });
+                const data = await res.json();
+                if (!res.ok || !data.success) {
+                    setStatus(data.error || 'Fehler beim Prüfen', 'err');
+                } else if (data.correct) {
+                    setStatus('Richtig! Rätsel gelöst.', 'ok');
+                    inputEl.value = '';
+                    syncControls();
+                    await pollState();
+                    return;
+                } else {
+                    setStatus('Leider falsch. Bitte erneut versuchen.', 'err');
+                }
+            } catch (e) {
+                setStatus('Netzwerkfehler.', 'err');
+            } finally {
+                submitBtn.disabled = false;
+            }
+        }
+
+        async function pollState() {
+            try {
+                const res = await fetch(stateUrl, { cache: 'no-store' });
+                if (res.status === 404) {
+                    setStatus(`Screen "${screenSlug}" nicht gefunden.`, 'err');
+                    puzzlesCache = [];
+                    settingsCache = {};
+                    roomCache = {};
+                    renderTabs([]);
+                    renderPuzzle(null);
+                    syncControls();
+                    return;
+                }
+
+                const data = await res.json();
+                puzzlesCache = data.puzzles || [];
+                settingsCache = data.settings || {};
+                roomCache = data.room || {};
+                screenTitle.textContent = data?.screen?.name || 'Player Screen';
+
+                const activePuzzles = puzzlesCache.filter(p => p.active);
+                if (!activePuzzles.length) {
+                    setStatus('Kein aktives Rätsel mit External Check.', 'warn');
+                    renderTabs([]);
+                    renderPuzzle(null);
+                    syncControls();
+                    return;
+                }
+
+                setStatus('', '');
+                showApp();
+
+                if (!currentPuzzleId || !activePuzzles.some(p => p.id === currentPuzzleId)) {
+                    currentPuzzleId = activePuzzles[0].id;
+                }
+                renderTabs(activePuzzles);
+                const current = activePuzzles.find(p => p.id === currentPuzzleId) || activePuzzles[0];
+                renderPuzzle(current);
+                syncControls();
+            } catch (e) {
+                setStatus('Netzwerkfehler.', 'err');
+                renderTabs([]);
+                renderPuzzle(null);
+                syncControls();
+            }
+        }
+
+        inputEl.addEventListener('input', syncControls);
+        submitBtn.addEventListener('click', submitAnswer);
+        clearBtn.addEventListener('click', () => { inputEl.value = ''; syncControls(); inputEl.focus({ preventScroll: true }); });
+        inputEl.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                submitAnswer();
+            }
+        });
+
+        pollState();
+        setInterval(pollState, 1500);
+    </script>
+</body>
+</html>

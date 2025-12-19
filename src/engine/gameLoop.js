@@ -28,6 +28,7 @@ const ONLINE_THRESHOLD_MS = 5000;
 const VALID_PUZZLE_STATES = ['locked', 'active', 'running', 'solved', 'error', 'unlocked'];
 const DEVICE_PORT = parseInt(process.env.PUZZLE_PORT || '5001', 10);
 const ACTION_TYPES = new Set([LiteGraph.ACTION, LiteGraph.EVENT, "action", "event", -1]);
+const EXTERNAL_CHECK_SOLUTION = "__PUZZLE_SOLUTION__";
 const SETTINGS_KEYS = {
     mqttPort: 'mqtt_port',
     screenSaverImage: 'screen_saver_image',
@@ -222,6 +223,88 @@ function resolveHintScreen(node) {
     const direct = node.properties?.hintScreenId ? findScreenById(node.properties.hintScreenId) : null;
     if (direct && (direct.role || "player") === "hint") return direct;
     return null;
+}
+
+function isPuzzleStateActive(state) {
+    return ['active', 'running', 'unlocked'].includes(normalizePuzzleState(state));
+}
+
+function getPuzzleStateKey(puzzleId) {
+    return normalizePuzzleState(puzzleStateDetails[puzzleId]?.state || 'locked');
+}
+
+function getPuzzleOutputValue(node, key) {
+    if (!node || !key) return null;
+    const outputs = puzzleDataStore[node.id]?.outputs || {};
+    if (!Object.prototype.hasOwnProperty.call(outputs, key)) return null;
+    const entry = outputs[key];
+    if (!entry) return null;
+    return { value: entry.data, type: entry.type, updatedAt: entry.updatedAt || null };
+}
+
+async function resolveExternalCheckValue(node) {
+    if (!node || node.type !== "escape/Puzzle") return { value: null, type: null, source: null };
+    const key = node.properties?.externalCheckVariable || "";
+    if (!key) return { value: null, type: null, source: null };
+
+    if (key === EXTERNAL_CHECK_SOLUTION) {
+        const stored = await module.exports.getPuzzleSolution(node.id);
+        return { value: stored?.solution || null, type: "string", source: "solution" };
+    }
+
+    const [direction, name] = key.split(":", 2);
+    if (!direction || !name) {
+        return { value: null, type: null, source: null };
+    }
+
+    if (direction === "out") {
+        const out = getPuzzleOutputValue(node, name);
+        return { value: out?.value ?? null, type: out?.type ?? null, source: "output" };
+    }
+
+    if (direction === "in") {
+        const telemetry = puzzleTelemetry[node.id];
+        if (telemetry && telemetry.inputs && Object.prototype.hasOwnProperty.call(telemetry.inputs, name)) {
+            return { value: telemetry.inputs[name], type: typeof telemetry.inputs[name], source: "input" };
+        }
+        return { value: null, type: null, source: "input" };
+    }
+
+    return { value: null, type: null, source: null };
+}
+
+async function buildExternalCheckPayload(node, screen) {
+    if (!node || !screen) return null;
+    const stateKey = getPuzzleStateKey(node.id);
+
+    const { value, type, source } = await resolveExternalCheckValue(node);
+    const normalizedValue = value === undefined || value === null ? null : String(value);
+
+    const varLabelRaw = node.properties?.externalCheckVariable || "";
+    const variableLabel = varLabelRaw === EXTERNAL_CHECK_SOLUTION
+        ? "Puzzle Solution"
+        : varLabelRaw ? varLabelRaw.replace(/^in:/, "Input: ").replace(/^out:/, "Output: ") : "";
+
+    return {
+        id: node.id,
+        name: getPuzzleName(node, node.id),
+        state: stateKey,
+        active: isPuzzleStateActive(stateKey),
+        expectedLength: normalizedValue ? normalizedValue.length : null,
+        variableLabel,
+        showAssignment: node.properties?.externalShowAssignment !== false,
+        valueDefined: normalizedValue !== null,
+        source: source || null,
+        type: type || null
+    };
+}
+
+async function collectExternalChecksForScreen(screen) {
+    if (!screen) return [];
+    const targetId = screen.id;
+    const nodes = getAllPuzzleNodes().filter(n => String(n?.properties?.externalScreenId || "") === String(targetId));
+    const payloads = await Promise.all(nodes.map(n => buildExternalCheckPayload(n, screen)));
+    return payloads.filter(Boolean);
 }
 
 function triggerHintForPuzzle(puzzleId, { auto = false } = {}) {
@@ -446,20 +529,62 @@ function getOutputTargets(node, outputIdx) {
     return targets;
 }
 
-function activateDownstreamPuzzles(node) {
-    if (!node || !node.outputs) return;
+function getInputLinkIds(targetNode) {
+    if (!targetNode || !targetNode.inputs) return [];
+    const ids = [];
+    targetNode.inputs.forEach(inp => {
+        if (!inp) return;
+        if (Array.isArray(inp.links)) {
+            inp.links.forEach(l => { if (l !== null && l !== undefined && l !== -1) ids.push(l); });
+        } else if (inp.link !== null && inp.link !== undefined && inp.link !== -1) {
+            ids.push(inp.link);
+        }
+    });
+    return ids;
+}
+
+function isLogicNodeSatisfied(node) {
+    if (!node) return false;
     const links = graph.links || {};
-    node.outputs.forEach(out => {
-        if (!out.links) return;
-        out.links.forEach(linkId => {
-            const link = links[linkId];
-            if (!link) return;
-            const targetId = link.target_id;
-            const targetNode = getPuzzleNodeById(targetId);
-            if (targetNode) {
-                applyPuzzleState(targetId, 'running');
+    const inputLinks = getInputLinkIds(node).map(id => links[id]).filter(Boolean);
+    if (!inputLinks.length) return false;
+    const upstreamPuzzles = inputLinks
+        .map(l => graph.getNodeById ? graph.getNodeById(l.origin_id) : getPuzzleNodeById(l.origin_id))
+        .filter(n => n && n.type === "escape/Puzzle");
+    if (!upstreamPuzzles.length) return false;
+    const solvedCount = upstreamPuzzles.filter(p => puzzleStateDetails[p.id]?.state === 'solved').length;
+    const logicType = (node.properties?.logicType || "AND").toUpperCase();
+    if (logicType === "OR") return solvedCount > 0;
+    // default AND
+    return solvedCount === upstreamPuzzles.length;
+}
+
+function activateReadyPuzzles() {
+    const links = graph.links || {};
+    const puzzles = getAllPuzzleNodes();
+    puzzles.forEach(p => {
+        const state = puzzleStateDetails[p.id]?.state;
+        if (['running', 'active', 'solved'].includes(state)) return;
+        const inputLinks = getInputLinkIds(p).map(id => links[id]).filter(Boolean);
+        if (!inputLinks.length) {
+            applyPuzzleState(p.id, 'running');
+            return;
+        }
+        let ready = true;
+        for (const l of inputLinks) {
+            const origin = graph.getNodeById ? graph.getNodeById(l.origin_id) : getPuzzleNodeById(l.origin_id);
+            if (!origin) { ready = false; break; }
+            if (origin.type === "escape/Puzzle") {
+                if (puzzleStateDetails[origin.id]?.state !== 'solved') { ready = false; break; }
+            } else if (origin.type === "escape/Logic") {
+                if (!isLogicNodeSatisfied(origin)) { ready = false; break; }
+            } else {
+                ready = false; break;
             }
-        });
+        }
+        if (ready) {
+            applyPuzzleState(p.id, 'running');
+        }
     });
 }
 
@@ -504,6 +629,7 @@ function applyPuzzleState(puzzleId, desiredState, note = null, options = { outbo
     const state = normalizePuzzleState(desiredState);
     const now = Date.now();
     const prevState = puzzleStateDetails[puzzleId]?.state || 'locked';
+    const node = getPuzzleNodeById(puzzleId);
 
     puzzleStateDetails[puzzleId] = {
         state,
@@ -515,6 +641,9 @@ function applyPuzzleState(puzzleId, desiredState, note = null, options = { outbo
         puzzleSolvedState[puzzleId] = true;
         delete puzzleActivationState[puzzleId];
         checkAutoRestartCondition();
+        if (prevState !== 'solved') {
+            activateReadyPuzzles();
+        }
     } else {
         delete puzzleSolvedState[puzzleId];
         if (state === 'active' || state === 'running') {
@@ -525,7 +654,6 @@ function applyPuzzleState(puzzleId, desiredState, note = null, options = { outbo
     }
 
     if (options.outbound) {
-        const node = getPuzzleNodeById(puzzleId);
         if (node) {
             const deviceId = getDeviceIdForPuzzle(node);
             const outboundState = state === 'active' ? 'running' : state;
@@ -533,7 +661,6 @@ function applyPuzzleState(puzzleId, desiredState, note = null, options = { outbo
         }
     }
 
-    const node = getPuzzleNodeById(puzzleId);
     if (state === 'locked' || state === 'solved' || state === 'error') {
         clearHintTimers(puzzleId);
         if (state === 'locked' || state === 'solved') removeHintsForPuzzle(puzzleId);
@@ -688,7 +815,7 @@ function buildPuzzleFlowData() {
         });
 
         const visited = new Set();
-        const puzzleOrder = [];
+            const puzzleOrder = [];
 
         function traverse(nodeId, depth = 0) {
             if (visited.has(nodeId)) return;
@@ -701,15 +828,22 @@ function buildPuzzleFlowData() {
                 const hints = normalizeHints(node);
                 const hintScreen = resolveHintScreen(node);
                 const nextIdx = hintProgress[node.id] || 0;
+                const externalScreenId = node.properties.externalScreenId || "";
+                const externalScreen = externalScreenId ? findScreenById(externalScreenId) : null;
+                const deviceId = node.properties.selectedDeviceID || null;
+                const deviceInfo = deviceId ? knownDevices[deviceId] : null;
                 puzzleOrder.push({
                     id: node.id,
                     name: node.properties.Name || node.title || "Unnamed Puzzle",
                     description: "",
                     depth: depth,
                     isAnalog: node.properties.isAnalog || false,
-                    device: node.properties.selectedDeviceID || null,
+                    device: deviceId,
+                    deviceName: deviceInfo?.name || deviceInfo?.ip || deviceId,
                     hintAvailable: !!(hintScreen && nextIdx < hints.length),
-                    hintScreenPath: hintScreen?.path || null
+                    hintScreenPath: hintScreen?.path || null,
+                    externalInputConfigured: !!externalScreenId,
+                    externalScreenName: externalScreen?.name || null
                 });
             }
 
@@ -913,6 +1047,81 @@ module.exports = {
             showAssignment: h.showAssignment !== false
         }));
         return { success: true, screenName: screen.name || pathKey, hints };
+    },
+    getExternalChecksForScreen: async (screenKey) => {
+        const slug = sanitizeScreenPath(screenKey || "", "");
+        const screen = slug ? findScreenByPath(slug) : null;
+        if (!screen) {
+            return { success: false, error: "Screen not found", exists: false };
+        }
+        if ((screen.role || "player") !== "player") {
+            return { success: false, error: "Screen is not a player input screen", exists: true, role: screen.role || "hint" };
+        }
+
+        const puzzles = await collectExternalChecksForScreen(screen);
+        const totalPuzzles = getAllPuzzleNodes().length;
+        const solvedCount = Object.values(puzzleSolvedState).filter(Boolean).length;
+        const room = {
+            running: isRunning,
+            total: totalPuzzles,
+            solved: solvedCount,
+            active: Object.keys(puzzleActivationState).length,
+            solvedAll: totalPuzzles > 0 && solvedCount >= totalPuzzles
+        };
+
+        return {
+            success: true,
+            screen: { id: screen.id, name: screen.name, path: screen.path, role: screen.role || "player" },
+            puzzles,
+            settings: { screenSaver: systemSettings.screenSaverImage || null, victoryScreen: systemSettings.victoryScreen || null },
+            room
+        };
+    },
+    submitExternalPlayerInput: async (screenKey, puzzleId, answerRaw) => {
+        const slug = sanitizeScreenPath(screenKey || "", "");
+        const screen = slug ? findScreenByPath(slug) : null;
+        if (!screen) return { success: false, error: "Screen not found", code: "SCREEN_NOT_FOUND" };
+        if ((screen.role || "player") !== "player") {
+            return { success: false, error: "Screen is not a player input screen", code: "INVALID_SCREEN" };
+        }
+
+        const numericId = parseInt(puzzleId, 10);
+        if (!Number.isFinite(numericId)) return { success: false, error: "Invalid puzzleId", code: "INVALID_PUZZLE" };
+
+        const node = getPuzzleNodeById(numericId);
+        if (!node || String(node.properties?.externalScreenId || "") !== String(screen.id)) {
+            return { success: false, error: "Puzzle not linked to this screen", code: "NOT_ASSIGNED" };
+        }
+
+        const stateKey = getPuzzleStateKey(numericId);
+        if (!isPuzzleStateActive(stateKey)) {
+            return { success: false, error: "Puzzle is not active", code: "NOT_ACTIVE", state: stateKey };
+        }
+
+        const { value } = await resolveExternalCheckValue(node);
+        const expected = value === undefined || value === null ? "" : String(value).trim();
+        if (!expected) {
+            return { success: false, error: "No solution defined", code: "NO_SOLUTION" };
+        }
+
+        const submitted = (answerRaw === undefined || answerRaw === null) ? "" : String(answerRaw).trim();
+        const normalizedExpected = expected.toLowerCase();
+        const normalizedSubmitted = submitted.toLowerCase();
+        const correct = normalizedSubmitted === normalizedExpected;
+
+        if (correct) {
+            applyPuzzleState(numericId, 'solved');
+            if (node.setSolved) node.setSolved();
+            checkAutoRestartCondition();
+        }
+
+        return {
+            success: true,
+            correct,
+            puzzleId: numericId,
+            state: puzzleStateDetails[numericId]?.state || 'locked',
+            expectedLength: expected.length
+        };
     },
     validateRoomReadiness: () => {
         const warnings = buildReadinessWarnings();
@@ -1184,9 +1393,13 @@ module.exports = {
             lastSeen: now,
             ...(payload.telemetry || {})
         };
+        logSystem(`Heartbeat: ${deviceName} (${deviceId})`, "heartbeat");
 
         if (payload.status && isValidPuzzleState(payload.status)) {
             applyPuzzleState(numericId, payload.status, payload.note || null, { outbound: false });
+            if (payload.status === 'solved') {
+                activateReadyPuzzles();
+            }
         }
 
         return { success: true, status: buildPuzzleStatusPayload(numericId) };
@@ -1261,6 +1474,8 @@ module.exports = {
         let payload = {};
         try { payload = JSON.parse(message.toString()); } catch (e) {}
 
+        logSystem(`MQTT ${action} from ${deviceId}`, "mqtt");
+
         if (action === 'heartbeat') {
             const deviceName = payload.name || "Unknown";
             const deviceIp = payload.ip || "?.?.?.?";
@@ -1271,6 +1486,7 @@ module.exports = {
                 await db.run(`INSERT OR REPLACE INTO devices (id, name, ip, last_seen) VALUES (?, ?, ?, ?)`, [deviceId, deviceName, deviceIp, now]);
             }
             knownDevices[deviceId] = { id: deviceId, name: deviceName, ip: deviceIp, lastSeen: now };
+            logSystem(`Heartbeat: ${deviceName} (${deviceId})`, "heartbeat");
             if (payload.state) {
                 const puzzleNodes = graph.findNodesByType("escape/Puzzle");
                 const targetNode = puzzleNodes.find(n => n.properties.selectedDeviceID === deviceId);
@@ -1287,7 +1503,6 @@ module.exports = {
                  applyPuzzleState(targetNode.id, 'solved', null, { outbound: false });
                  logSystem(`Puzzle solved: ${targetNode.title}`, "success");
                  targetNode.setSolved();
-                 activateDownstreamPuzzles(targetNode);
                  checkAutoRestartCondition();
              }
         }
@@ -1305,4 +1520,3 @@ module.exports = {
         }
     }
 };
-

@@ -208,7 +208,7 @@ function renderRoomList() {
 
                 const delBtn = document.createElement("button");
                 delBtn.className = "room-action-btn btn-delete";
-                delBtn.innerHTML = "🗑️";
+                delBtn.textContent = "Delete";
                 delBtn.addEventListener("click", () => {
                     if(confirm(`Delete room '${room}' permanently?`)) {
                         fetch('/api/rooms/delete', {
@@ -281,7 +281,7 @@ LiteGraph.registerNodeType("escape/End", EndNode);
 function PuzzleNode() { 
     this.addInput("Trigger", LiteGraph.ACTION); 
     this.addOutput("Done", LiteGraph.ACTION); 
-    this.properties={Name:"New Puzzle", selectedDeviceID:"", isStartNode:false, isAnalog: false, externalCheck: false, externalScreenId:"", hintEnabled:false, hintScreenId:"", hints: [], manualHintTrigger:false, automaticHintTrigger:true, showHintAssignment:true}; 
+    this.properties={Name:"New Puzzle", selectedDeviceID:"", isStartNode:false, isAnalog: false, externalCheck: false, externalScreenId:"", externalCheckVariable:"", externalShowAssignment:true, hintEnabled:false, hintScreenId:"", hints: [], manualHintTrigger:false, automaticHintTrigger:true, showHintAssignment:true}; 
     this.title="Puzzle"; 
 }
 PuzzleNode.title="Puzzle"; 
@@ -300,7 +300,7 @@ PuzzleNode.prototype.onConfigure = function() {
     this.updateSlots(); // Slots wiederherstellen beim Laden
 };
 
-// Custom Draw für Rahmen
+// Custom Draw fÃƒÂ¼r Rahmen
 PuzzleNode.prototype.onDrawBackground = function(ctx) {
     if(this.borderColor) {
         ctx.lineWidth = 3; 
@@ -340,7 +340,57 @@ LogicNode.title="Logic"; LogicNode.prototype.onPropertyChanged = function(n,v){ 
 // --- UI LOGIK ---
 
 const puzzleList=document.getElementById("puzzle-list"), screenList=document.getElementById("screen-list"), propertiesSidebar=document.getElementById("properties-sidebar"), ioControlsContainer=document.getElementById('properties-form'), logWindow=document.getElementById("log-window"), logContent=document.getElementById("log-content");
-document.getElementById("toggle-log-btn").addEventListener("click", e=>{ if(logWindow.classList.contains("minimized")){ logWindow.classList.remove("minimized");logWindow.classList.add("expanded");e.target.textContent="▼";}else{logWindow.classList.add("minimized");logWindow.classList.remove("expanded");e.target.textContent="▲";} });
+const toggleLogBtn = document.getElementById("toggle-log-btn");
+toggleLogBtn?.addEventListener("click", e=>{ if(logWindow.classList.contains("minimized")){ logWindow.classList.remove("minimized");logWindow.classList.add("expanded");e.target.textContent="\u25BC";}else{logWindow.classList.add("minimized");logWindow.classList.remove("expanded");e.target.textContent="\u25B2";} });
+if (toggleLogBtn) toggleLogBtn.textContent = logWindow?.classList.contains("minimized") ? "\u25B2" : "\u25BC";
+let editorLogs = [];
+const logFiltersState = { heartbeat: true, mqtt: true, error: true, system: true };
+
+function categorizeLog(entry) {
+    const msg = (entry?.msg || '').toLowerCase();
+    const type = (entry?.type || '').toLowerCase();
+    if (msg.includes('heartbeat')) return 'heartbeat';
+    if (msg.includes('mqtt')) return 'mqtt';
+    if (type === 'error' || msg.includes('error')) return 'error';
+    return 'system';
+}
+
+function renderEditorLogs() {
+    if (!logContent) return;
+    const filtered = editorLogs.filter(entry => {
+        const cat = categorizeLog(entry);
+        return logFiltersState[cat] !== false;
+    });
+
+    if (!filtered.length) {
+        logContent.innerHTML = "<div style='color:#555; padding:5px; font-style:italic;'>Keine Logs vorhanden (System wartet...)</div>";
+        return;
+    }
+
+    logContent.innerHTML = "";
+    const frag = document.createDocumentFragment();
+    filtered.forEach(log => {
+        const div = document.createElement("div");
+        div.className = `log-entry log-${log.type}`;
+        div.textContent = `[${log.timestamp}] ${log.msg}`;
+        frag.appendChild(div);
+    });
+    logContent.appendChild(frag);
+}
+
+function bindLogFilters() {
+    document.querySelectorAll('#log-filters input[type="checkbox"]').forEach(cb => {
+        const key = cb.value;
+        if (key in logFiltersState) {
+            logFiltersState[key] = cb.checked;
+        }
+        cb.addEventListener('change', () => {
+            logFiltersState[key] = cb.checked;
+            renderEditorLogs();
+        });
+    });
+}
+bindLogFilters();
 function updateSidebarHighlight(node){ document.querySelectorAll(".puzzle-item:not(.screen-item)").forEach(el=>el.classList.remove("selected")); if(node&&node.type==="escape/Puzzle"){ const item=document.querySelector(`.puzzle-item[data-node-id="${node.id}"]`); if(item){item.classList.add("selected");item.scrollIntoView({behavior:"smooth",block:"nearest"});} updateScreenHighlight(null); } }
 function updateScreenHighlight(screenId){ document.querySelectorAll(".screen-item").forEach(el=>el.classList.remove("selected")); if(screenId!==null&&screenId!==undefined){ const item=document.querySelector(`.screen-item[data-screen-id="${screenId}"]`); if(item){item.classList.add("selected"); item.scrollIntoView({behavior:"smooth",block:"nearest"});} } }
 function createSidebarListItem(node,text){ const newItem=document.createElement("li"); newItem.className="puzzle-item"; newItem.dataset.nodeId=node.id; newItem.innerHTML=`<span class="puzzle-item-text">${text}</span><span class="puzzle-status status-offline" id="status-${node.id}">offline</span>`; newItem.addEventListener("click",e=>{ e.preventDefault(); if(document.activeElement)document.activeElement.blur(); const nodeInGraph=graph.getNodeById(newItem.dataset.nodeId); if(nodeInGraph){ canvas.deselectAllNodes(); canvas.selectNode(nodeInGraph,false); canvas.centerOnNode(nodeInGraph); canvas.canvas.focus(); updateSidebarHighlight(nodeInGraph); updatePropertiesPanel(nodeInGraph); } }); puzzleList.appendChild(newItem); }
@@ -380,6 +430,10 @@ const ui={
     isStart:document.getElementById("prop-is-start"), 
     isAnalog:document.getElementById("prop-is-analog"),
     extScreen:document.getElementById("prop-external-screen"), // NEU
+    extCheckDropdown:document.getElementById("prop-external-check-variable"),
+    extCheckTrigger:document.getElementById("external-check-trigger"),
+    extCheckMenu:document.getElementById("external-check-menu"),
+    extShowAssignment:document.getElementById("prop-external-show-assignment"),
     hintScreen:document.getElementById("prop-hint-screen"),
     hintConfigureBtn:document.getElementById("configure-hints-btn"),
     hintCountBadge:document.getElementById("hint-count-badge"),
@@ -408,7 +462,11 @@ const ui={
 };
 
 ui.dropdownTrigger.addEventListener("click",e=>{ if(ui.dropdown.classList.contains("dropdown-disabled")) return; ui.dropdownMenu.classList.toggle("open"); e.stopPropagation(); });
-document.addEventListener("click",e=>{ if(!ui.dropdown.contains(e.target))ui.dropdownMenu.classList.remove("open"); });
+ui.extCheckTrigger?.addEventListener("click", e=>{ if(ui.extCheckDropdown?.classList.contains("dropdown-disabled")) return; ui.extCheckMenu?.classList.toggle("open"); e.stopPropagation(); });
+document.addEventListener("click",e=>{
+    if(ui.dropdown && !ui.dropdown.contains(e.target)) ui.dropdownMenu.classList.remove("open");
+    if(ui.extCheckDropdown && !ui.extCheckDropdown.contains(e.target)) ui.extCheckMenu?.classList.remove("open");
+});
 
 function initCategories(){
     document.querySelectorAll('.category').forEach(cat=>{
@@ -493,6 +551,163 @@ function fillExternalScreenDropdown(selectedId){
         if(String(scr.id)===String(selectedId)) opt.selected=true;
         ui.extScreen.appendChild(opt);
     });
+}
+
+const EXTERNAL_CHECK_SOLUTION = "__PUZZLE_SOLUTION__";
+
+function isCheckVariableType(type) {
+    const t = (type ?? "").toString().toLowerCase();
+    return t === "string" || t === "number";
+}
+
+function applyTypeStyleToTypedElement(el, type) {
+    if (!el) return;
+    const t = (type ?? "").toString().toLowerCase();
+    if (!t) return;
+
+    el.dataset.type = t;
+
+    if (t === "string") {
+        el.style.backgroundImage = "linear-gradient(0deg, var(--type-string-bg), var(--type-string-bg))";
+        el.style.borderLeftColor = "var(--type-string-border)";
+    } else if (t === "number") {
+        el.style.backgroundImage = "linear-gradient(0deg, var(--type-number-bg), var(--type-number-bg))";
+        el.style.borderLeftColor = "var(--type-number-border)";
+    } else if (t === "boolean") {
+        el.style.backgroundImage = "linear-gradient(0deg, var(--type-boolean-bg), var(--type-boolean-bg))";
+        el.style.borderLeftColor = "var(--type-boolean-border)";
+    } else if (t === "action" || t === "-1") {
+        el.style.backgroundImage = "linear-gradient(0deg, var(--type-action-bg), var(--type-action-bg))";
+        el.style.borderLeftColor = "var(--type-action-border)";
+    }
+
+    el.style.color = "#fff";
+}
+
+function buildExternalVariableOptionsForPuzzle(node) {
+    const options = [];
+    if (!node || node.type !== "escape/Puzzle") return options;
+
+    const inputs = Array.isArray(node.inputs) ? node.inputs : [];
+    const outputs = Array.isArray(node.outputs) ? node.outputs : [];
+
+    inputs.forEach(inp => {
+        if (!inp) return;
+        if (inp.name === "Trigger") return;
+        if (!isCheckVariableType(inp.type)) return;
+        options.push({ value: `in:${inp.name}`, label: `${inp.name}`, type: inp.type });
+    });
+
+    outputs.forEach(out => {
+        if (!out) return;
+        if (out.name === "Done") return;
+        if (!isCheckVariableType(out.type)) return;
+        options.push({ value: `out:${out.name}`, label: `${out.name} (Output)`, type: out.type });
+    });
+
+    return options;
+}
+
+function getExternalCheckVariableType(node, value) {
+    if (!value) return "";
+    if (value === EXTERNAL_CHECK_SOLUTION) return "";
+    if (!node || node.type !== "escape/Puzzle") return "";
+
+    const [direction, name] = value.split(":", 2);
+    if (!direction || !name) return "";
+
+    const list = direction === "in" ? (node.inputs || []) : direction === "out" ? (node.outputs || []) : [];
+    const found = list.find(s => s && s.name === name);
+    return found?.type ?? "";
+}
+
+function setExternalCheckTrigger(label, type) {
+    if (!ui.extCheckTrigger) return;
+    ui.extCheckTrigger.innerHTML = `<span>${label}</span><span class="dropdown-arrow">>></span>`;
+    ui.extCheckTrigger.style.backgroundImage = "";
+    ui.extCheckTrigger.style.borderLeftColor = "";
+    ui.extCheckTrigger.style.color = "";
+    delete ui.extCheckTrigger.dataset.type;
+    if (type) applyTypeStyleToTypedElement(ui.extCheckTrigger, type);
+}
+
+function createExternalCheckDropdownItem(value, label, type, isSelected) {
+    const item = document.createElement("div");
+    item.className = "dropdown-item" + (isSelected ? " selected" : "");
+    item.dataset.value = value;
+    item.style.borderLeft = "4px solid #666";
+    item.style.backgroundColor = "rgba(255,255,255,0.05)";
+
+    if (type) applyTypeStyleToTypedElement(item, type);
+
+    const spanText = document.createElement("span");
+    spanText.textContent = label;
+    spanText.style.flexGrow = "1";
+    item.appendChild(spanText);
+
+    item.addEventListener("click", () => {
+        if (!selectedNode || selectedNode.type !== "escape/Puzzle") return;
+        selectedNode.properties.externalCheckVariable = value;
+        setExternalCheckTrigger(label, type || getExternalCheckVariableType(selectedNode, value));
+        ui.extCheckMenu?.classList.remove("open");
+        autoSave();
+    });
+
+    return item;
+}
+
+function fillExternalCheckVariableDropdown(node) {
+    if (!ui.extCheckDropdown || !ui.extCheckMenu) return;
+
+    const extId = node?.properties?.externalScreenId || "";
+    const enabled = !!extId;
+    ui.extCheckDropdown.classList.toggle("dropdown-disabled", !enabled);
+    if (ui.extShowAssignment) ui.extShowAssignment.disabled = !enabled;
+
+    ui.extCheckMenu.innerHTML = "";
+    if (!node || node.type !== "escape/Puzzle") {
+        setExternalCheckTrigger("- None -", "");
+        return;
+    }
+
+    if (ui.extShowAssignment) {
+        ui.extShowAssignment.checked = node.properties.externalShowAssignment !== false;
+    }
+
+    const selected = node.properties.externalCheckVariable || "";
+    const vars = buildExternalVariableOptionsForPuzzle(node);
+    const optionMap = new Map(vars.map(v => [v.value, v]));
+
+    const noneSelected = !selected;
+    ui.extCheckMenu.appendChild(createExternalCheckDropdownItem("", "- None -", "", noneSelected));
+
+    ui.extCheckMenu.appendChild(
+        createExternalCheckDropdownItem(
+            EXTERNAL_CHECK_SOLUTION,
+            "Get Solution from Puzzle",
+            "",
+            selected === EXTERNAL_CHECK_SOLUTION
+        )
+    );
+
+    vars.forEach(v => {
+        ui.extCheckMenu.appendChild(
+            createExternalCheckDropdownItem(v.value, v.label, v.type, selected === v.value)
+        );
+    });
+
+    const resolved = selected === EXTERNAL_CHECK_SOLUTION
+        ? { label: "Get Solution from Puzzle", type: "" }
+        : optionMap.get(selected);
+
+    if (selected && !resolved) {
+        node.properties.externalCheckVariable = "";
+        setExternalCheckTrigger("- None -", "");
+    } else if (resolved) {
+        setExternalCheckTrigger(resolved.label, resolved.type);
+    } else {
+        setExternalCheckTrigger("- None -", "");
+    }
 }
 function fillHintScreenDropdown(selectedId){
     if(!ui.hintScreen) return;
@@ -618,12 +833,13 @@ function updatePropertiesPanel(node){
 
         ui.inType.style.display=""; 
         renderIOLists(node); 
+        fillExternalCheckVariableDropdown(node);
         if(ui.hintManualToggle) ui.hintManualToggle.checked = !!node.properties.automaticHintTrigger;
     } 
     // TABLET
     else if(node.type==="escape/Tablet") {
         sections.forEach(el=>{if(el.classList.contains('tablet-prop'))el.style.display='';}); 
-        ui.name.value = node.title || "Tablet Input"; // Nutzung des Name-Felds für den Titel
+        ui.name.value = node.title || "Tablet Input"; // Nutzung des Name-Felds fÃƒÂ¼r den Titel
         ui.tabletCode.value = node.properties.code || "";
         ui.tabletMsg.value = node.properties.message || "";
         updateHintBadge();
@@ -731,7 +947,7 @@ function createDropdownItem(id,text,isSelected,isDeletable){
     return div; 
 }
 
-function renderIOLists(node,inputsOnly=false){ const renderList=(elem,items,type)=>{ elem.innerHTML=""; if(!items)return; items.forEach((item,idx)=>{ if(item.name==="Done")return; if(type==='in'&&node.type==="escape/Puzzle"&&item.name==="Trigger")return; const div=document.createElement("div"); div.className="io-item"; div.dataset.type=item.type; let html=`<input type="text" class="io-name-input" value="${item.name}" ${item.nameLocked?'disabled':''}>`; const isLogicNode=(node.type==="escape/Logic"); const isInput=(type==='in'); let showRemove=true; if(isInput){ if(isLogicNode){ showRemove=(items.length>2); } else if(node.type==="escape/Puzzle"){ showRemove=(items.length>1); } } if(showRemove)html+=`<button type="button" class="io-remove">X</button>`; div.innerHTML=html; const input=div.querySelector("input"); input.addEventListener("keydown",e=>{if(e.key==="Enter"){e.preventDefault();input.blur();}}); input.addEventListener("change",e=>{ if(type=='in')node.inputs[idx].name=e.target.value; else node.outputs[idx].name=e.target.value; node.setDirtyCanvas(true,true); autoSave(); }); if(showRemove){ div.querySelector(".io-remove").addEventListener("click",e=>{ e.preventDefault(); if(isLogicNode&&isInput&&node.inputs.length<=2)return; if(type=='in')node.removeInput(idx); else node.removeOutput(idx); updatePropertiesPanel(node); autoSave(); }); } elem.appendChild(div); }); }; renderList(ui.inputs,node.inputs,'in'); if(!inputsOnly)renderList(ui.outputs,node.outputs,'out'); }
+ function renderIOLists(node,inputsOnly=false){ const renderList=(elem,items,type)=>{ elem.innerHTML=""; if(!items)return; items.forEach((item,idx)=>{ if(item.name==="Done")return; if(type==='in'&&node.type==="escape/Puzzle"&&item.name==="Trigger")return; const div=document.createElement("div"); div.className="io-item"; div.dataset.type=item.type; let html=`<input type="text" class="io-name-input" value="${item.name}" ${item.nameLocked?'disabled':''}>`; const isLogicNode=(node.type==="escape/Logic"); const isInput=(type==='in'); let showRemove=true; if(isInput){ if(isLogicNode){ showRemove=(items.length>2); } else if(node.type==="escape/Puzzle"){ showRemove=(items.length>1); } } if(showRemove)html+=`<button type="button" class="io-remove">X</button>`; div.innerHTML=html; const input=div.querySelector("input"); input.addEventListener("keydown",e=>{if(e.key==="Enter"){e.preventDefault();input.blur();}}); input.addEventListener("change",e=>{ if(type=='in')node.inputs[idx].name=e.target.value; else node.outputs[idx].name=e.target.value; fillExternalCheckVariableDropdown(node); node.setDirtyCanvas(true,true); autoSave(); }); if(showRemove){ div.querySelector(".io-remove").addEventListener("click",e=>{ e.preventDefault(); if(isLogicNode&&isInput&&node.inputs.length<=2)return; if(type=='in')node.removeInput(idx); else node.removeOutput(idx); updatePropertiesPanel(node); autoSave(); }); } elem.appendChild(div); }); }; renderList(ui.inputs,node.inputs,'in'); if(!inputsOnly)renderList(ui.outputs,node.outputs,'out'); }
 
 
 ioControlsContainer.addEventListener('change',e=>{ 
@@ -797,6 +1013,9 @@ ioControlsContainer.addEventListener('change',e=>{
         selectedNode.properties.externalCheck = !!selectedNode.properties.externalScreenId;
         refreshExternalSelectionForSelectedPuzzle();
         if(selectedNode.updateSlots) selectedNode.updateSlots();
+        fillExternalCheckVariableDropdown(selectedNode);
+    } else if (t===ui.extShowAssignment) {
+        selectedNode.properties.externalShowAssignment = !!t.checked;
     } else if(t===ui.hintScreen){
         selectedNode.properties.hintScreenId = t.value || "";
         selectedNode.properties.hintEnabled = !!selectedNode.properties.hintScreenId;
@@ -871,7 +1090,7 @@ function pollData(){
         }
     }).catch(()=>{}); 
     
-    fetch('/api/logs').then(r=>r.json()).then(logs=>{ const logContent=document.getElementById("log-content"); if(!logContent)return; if(logs.length===0){ logContent.innerHTML="<div style='color:#555; padding:5px; font-style:italic;'>Keine Logs vorhanden (System wartet...)</div>"; return; } logContent.innerHTML=""; logs.forEach(log=>{ const div=document.createElement("div"); div.className=`log-entry log-${log.type}`; div.textContent=`[${log.timestamp}] ${log.msg}`; logContent.appendChild(div); }); }).catch(e=>{}); 
+    fetch('/api/logs').then(r=>r.json()).then(logs=>{ if(!Array.isArray(logs)) return; editorLogs = logs; renderEditorLogs(); }).catch(()=>{}); 
     checkForDeviceUpdates(); 
 }
 setInterval(pollData, 1000);
