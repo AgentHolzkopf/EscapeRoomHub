@@ -23,6 +23,34 @@ module.exports = (dbWrapper, mqttClient) => {
         } catch(e) { res.status(500).json({}); }
     });
 
+    router.get('/events', (req, res) => {
+        res.setHeader('Content-Type', 'text/event-stream');
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+        res.setHeader('Connection', 'keep-alive');
+        res.flushHeaders && res.flushHeaders();
+
+        const emitter = gameEngine.getEventEmitter && gameEngine.getEventEmitter();
+        const send = (payload) => {
+            res.write(`event: update\ndata: ${JSON.stringify(payload)}\n\n`);
+        };
+        const onUpdate = (payload) => send(payload);
+        if (emitter) {
+            emitter.on('update', onUpdate);
+        }
+        const ping = setInterval(() => {
+            res.write('event: ping\ndata: {}\n\n');
+        }, 25000);
+
+        send({ type: 'connected' });
+
+        req.on('close', () => {
+            clearInterval(ping);
+            if (emitter) {
+                emitter.off('update', onUpdate);
+            }
+        });
+    });
+
     // 2. Speichern
     router.put('/room', async (req, res) => {
         const success = await gameEngine.updateGraph(req.body);
@@ -93,6 +121,7 @@ module.exports = (dbWrapper, mqttClient) => {
     router.get('/devices', (req, res) => { noCache(res); res.json(gameEngine.getDevices()); });
     router.post('/devices/delete', async (req, res) => { await gameEngine.removeDevice(req.body.id); res.json({status: "ok"}); });
     router.get('/logs', (req, res) => res.json(gameEngine.getLogs()));
+    router.post('/logs/clear', (req, res) => res.json(gameEngine.clearLogs()));
     router.get('/runtime/status', (req, res) => res.json(gameEngine.getPuzzleStatuses()));
     router.get('/screens/:slug/status', (req, res) => {
         noCache(res);
@@ -106,7 +135,10 @@ module.exports = (dbWrapper, mqttClient) => {
             role: screen.role || "player",
             id: screen.id,
             name: screen.name || slug,
-            path: screen.path || slug
+            path: screen.path || slug,
+            progressStyle: screen.progressStyle || null,
+            branchIds: Array.isArray(screen.branchIds) ? screen.branchIds : [],
+            showRunningTime: !!screen.showRunningTime
         });
     });
     router.get('/player-input/:slug/state', async (req, res) => {
@@ -142,6 +174,30 @@ module.exports = (dbWrapper, mqttClient) => {
             res.json({ success: true, settings });
         } catch (err) {
             res.status(500).json({ success: false, error: 'Konnte Einstellungen nicht laden.' });
+        }
+    });
+    router.post('/system/media-server', async (req, res) => {
+        try {
+            const enabled = !!req.body?.enabled;
+            const result = await gameEngine.setMediaServerEnabled(enabled);
+            if (!result.success) {
+                return res.status(400).json(result);
+            }
+            res.json(result);
+        } catch (err) {
+            res.status(500).json({ success: false, error: 'Media Server konnte nicht gesetzt werden.' });
+        }
+    });
+    router.post('/system/autostart', async (req, res) => {
+        try {
+            const enabled = !!req.body?.enabled;
+            const result = await gameEngine.setAutostartEnabled(enabled);
+            if (!result.success) {
+                return res.status(400).json(result);
+            }
+            res.json(result);
+        } catch (err) {
+            res.status(500).json({ success: false, error: 'Autostart konnte nicht gesetzt werden.' });
         }
     });
     router.post('/system/mqtt-port', async (req, res) => {
@@ -200,6 +256,24 @@ module.exports = (dbWrapper, mqttClient) => {
         const text = req.body?.text || "";
         const showAssignment = req.body?.showAssignment;
         const result = gameEngine.triggerCustomHint(puzzleId, text, { showAssignment });
+        if (!result.success) return res.status(400).json(result);
+        res.json(result);
+    });
+
+    router.post('/runtime/puzzles/:puzzleId/hint/settings', async (req, res) => {
+        const puzzleId = parseInt(req.params.puzzleId, 10);
+        if (!puzzleId) return res.status(400).json({ success: false, error: "puzzleId required" });
+        const showHintAssignment = req.body?.showHintAssignment;
+        const automaticHintTrigger = req.body?.automaticHintTrigger;
+        const result = await gameEngine.updateHintSettings(puzzleId, { showHintAssignment, automaticHintTrigger });
+        if (!result.success) return res.status(400).json(result);
+        res.json(result);
+    });
+
+    router.post('/runtime/puzzles/:puzzleId/hint/remaining', async (req, res) => {
+        const puzzleId = parseInt(req.params.puzzleId, 10);
+        if (!puzzleId) return res.status(400).json({ success: false, error: "puzzleId required" });
+        const result = await gameEngine.updateRemainingHints(puzzleId, req.body || {});
         if (!result.success) return res.status(400).json(result);
         res.json(result);
     });
@@ -286,12 +360,28 @@ module.exports = (dbWrapper, mqttClient) => {
         if (!puzzleId) {
             return res.status(400).json({ success: false, error: "puzzleId required" });
         }
-        const result = gameEngine.markPuzzleSolved(puzzleId);
+        const rawBranchId = req.body.branchId;
+        const branchId = Number.isFinite(parseInt(rawBranchId, 10)) ? parseInt(rawBranchId, 10) : null;
+        const result = gameEngine.markPuzzleSolved(puzzleId, { branchId });
         res.json(result);
     });
 
     router.post('/runtime/reset', (req, res) => {
         const result = gameEngine.resetRoom();
+        res.json(result);
+    });
+
+    router.post('/runtime/restart', (req, res) => {
+        const result = gameEngine.restartRoom({ auto: !!req.body?.auto });
+        res.json(result);
+    });
+
+    router.post('/runtime/branch/restart', (req, res) => {
+        const branchId = Number(req.body?.branchId);
+        if (!Number.isFinite(branchId)) {
+            return res.status(400).json({ success: false, error: "branchId required" });
+        }
+        const result = gameEngine.restartBranch({ branchId });
         res.json(result);
     });
 

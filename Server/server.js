@@ -1,11 +1,19 @@
 ﻿const express = require('express');
 const http = require('http');
 const bodyParser = require('body-parser');
+const fs = require('fs');
 const path = require('path');
 
 // Base paths so imports still work after moving this file into /Server
 const ROOT_DIR = path.resolve(__dirname, '..');
 const PUBLIC_DIR = path.join(ROOT_DIR, 'public');
+const MEDIA_DIR = path.join(ROOT_DIR, 'MediaStorage');
+
+function ensureMediaStorage() {
+    if (!fs.existsSync(MEDIA_DIR)) {
+        fs.mkdirSync(MEDIA_DIR, { recursive: true });
+    }
+}
 
 // Module laden (Pfade angepasst auf src/)
 const db = require(path.join(ROOT_DIR, 'src/engine/database'));
@@ -27,7 +35,146 @@ app.use((req, res, next) => {
     }
     next();
 });
+
+function sanitizeMediaName(name) {
+    const raw = (name || '').toString().trim();
+    if (!raw) return null;
+    const baseName = path.basename(raw);
+    const parsed = path.parse(baseName);
+    const safeBase = parsed.name.replace(/[^a-z0-9-_]/gi, '').slice(0, 80);
+    const safeExt = parsed.ext.replace(/[^a-z0-9.]/gi, '').slice(0, 12);
+    if (!safeBase) return null;
+    return `${safeBase}${safeExt}`;
+}
+
+function findMediaByBaseName(baseName) {
+    const safeBase = sanitizeMediaName(baseName);
+    if (!safeBase) return null;
+    try {
+        const files = fs.readdirSync(MEDIA_DIR);
+        const target = safeBase.toLowerCase();
+        const match = files.find(name => path.parse(name).name.toLowerCase() === target);
+        return match || null;
+    } catch (err) {
+        return null;
+    }
+}
+
+app.post('/api/media/upload', (req, res) => {
+    const enabled = !!gameEngine.getSystemSettings().mediaServerEnabled;
+    if (!enabled) {
+        return res.status(503).json({ success: false, error: 'Media server disabled' });
+    }
+    try {
+        ensureMediaStorage();
+    } catch (err) {
+        return res.status(500).json({ success: false, error: 'Media storage unavailable' });
+    }
+
+    const nameParam = req.query?.name || req.headers['x-media-name'] || req.headers['x-filename'];
+    const safeName = sanitizeMediaName(nameParam);
+    if (!safeName) {
+        return res.status(400).json({ success: false, error: 'Missing or invalid media name' });
+    }
+
+    const tempPath = path.join(MEDIA_DIR, `${safeName}.uploading-${Date.now()}`);
+    const targetPath = path.join(MEDIA_DIR, safeName);
+    const writeStream = fs.createWriteStream(tempPath);
+    let totalBytes = 0;
+    let finished = false;
+
+    function cleanupTemp() {
+        if (!fs.existsSync(tempPath)) return;
+        try { fs.unlinkSync(tempPath); } catch (e) {}
+    }
+
+    req.on('data', (chunk) => { totalBytes += chunk.length; });
+    req.on('aborted', () => {
+        if (finished) return;
+        finished = true;
+        cleanupTemp();
+    });
+    req.on('error', (err) => {
+        if (finished) return;
+        finished = true;
+        cleanupTemp();
+        res.status(500).json({ success: false, error: err.message || 'Upload failed' });
+    });
+
+    writeStream.on('error', (err) => {
+        if (finished) return;
+        finished = true;
+        cleanupTemp();
+        res.status(500).json({ success: false, error: err.message || 'Upload failed' });
+    });
+    writeStream.on('finish', () => {
+        if (finished) return;
+        finished = true;
+        fs.rename(tempPath, targetPath, (err) => {
+            if (err) {
+                cleanupTemp();
+                return res.status(500).json({ success: false, error: 'Could not finalize upload' });
+            }
+            return res.json({ success: true, name: safeName, bytes: totalBytes, path: `/media/${safeName}` });
+        });
+    });
+
+    req.pipe(writeStream);
+});
+
+app.get('/api/media/resolve', (req, res) => {
+    const enabled = !!gameEngine.getSystemSettings().mediaServerEnabled;
+    if (!enabled) {
+        return res.status(503).json({ success: false, error: 'Media server disabled' });
+    }
+    try {
+        ensureMediaStorage();
+    } catch (err) {
+        return res.status(500).json({ success: false, error: 'Media storage unavailable' });
+    }
+    const nameParam = req.query?.name;
+    const match = findMediaByBaseName(nameParam);
+    if (!match) {
+        return res.status(404).json({ success: false, error: 'Media not found' });
+    }
+    return res.json({ success: true, name: match, path: `/media/${match}` });
+});
+
 app.use(bodyParser.json({ limit: '15mb' }));
+
+const mediaStatic = express.static(MEDIA_DIR, {
+    fallthrough: false,
+    setHeaders: (res) => {
+        res.setHeader('Cache-Control', 'no-store, must-revalidate');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
+    }
+});
+
+app.use('/media', (req, res, next) => {
+    const enabled = !!gameEngine.getSystemSettings().mediaServerEnabled;
+    if (!enabled) {
+        return res.status(503).json({ error: 'Media server disabled' });
+    }
+    try {
+        ensureMediaStorage();
+    } catch (err) {
+        return res.status(500).json({ error: 'Media storage unavailable' });
+    }
+    return mediaStatic(req, res, next);
+});
+
+// Running room screen should only be reachable while the room is active
+app.get('/room.html', (req, res) => {
+    const status = gameEngine.getRuntimeRoomStatus();
+    if (!status?.running) {
+        res.setHeader('Cache-Control', 'no-store, must-revalidate');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
+        return res.redirect(302, '/index.html');
+    }
+    return res.sendFile(path.join(PUBLIC_DIR, 'room.html'));
+});
 
 // Statische Dateien aus 'public' laden, immer ohne Cache
 const staticOptions = {
@@ -101,9 +248,12 @@ app.get('/:screenPath', (req, res, next) => {
 </html>`);
     }
 
-    const isHint = (screen.role || "player") === "hint";
-    if (isHint) {
+    const role = screen.role || "player";
+    if (role === "hint") {
         return res.sendFile(path.join(PUBLIC_DIR, 'hint-screen.html'));
+    }
+    if (role === "progress") {
+        return res.sendFile(path.join(PUBLIC_DIR, 'progress-screen.html'));
     }
     res.setHeader('Cache-Control', 'no-store, must-revalidate');
     res.setHeader('Pragma', 'no-cache');

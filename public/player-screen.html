@@ -6,20 +6,20 @@
     <title>Player Input</title>
     <style>
         :root {
-            --bg: #0b1220;
-            --panel: #0f172a;
-            --muted: #8aa2b8;
-            --text: #e6eef7;
-            --accent: #7dd3fc;
-            --accent-strong: #38bdf8;
-            --danger: #ef4444;
-            --success: #34d399;
+            --bg: #121212;
+            --panel: #1c1c1c;
+            --muted: #9a9a9a;
+            --text: #e6e6e6;
+            --accent: #6db3ff;
+            --accent-strong: #4f8bd6;
+            --danger: #ff5555;
+            --success: #4caf50;
         }
         * { box-sizing: border-box; }
         body {
             margin: 0;
             min-height: 100vh;
-            background: radial-gradient(circle at 20% 15%, rgba(56,189,248,0.12), transparent 32%), var(--bg);
+            background: var(--bg);
             color: var(--text);
             font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
             display: flex;
@@ -32,9 +32,9 @@
         }
         .chrome {
             background: var(--panel);
-            border: 1px solid rgba(255,255,255,0.06);
-            border-radius: 18px;
-            box-shadow: 0 18px 60px rgba(0,0,0,0.45);
+            border: 1px solid #2a2a2a;
+            border-radius: 12px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
             overflow: hidden;
         }
         .topbar {
@@ -56,8 +56,8 @@
             gap: 8px;
             padding: 6px 12px;
             border-radius: 999px;
-            background: rgba(56,189,248,0.12);
-            color: var(--accent-strong);
+            background: rgba(255,255,255,0.06);
+            color: var(--text);
             font-weight: 700;
             text-transform: uppercase;
             letter-spacing: 0.4px;
@@ -75,7 +75,7 @@
             flex-wrap: wrap;
         }
         .tab {
-            border: 1px solid rgba(255,255,255,0.07);
+            border: 1px solid #2a2a2a;
             background: rgba(255,255,255,0.02);
             color: var(--text);
             padding: 8px 12px;
@@ -88,8 +88,11 @@
         }
         .tab.active {
             border-color: var(--accent-strong);
-            box-shadow: 0 0 0 1px rgba(56,189,248,0.45);
-            background: rgba(56,189,248,0.08);
+            box-shadow: 0 0 0 1px rgba(79,139,214,0.45);
+            background: rgba(79,139,214,0.12);
+            transform: scale(1.08);
+            padding: 10px 16px;
+            font-size: 14px;
         }
         .tab:hover { border-color: var(--accent-strong); }
         .body {
@@ -99,12 +102,16 @@
             margin: 0 0 14px 0;
             color: var(--muted);
             font-size: 15px;
+            display: none;
         }
         .input-card {
-            background: rgba(0,0,0,0.25);
-            border: 1px solid rgba(255,255,255,0.05);
+            background: rgba(255,255,255,0.03);
+            border: 1px solid #2a2a2a;
             border-radius: 14px;
             padding: 18px;
+        }
+        .grid-wrap {
+            position: relative;
         }
         .grid {
             display: grid;
@@ -115,8 +122,8 @@
         .cell {
             height: 54px;
             border-radius: 10px;
-            border: 1px solid rgba(255,255,255,0.12);
-            background: rgba(255,255,255,0.03);
+            border: 1px solid rgba(255,255,255,0.1);
+            background: rgba(255,255,255,0.02);
             display: grid;
             place-items: center;
             font-size: 22px;
@@ -126,13 +133,18 @@
         }
         .cell.filled {
             border-color: var(--accent-strong);
-            background: rgba(56,189,248,0.08);
+            background: rgba(79,139,214,0.12);
         }
         .answer-input {
             position: absolute;
-            opacity: 0;
-            pointer-events: none;
-            height: 0;
+            inset: 0;
+            width: 100%;
+            height: 100%;
+            opacity: 0.01;
+            background: transparent;
+            border: none;
+            color: transparent;
+            caret-color: transparent;
         }
         .actions {
             display: flex;
@@ -151,9 +163,9 @@
             transition: all 0.12s ease;
         }
         button.primary {
-            background: linear-gradient(120deg, var(--accent-strong), #60a5fa);
+            background: linear-gradient(120deg, var(--accent-strong), #3b82f6);
             border-color: rgba(255,255,255,0.14);
-            color: #052036;
+            color: #0f172a;
         }
         button:hover { filter: brightness(1.05); }
         button:disabled {
@@ -166,11 +178,26 @@
             font-size: 14px;
             min-height: 20px;
         }
+        .status.strong {
+            font-size: 28px;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 0.6px;
+        }
+        .input-card.input-hidden .grid-wrap {
+            display: none;
+        }
+        .input-card.input-hidden .actions {
+            display: none;
+        }
+        .input-card.input-hidden .status {
+            display: block;
+        }
         .status.ok { color: var(--success); }
         .status.err { color: var(--danger); }
         .status.warn { color: #fbbf24; }
         .badges {
-            display: flex;
+            display: none;
             gap: 8px;
             flex-wrap: wrap;
             margin-bottom: 12px;
@@ -184,27 +211,102 @@
             letter-spacing: 0.3px;
         }
         .badge.warn { color: var(--danger); border-color: rgba(239,68,68,0.4); }
+        .screensaver {
+            position: fixed;
+            inset: 0;
+            background: var(--bg);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 5;
+        }
+        .victory-overlay {
+            position: fixed;
+            inset: 0;
+            background: #0b0b0b;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 6;
+        }
+        .victory-overlay.active { display: flex; }
+        .victory-card {
+            width: 100%;
+            height: 100%;
+            background: transparent;
+            border: none;
+            border-radius: 0;
+            padding: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 0;
+            box-shadow: none;
+        }
+        .victory-media {
+            width: 100%;
+            height: 100%;
+            border-radius: 0;
+            overflow: hidden;
+            background: #0b0b0b;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .victory-media img,
+        .victory-media iframe {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+            border: none;
+        }
+        .victory-message {
+            position: absolute;
+            left: 50%;
+            bottom: 24px;
+            transform: translateX(-50%);
+            font-size: 18px;
+            font-weight: 700;
+            text-align: center;
+            color: var(--text);
+            z-index: 7;
+        }
+        .screensaver.hidden { display: none; }
+        .screensaver img { max-width: 90vw; max-height: 90vh; object-fit: contain; }
+        .screensaver .fallback { color: var(--muted); font-size: 16px; }
+        .hidden { display: none; }
     </style>
 </head>
 <body>
+    <div class="screensaver" id="screensaver">
+        <div class="fallback">Screensaver</div>
+    </div>
+    <div class="victory-overlay" id="victory-overlay">
+        <div class="victory-card">
+            <div class="victory-media" id="victory-media">
+                <div class="empty">Victory</div>
+            </div>
+        </div>
+        <div class="victory-message" id="victory-message">Room was solved</div>
+    </div>
     <div class="page">
-        <div class="chrome" id="app">
+        <div class="chrome hidden" id="app">
             <div class="topbar">
                 <div class="title">
                     <div class="pill">Player Input</div>
-                    <h1 id="screen-title">Screen</h1>
-                </div>
+                                    </div>
                 <div class="tabs" id="tab-list"></div>
             </div>
             <div class="body">
                 <p class="assignment" id="assignment"></p>
                 <div class="badges" id="badge-bar"></div>
-                <div class="input-card">
-                    <div class="grid" id="grid"></div>
-                    <input id="answer-input" class="answer-input" type="text" autocomplete="off" autofocus>
+                <div class="input-card" id="input-card">
+                    <div class="grid-wrap">
+                        <div class="grid" id="grid"></div>
+                        <input id="answer-input" class="answer-input" type="text" autocomplete="off" autofocus>
+                    </div>
                     <div class="actions">
                         <button type="button" id="clear-btn">Clear</button>
-                        <button type="button" class="primary" id="submit-btn">Prüfen</button>
+                        <button type="button" class="primary" id="submit-btn">Check</button>
                     </div>
                     <div class="status" id="status"></div>
                 </div>
@@ -225,17 +327,24 @@
         const screenSlug = sanitizeSlug(rawSlug) || 'player';
         const stateUrl = '/api/player-input/' + encodeURIComponent(screenSlug) + '/state';
         const submitUrl = '/api/player-input/' + encodeURIComponent(screenSlug) + '/submit';
+        const roleUrl = '/api/screens/' + encodeURIComponent(screenSlug) + '/status';
+        const originalPath = window.location.pathname + window.location.search;
 
         const appEl = document.getElementById('app');
         const tabList = document.getElementById('tab-list');
         const assignmentEl = document.getElementById('assignment');
         const gridEl = document.getElementById('grid');
         const statusEl = document.getElementById('status');
+        const inputCard = document.getElementById('input-card');
         const inputEl = document.getElementById('answer-input');
         const submitBtn = document.getElementById('submit-btn');
         const clearBtn = document.getElementById('clear-btn');
         const badgeBar = document.getElementById('badge-bar');
         const screenTitle = document.getElementById('screen-title');
+        const saver = document.getElementById('screensaver');
+        const victoryOverlay = document.getElementById('victory-overlay');
+        const victoryMedia = document.getElementById('victory-media');
+        const victoryMessage = document.getElementById('victory-message');
 
         let currentPuzzleId = null;
         let expectedLength = null;
@@ -244,26 +353,219 @@
         let settingsCache = {};
         let roomCache = {};
         let currentPuzzleActive = false;
+        let saverUrl = null;
+        let victoryUrl = null;
+        let victoryTimer = null;
+        let branchSolvedCache = new Set();
+        let saverVisible = null;
+        let redirected = false;
+        let recentSolved = new Map();
+        let lastActivePuzzles = [];
+
+        let lastRenderKey = '';
+        let lastRedirectAt = 0;
+
+        let uiMode = 'saver';
+        let successHoldUntil = 0;
 
         function setStatus(msg, type) {
             statusEl.textContent = msg || '';
             statusEl.className = 'status' + (type ? ' ' + type : '');
         }
 
-function showApp() {
+        function showApp() {
             appEl.classList.remove('hidden');
             inputEl.focus({ preventScroll: true });
         }
 
+        function hideApp() {
+            appEl.classList.add('hidden');
+        }
+
+        function showSaver(on) {
+            if (!saver) return;
+            const nextVisible = !!on;
+
+            if (saverVisible === nextVisible) return;
+
+            saverVisible = nextVisible;
+
+            const isHidden = saver.classList.contains('hidden');
+            if (on && isHidden) saver.classList.remove('hidden');
+            else if (!on && !isHidden) saver.classList.add('hidden');
+        }
+
+        function applySaver(url) {
+            if (!saver) return;
+            if (!url || url === saverUrl) return;
+            saverUrl = url;
+            saver.innerHTML = '';
+            if (/\.html?(\?|$)/i.test(url)) {
+                const iframe = document.createElement('iframe');
+                iframe.src = url;
+                iframe.title = 'Screensaver';
+                iframe.style.width = '90vw';
+                iframe.style.height = '90vh';
+                iframe.style.border = 'none';
+                saver.appendChild(iframe);
+            } else {
+                const img = document.createElement('img');
+                img.src = saverUrl;
+                img.alt = 'Screensaver';
+                saver.appendChild(img);
+            }
+        }
+
+        function cacheBust(url) {
+            const sep = url.includes('?') ? '&' : '?';
+            return `${url}${sep}v=${Date.now()}`;
+        }
+
+        function safeReplace(url) {
+            const now = Date.now();
+            if (now - lastRedirectAt < 2000) return;
+            lastRedirectAt = now;
+            window.location.replace(url);
+        }
+
+        function buildVictoryUrl(url, payload) {
+            if (!payload || !/\.html?(\?|$)/i.test(url)) return url;
+            const sep = url.includes('?') ? '&' : '?';
+            if (payload.room) return `${url}${sep}room=1`;
+            if (Number.isFinite(payload.branch)) return `${url}${sep}branch=${payload.branch}`;
+            return url;
+        }
+
+        function applyVictoryMedia(url, payload) {
+            if (!victoryMedia || !url || url === victoryUrl) return;
+            const resolved = buildVictoryUrl(url, payload);
+            victoryUrl = resolved;
+            victoryMedia.innerHTML = '';
+            if (/\.html?(\?|$)/i.test(url)) {
+                const iframe = document.createElement('iframe');
+                iframe.src = cacheBust(resolved);
+                iframe.title = 'Victory';
+                victoryMedia.appendChild(iframe);
+            } else {
+                const img = document.createElement('img');
+                img.src = cacheBust(resolved);
+                img.alt = 'Victory';
+                victoryMedia.appendChild(img);
+            }
+        }
+
+        function showVictoryFlash(message, url, payload) {
+            if (!victoryOverlay) return;
+            const isHtml = url && /\.html?(\?|$)/i.test(url);
+            if (victoryMessage) {
+                victoryMessage.textContent = message || '';
+                victoryMessage.classList.toggle('hidden', isHtml);
+            }
+            if (url) applyVictoryMedia(url, payload);
+            victoryOverlay.classList.add('active');
+            if (victoryTimer) clearTimeout(victoryTimer);
+            victoryTimer = setTimeout(() => {
+                victoryOverlay.classList.remove('active');
+            }, 5000);
+        }
+
+        function computeSolvedBranches(branches, statusMap) {
+            const solved = new Set();
+            branches.forEach(branch => {
+                const puzzles = branch.puzzles || [];
+                if (!puzzles.length) return;
+                const allSolved = puzzles.every(p => {
+                    const st = (statusMap[p.id]?.state || '').toLowerCase();
+                    return st === 'solved';
+                });
+                if (allSolved) solved.add(branch.id);
+            });
+            return solved;
+        }
+
+        async function pollVictory() {
+            try {
+                const [statusRes, settingsRes, flowRes, puzzleStatusRes] = await Promise.all([
+                    fetch('/api/runtime/room/status', { cache: 'no-store' }),
+                    fetch('/api/system/settings', { cache: 'no-store' }),
+                    fetch('/api/runtime/puzzle-flow', { cache: 'no-store' }),
+                    fetch('/api/runtime/status', { cache: 'no-store' })
+                ]);
+                if (!statusRes.ok) return;
+                const status = await statusRes.json();
+                const settings = settingsRes.ok ? await settingsRes.json() : {};
+                const flowData = flowRes.ok ? await flowRes.json() : {};
+                const puzzleStatus = puzzleStatusRes.ok ? await puzzleStatusRes.json() : {};
+                const running = !!status.running;
+
+                if (!running) {
+                    branchSolvedCache = new Set();
+                    return;
+                }
+
+                const branches = Array.isArray(flowData.branches) ? flowData.branches : [];
+                const solvedNow = computeSolvedBranches(branches, puzzleStatus);
+                if (!saverVisible) {
+                    branchSolvedCache = solvedNow;
+                    return;
+                }
+
+                branches.forEach((branch, idx) => {
+                    if (solvedNow.has(branch.id) && !branchSolvedCache.has(branch.id)) {
+                        const isRoom = branches.length <= 1;
+                        const label = isRoom ? 'The room was solve' : `Branch ${idx + 1} was solved`;
+                        showVictoryFlash(label, settings.settings?.victoryScreen || null, { room: isRoom, branch: idx + 1 });
+                    }
+                });
+                branchSolvedCache = solvedNow;
+            } catch (err) {
+                // ignore transient errors; next poll will retry
+            }
+        }
+
+        function markSolved(puzzle) {
+            if (!puzzle || !puzzle.id) return;
+            const entry = {
+                puzzle: { ...puzzle, active: false, solvedPreview: true },
+                expiresAt: Date.now() + 5000
+            };
+            recentSolved.set(puzzle.id, entry);
+        }
+
+        function pruneSolved() {
+            const now = Date.now();
+            let removed = false;
+            recentSolved.forEach((entry, id) => {
+                if (!entry || entry.expiresAt <= now) {
+                    recentSolved.delete(id);
+                    removed = true;
+                }
+            });
+            return removed;
+        }
+
+        function mergeVisiblePuzzles(activePuzzles) {
+            pruneSolved();
+            const list = [...activePuzzles];
+            recentSolved.forEach(entry => {
+                if (!list.some(p => p.id === entry.puzzle.id)) {
+                    list.push(entry.puzzle);
+                }
+            });
+            return list;
+        }
+
         function renderTabs(puzzles) {
             tabList.innerHTML = '';
-            puzzles.forEach(p => {
+            puzzles.forEach((p, idx) => {
                 const tab = document.createElement('button');
                 tab.type = 'button';
                 tab.className = 'tab' + (p.id === currentPuzzleId ? ' active' : '');
-                tab.textContent = p.name || ('Puzzle ' + p.id);
+                const showName = p.showAssignment !== false;
+                tab.textContent = showName ? (p.name || ('Puzzle ' + (idx + 1))) : ('Input ' + (idx + 1));
                 tab.addEventListener('click', () => {
                     currentPuzzleId = p.id;
+                    renderTabs(puzzles);
                     renderPuzzle(p);
                 });
                 tabList.appendChild(tab);
@@ -271,20 +573,7 @@ function showApp() {
         }
 
         function renderBadges(puzzle) {
-            badgeBar.innerHTML = '';
-            if (!puzzle) return;
-            if (puzzle.variableLabel) {
-                const b = document.createElement('span');
-                b.className = 'badge';
-                b.textContent = puzzle.variableLabel;
-                badgeBar.appendChild(b);
-            }
-            if (!puzzle.valueDefined) {
-                const warn = document.createElement('span');
-                warn.className = 'badge warn';
-                warn.textContent = 'Kein Lösungswort definiert';
-                badgeBar.appendChild(warn);
-            }
+            if (badgeBar) badgeBar.innerHTML = '';
         }
 
         function renderGrid(value, len) {
@@ -294,40 +583,58 @@ function showApp() {
             for (let i = 0; i < length; i++) {
                 const cell = document.createElement('div');
                 cell.className = 'cell' + (clean[i] ? ' filled' : '');
-                cell.textContent = clean[i] ? clean[i].toUpperCase() : '';
+                cell.textContent = clean[i] ? clean[i] : '';
                 gridEl.appendChild(cell);
             }
         }
 
         function renderPuzzle(puzzle) {
             if (!puzzle) {
-                setStatus('Kein aktives Rätsel.', '');
+                if (inputCard) inputCard.classList.remove('input-hidden');
+                setStatus('', '');
                 renderGrid('', 6);
                 assignmentEl.textContent = '';
                 renderBadges(null);
                 expectedLength = null;
+                inputEl.maxLength = '';
                 currentPuzzleHasValue = false;
                 currentPuzzleActive = false;
+                if (inputCard) inputCard.classList.remove('input-hidden');
                 return;
             }
             currentPuzzleId = puzzle.id;
-            currentPuzzleActive = !!puzzle.active;
+            currentPuzzleActive = !!puzzle.active && !puzzle.solvedPreview;
             expectedLength = puzzle.expectedLength || null;
+            inputEl.maxLength = expectedLength || '';
             currentPuzzleHasValue = puzzle.valueDefined !== false;
             renderBadges(puzzle);
-            assignmentEl.textContent = puzzle.showAssignment !== false ? `Rätsel: ${puzzle.name}` : 'Eingabe erforderlich';
+            if (assignmentEl) assignmentEl.textContent = '';
+            if (inputCard) inputCard.classList.toggle('hidden', !!puzzle.solvedPreview);
             const value = inputEl.value || '';
             renderGrid(value, expectedLength);
-            if (!currentPuzzleActive) {
-                setStatus('Warten auf Aktivierung...', 'warn');
+            if (puzzle.solvedPreview) {
+                setStatus('Correct input', 'ok strong');
+            } else if (!currentPuzzleActive) {
+                if (inputCard) inputCard.classList.remove('input-hidden');
+                setStatus('Waiting for activation...', 'warn');
             } else if (!currentPuzzleHasValue) {
                 setStatus('Kein Lösungswort hinterlegt.', 'err');
             } else {
+                if (inputCard) inputCard.classList.remove('input-hidden');
                 setStatus('', '');
             }
         }
 
+        function enforceMaxLength() {
+            if (!expectedLength) return;
+            const raw = inputEl.value || '';
+            if (raw.length > expectedLength) {
+                inputEl.value = raw.slice(0, expectedLength);
+            }
+        }
+
         function syncControls() {
+            enforceMaxLength();
             const val = inputEl.value || '';
             renderGrid(val, expectedLength);
             const lengthOk = !expectedLength || val.length === expectedLength;
@@ -337,13 +644,13 @@ function showApp() {
         async function submitAnswer() {
             if (!currentPuzzleId) return;
             if (!currentPuzzleActive) {
-                setStatus('Noch nicht aktiv.', 'warn');
+                setStatus('Not active yet.', 'warn');
                 return;
             }
             const answer = (inputEl.value || '').trim();
             if (!answer) return;
             submitBtn.disabled = true;
-            setStatus('Prüfe...', '');
+            setStatus('Checking...', '');
             try {
                 const res = await fetch(submitUrl, {
                     method: 'POST',
@@ -352,18 +659,27 @@ function showApp() {
                 });
                 const data = await res.json();
                 if (!res.ok || !data.success) {
-                    setStatus(data.error || 'Fehler beim Prüfen', 'err');
+                    setStatus(data.error || 'Incorrect input. Try again.', 'err');
                 } else if (data.correct) {
-                    setStatus('Richtig! Rätsel gelöst.', 'ok');
+                    const solvedPuzzle = puzzlesCache.find(p => p.id === currentPuzzleId) || { id: currentPuzzleId, name: screenTitle?.textContent || '' };
+                    markSolved(solvedPuzzle);
+                    if (inputCard) inputCard.classList.add('input-hidden');
+                    setStatus('Correct input', 'ok strong');
                     inputEl.value = '';
                     syncControls();
-                    await pollState();
+                    successHoldUntil = Date.now() + 5000;
                     return;
                 } else {
-                    setStatus('Leider falsch. Bitte erneut versuchen.', 'err');
+
+                    setStatus('Incorrect input. Try again.', 'err');
+
+                    inputEl.value = '';
+
+                    syncControls();
+
                 }
             } catch (e) {
-                setStatus('Netzwerkfehler.', 'err');
+                setStatus('Network error.', 'err');
             } finally {
                 submitBtn.disabled = false;
             }
@@ -371,52 +687,155 @@ function showApp() {
 
         async function pollState() {
             try {
-                const res = await fetch(stateUrl, { cache: 'no-store' });
-                if (res.status === 404) {
-                    setStatus(`Screen "${screenSlug}" nicht gefunden.`, 'err');
+                const [stateRes, statusRes, flowRes, puzzleStatusRes] = await Promise.all([
+                    fetch(stateUrl, { cache: 'no-store' }),
+                    fetch('/api/runtime/room/status', { cache: 'no-store' }),
+                    fetch('/api/runtime/puzzle-flow', { cache: 'no-store' }),
+                    fetch('/api/runtime/status', { cache: 'no-store' })
+                ]);
+                if (stateRes.status === 404) {
+                    setStatus(`Screen "${screenSlug}" not found.`, 'err');
                     puzzlesCache = [];
                     settingsCache = {};
                     roomCache = {};
                     renderTabs([]);
                     renderPuzzle(null);
                     syncControls();
+                    showSaver(true);
+                    hideApp();
+                    uiMode = 'saver';
                     return;
                 }
 
-                const data = await res.json();
+                const data = await stateRes.json();
+                const statusData = statusRes && statusRes.ok ? await statusRes.json() : null;
+                const flowData = flowRes && flowRes.ok ? await flowRes.json() : {};
+                const puzzleStatus = puzzleStatusRes && puzzleStatusRes.ok ? await puzzleStatusRes.json() : {};
                 puzzlesCache = data.puzzles || [];
                 settingsCache = data.settings || {};
-                roomCache = data.room || {};
-                screenTitle.textContent = data?.screen?.name || 'Player Screen';
+                roomCache = Object.assign({}, data.room || {}, statusData || {});
+                if (screenTitle) screenTitle.textContent = data?.screen?.name || "Player Input";
 
-                const activePuzzles = puzzlesCache.filter(p => p.active);
-                if (!activePuzzles.length) {
-                    setStatus('Kein aktives Rätsel mit External Check.', 'warn');
+                const running = roomCache.running !== false;
+                if (!running) {
+                    successHoldUntil = 0;
+                    if (settingsCache.screenSaver) {
+                        applySaver(settingsCache.screenSaver);
+                    }
+                    branchSolvedCache = new Set();
+                    recentSolved.clear();
+                    currentPuzzleId = null;
+                    lastRenderKey = '';
                     renderTabs([]);
                     renderPuzzle(null);
                     syncControls();
+                    showSaver(true);
+                    hideApp();
+                    uiMode = 'saver';
                     return;
                 }
 
+                if (settingsCache.screenSaver) {
+                    applySaver(settingsCache.screenSaver);
+                }
+
+                if (Date.now() < successHoldUntil) {
+                    return;
+                }
+
+                const activePuzzles = puzzlesCache.filter(p => p.active);
+                lastActivePuzzles = activePuzzles;
+                const solvedPruned = pruneSolved();
+                const solvedKeys = Array.from(recentSolved.keys()).sort();
+                const activeInfo = activePuzzles.map(p => ({
+                    id: p.id,
+                    name: p.name || '',
+                    active: !!p.active,
+                    expectedLength: p.expectedLength || null,
+                    valueDefined: p.valueDefined !== false,
+                    variableLabel: p.variableLabel || '',
+                    showAssignment: p.showAssignment !== false
+                }));
+                const renderKey = JSON.stringify({
+                    running,
+                    screenName: (screenTitle ? screenTitle.textContent : ''),
+                    solvedAll: !!roomCache.solvedAll,
+                    activeInfo,
+                    solvedKeys,
+                    screenSaver: settingsCache.screenSaver || '',
+                    victoryScreen: settingsCache.victoryScreen || ''
+                });
+                if (!solvedPruned && renderKey === lastRenderKey) {
+                    return;
+                }
+                lastRenderKey = renderKey;
+                if (!activePuzzles.length) {
+                    const visible = mergeVisiblePuzzles([]);
+                    if (visible.length) {
+                        showApp();
+                        showSaver(false);
+                        uiMode = 'input';
+                        if (!currentPuzzleId || !visible.some(p => p.id === currentPuzzleId)) {
+                            currentPuzzleId = visible[0].id;
+                        }
+                        renderTabs(visible);
+                        const current = visible.find(p => p.id === currentPuzzleId) || visible[0];
+                        renderPuzzle(current);
+                        syncControls();
+                    } else {
+                        renderTabs([]);
+                        renderPuzzle(null);
+                        syncControls();
+                        hideApp();
+                        showSaver(true);
+                        uiMode = 'saver';
+                    }
+                    return;
+                }
+
+                if (inputCard) inputCard.classList.remove('input-hidden');
                 setStatus('', '');
                 showApp();
+                showSaver(false);
+                uiMode = 'input';
 
-                if (!currentPuzzleId || !activePuzzles.some(p => p.id === currentPuzzleId)) {
+                const visiblePuzzles = mergeVisiblePuzzles(activePuzzles);
+                if (!currentPuzzleId || !visiblePuzzles.some(p => p.id === currentPuzzleId)) {
                     currentPuzzleId = activePuzzles[0].id;
                 }
-                renderTabs(activePuzzles);
-                const current = activePuzzles.find(p => p.id === currentPuzzleId) || activePuzzles[0];
+                renderTabs(visiblePuzzles);
+                const current = visiblePuzzles.find(p => p.id === currentPuzzleId) || activePuzzles[0];
                 renderPuzzle(current);
                 syncControls();
             } catch (e) {
-                setStatus('Netzwerkfehler.', 'err');
+                setStatus('Network error.', 'err');
                 renderTabs([]);
                 renderPuzzle(null);
                 syncControls();
+                showSaver(true);
+                hideApp();
+                uiMode = 'saver';
             }
         }
 
-        inputEl.addEventListener('input', syncControls);
+        async function pollRole() {
+            try {
+                const res = await fetch(roleUrl, { cache: 'no-store' });
+                if (!res.ok) return;
+                const data = await res.json();
+                if (!data.exists) return;
+                const role = (data.role || 'player').toLowerCase();
+                if (role === 'hint' || role === 'progress') {
+                    safeReplace('/' + encodeURIComponent(screenSlug));
+                }
+            } catch (e) {
+                // ignore transient network errors
+            }
+        }
+
+        gridEl.addEventListener('click', () => { inputEl.focus({ preventScroll: true }); });
+
+        inputEl.addEventListener('input', () => { enforceMaxLength(); syncControls(); });
         submitBtn.addEventListener('click', submitAnswer);
         clearBtn.addEventListener('click', () => { inputEl.value = ''; syncControls(); inputEl.focus({ preventScroll: true }); });
         inputEl.addEventListener('keydown', (e) => {
@@ -427,7 +846,38 @@ function showApp() {
         });
 
         pollState();
-        setInterval(pollState, 1500);
+        setInterval(pollState, 5000);
+        pollVictory();
+        setInterval(pollVictory, 5000);
+        pollRole();
+        setInterval(pollRole, 5000);
+
+        const eventSource = new EventSource('/api/events');
+        eventSource.addEventListener('update', (evt) => {
+            try {
+                const data = JSON.parse(evt.data || '{}');
+                const type = (data?.type || '').toString();
+                if (['puzzle-state', 'room-restart', 'branch-restart', 'hints'].includes(type)) {
+                    pollState();
+                    pollVictory();
+                }
+                if (type === 'room-config') {
+                    pollRole();
+                }
+            } catch (e) {}
+        });
     </script>
 </body>
 </html>
+
+
+
+
+
+
+
+
+
+
+
+

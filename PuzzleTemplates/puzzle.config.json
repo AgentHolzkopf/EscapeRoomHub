@@ -2,14 +2,16 @@
   "hubHost": "escapehub.local",
   "mqttBroker": "escapehub.local",
   "mqttPort": 1883,
-  "puzzleName": "Mirror_Puzzle",
+  "puzzleName": "Radio-Puzzle",
   "heartbeatIntervalMs": 2000,
   "debug": false,
+  "mediaServer": "http://escapehub.local",
+  "mediaLocalDir": "MediaStorage",
   "printData": true,
-  "outputs": {
-    "Password": {
-      "type": "string",
-      "data": "1234ht"
-    }
-  }
+  "needRestart": true,
+  "externalCheck": {
+    "active": false,
+    "value": ""
+  },
+  "outputs": {}
 }

@@ -21,6 +21,7 @@ canvas.processContextMenu = function() { return false; };
 LGraphNode.prototype.collapse = function() {}; 
 canvas.allow_dragcanvas = true; 
 canvas.canvas.tabIndex = 1; 
+canvas.render_canvas_border = false;
 
 LGraphCanvas.prototype.showLinkMenu = function(link, e) {
     var that = this;
@@ -69,12 +70,25 @@ function ensureUniqueScreenPath(pathStr, ownerId, usedSet) {
 const normalizeScreensData = (arr) => {
     if(!Array.isArray(arr)) return [];
     const used = new Set();
+    const normalizeRole = (role) => {
+        if (role === "hint") return "hint";
+        if (role === "progress") return "progress";
+        return "player";
+    };
+    const normalizeProgressStyle = (style) => {
+        const key = String(style || "").trim().toLowerCase();
+        if (key === "simple" || key === "progress-tree" || key === "entire-tree") return key;
+        return "simple";
+    };
     return arr.map((s,idx)=>{
         const id = typeof s.id === "number" ? s.id : parseInt(s.id || (idx+1),10) || (idx+1);
         return {
             id,
             name: s.name || `Screen ${(idx+1)}`,
-            role: s.role === "hint" ? "hint" : "player",
+            role: normalizeRole(s.role),
+            progressStyle: normalizeProgressStyle(s.progressStyle),
+            branchIds: Array.isArray(s.branchIds) ? s.branchIds.map(v => parseInt(v, 10)).filter(v => Number.isFinite(v)) : [],
+            showRunningTime: !!s.showRunningTime,
             path: ensureUniqueScreenPath(s.path || s.slug || `screen-${idx+1}`, id, used)
         };
     });
@@ -103,6 +117,12 @@ const autoSave = () => {
     if(!currentRoomName) return; 
     updateStatus("Change...", "#aaa"); clearTimeout(saveTimeout); saveTimeout = setTimeout(saveGraphToBackend, 1000);
 };
+
+function getPuzzleDisplayName(node, baseName) {
+    if (!node) return baseName || "";
+    const name = (baseName || node.properties?.Name || node.title || `Puzzle ${node.id}`).toString();
+    return name;
+}
 
 // --- ROOM MANAGER UI ---
 const modal = document.getElementById("room-manager-overlay");
@@ -247,16 +267,33 @@ function StartNode() {
     this.title = "Start"; 
     this.color = "#2C3E50"; 
     this.bgcolor = "#34495E"; 
+    this.properties = { pairId: null };
     this.removable = false; 
     this.clonable = false; 
     this.block_delete = true; 
 }
 StartNode.title = "Start"; 
 StartNode.prototype.onConfigure = function() { 
-    this.removable = false; 
-    this.clonable = false; 
-    this.block_delete = true; 
+    const hasPair = Number(this?.properties?.pairId) > 0;
+    this.removable = !!hasPair;
+    this.clonable = !!hasPair;
+    this.block_delete = !hasPair;
 }; 
+StartNode.prototype.onDrawTitleText = function(ctx, title_height, size, scale, font, selected) {
+    const pairId = Number(this?.properties?.pairId);
+    if (!(pairId > 0)) return;
+    if (getBranchCount() <= 1) return;
+    ctx.save();
+    ctx.font = font;
+    ctx.textAlign = "right";
+    ctx.textBaseline = "alphabetic";
+    ctx.fillStyle = selected ? LiteGraph.NODE_SELECTED_TITLE_COLOR : (this.constructor.title_text_color || (canvas && canvas.node_title_color) || "#999");
+    ctx.fillText(String(pairId), (size ? size[0] : 140) - 8, LiteGraph.NODE_TITLE_TEXT_Y - title_height);
+    ctx.restore();
+};
+StartNode.prototype.onSelected = function() {
+    selectBranchPairForNode(this);
+};
 LiteGraph.registerNodeType("escape/Start", StartNode);
 
 function EndNode() { 
@@ -264,27 +301,83 @@ function EndNode() {
     this.title = "End"; 
     this.color = "#7f3030"; 
     this.bgcolor = "#a44141"; 
-    this.properties = {autoRestart:false, restartDelay:5}; 
+    this.properties = { autoRestart:false, restartDelay:5, pairId: null }; 
     this.removable = false; 
     this.clonable = false; 
     this.block_delete = true; 
 }
 EndNode.title = "End"; 
 EndNode.prototype.onConfigure = function() { 
-    this.removable = false; 
-    this.clonable = false; 
-    this.block_delete = true; 
+    const hasPair = Number(this?.properties?.pairId) > 0;
+    this.removable = !!hasPair;
+    this.clonable = !!hasPair;
+    this.block_delete = !hasPair;
+    const finishIdx = this.findInputSlot("Finish");
+    if (finishIdx !== -1 && this.inputs && this.inputs[finishIdx]) {
+        this.inputs[finishIdx].multiple = true;
+        this.inputs[finishIdx].nameLocked = true;
+    }
 }; 
+EndNode.prototype.onDrawTitleText = function(ctx, title_height, size, scale, font, selected) {
+    const pairId = Number(this?.properties?.pairId);
+    if (!(pairId > 0)) return;
+    if (getBranchCount() <= 1) return;
+    ctx.save();
+    ctx.font = font;
+    ctx.textAlign = "right";
+    ctx.textBaseline = "alphabetic";
+    ctx.fillStyle = selected ? LiteGraph.NODE_SELECTED_TITLE_COLOR : (this.constructor.title_text_color || (canvas && canvas.node_title_color) || "#999");
+    ctx.fillText(String(pairId), (size ? size[0] : 140) - 8, LiteGraph.NODE_TITLE_TEXT_Y - title_height);
+    ctx.restore();
+};
+EndNode.prototype.onSelected = function() {
+    selectBranchPairForNode(this);
+};
 LiteGraph.registerNodeType("escape/End", EndNode);
 
 // --- PUZZLE NODE ---
+function truncateSlotLabel(name){
+    if(!name) return "";
+    const str = String(name);
+    if(str === "Trigger") return str;
+    return str.length > 6 ? `${str.slice(0,6)}..` : str;
+}
+function updateSlotLabels(node){
+    if(!node) return;
+    (node.inputs || []).forEach(slot => { if(slot) slot.label = truncateSlotLabel(slot.name); });
+    (node.outputs || []).forEach(slot => { if(slot) slot.label = truncateSlotLabel(slot.name); });
+}
+function syncPuzzleTriggerInput(node){
+    if(!node || node.type !== "escape/Puzzle") return;
+    const triggerIndex = node.findInputSlot("Trigger");
+    const hasTrigger = triggerIndex !== -1;
+    if(node.properties?.isStartNode){
+        if(hasTrigger) node.removeInput(triggerIndex);
+    } else {
+        if(!hasTrigger){
+            node.addInput("Trigger", LiteGraph.ACTION);
+            if(node.inputs && node.inputs.length > 1){
+                const trigger = node.inputs.pop();
+                node.inputs.unshift(trigger);
+            }
+        }
+    }
+    updateSlotLabels(node);
+}
 function PuzzleNode() { 
     this.addInput("Trigger", LiteGraph.ACTION); 
     this.addOutput("Done", LiteGraph.ACTION); 
     this.properties={Name:"New Puzzle", selectedDeviceID:"", isStartNode:false, isAnalog: false, externalCheck: false, externalScreenId:"", externalCheckVariable:"", externalShowAssignment:true, hintEnabled:false, hintScreenId:"", hints: [], manualHintTrigger:false, automaticHintTrigger:true, showHintAssignment:true}; 
     this.title="Puzzle"; 
+    this.size = [LiteGraph.NODE_WIDTH, this.size ? this.size[1] : 60];
+    updateSlotLabels(this);
 }
 PuzzleNode.title="Puzzle"; 
+PuzzleNode.prototype.computeSize = function(out){
+    const size = LGraphNode.prototype.computeSize.call(this, out);
+    size[0] = LiteGraph.NODE_WIDTH;
+    return size;
+};
 
 // Manage optional external slot cleanup (keine neuen Outputs mehr anlegen)
 PuzzleNode.prototype.updateSlots = function() {
@@ -294,10 +387,18 @@ PuzzleNode.prototype.updateSlots = function() {
     if (!this.properties.externalCheck && slotIndex !== -1) {
         this.removeOutput(slotIndex);
     }
+    updateSlotLabels(this);
 };
 
 PuzzleNode.prototype.onConfigure = function() {
     this.updateSlots(); // Slots wiederherstellen beim Laden
+    syncPuzzleTriggerInput(this);
+    if(this.properties?.isAnalog){
+        removeNonActionInputsForAnalog(this);
+    }
+    if (this.size && this.size.length) {
+        this.size[0] = LiteGraph.NODE_WIDTH;
+    }
 };
 
 // Custom Draw fÃƒÂ¼r Rahmen
@@ -333,14 +434,127 @@ TabletNode.title = "Tablet Input";
 LiteGraph.registerNodeType("escape/Tablet", TabletNode);
 
 
-function LogicNode() { this.properties={logicType:"AND"}; this.addOutput("Done",LiteGraph.ACTION); this.addInput("Input 1",LiteGraph.ACTION,{nameLocked:true}); this.addInput("Input 2",LiteGraph.ACTION,{nameLocked:true}); this.title="AND"; this.color="#4E342E"; this.bgcolor="#6D4C41"; }
-LogicNode.title="Logic"; LogicNode.prototype.onPropertyChanged = function(n,v){ if(n==="logicType"){this.properties.logicType=v; this.title=v;} }; LiteGraph.registerNodeType("escape/Logic", LogicNode);
+function LogicNode() { this.properties={logicType:"AND"}; this.addOutput("Done",LiteGraph.ACTION); this.addInput("Trigger",LiteGraph.ACTION,{nameLocked:true,multiple:true}); this.title="AND"; this.color="#4E342E"; this.bgcolor="#6D4C41"; updateSlotLabels(this); }
+LogicNode.title="Logic";
+LogicNode.prototype.onPropertyChanged = function(n,v){ if(n==="logicType"){this.properties.logicType=v; this.title=v;} };
+LogicNode.prototype.onConfigure = function() { normalizeLogicNodeInputs(this); };
+LiteGraph.registerNodeType("escape/Logic", LogicNode);
+
+function isActionType(t){ return t===LiteGraph.ACTION || t===LiteGraph.EVENT || t==="action" || t==="event" || t===-1; }
+function isQueueLogic(node){ return node && node.type === "escape/Logic" && node.properties?.logicType === "QUEUE"; }
+function removeNonActionInputsForAnalog(node){
+    if(!node || !Array.isArray(node.inputs)) return;
+    for(let i = node.inputs.length - 1; i >= 0; i -= 1){
+        const inp = node.inputs[i];
+        if(!inp || isActionType(inp.type)) continue;
+        const name = inp.name;
+        node.removeInput(i);
+        if(name) deleteInputFallbackEntry(node, name);
+    }
+    updateSlotLabels(node);
+}
+function getQueueGroupInputs(node){
+    return (node.inputs || []).filter(inp => inp && !isActionType(inp.type));
+}
+function syncQueueGroupOutputs(node){
+    if(!isQueueLogic(node)) return;
+    node.outputs = node.outputs || [];
+    let actionIdx = node.outputs.findIndex(o => o && isActionType(o.type));
+    if(actionIdx === -1){
+        node.addOutput("Done", LiteGraph.ACTION, { nameLocked:true, queueAction:true });
+        actionIdx = node.outputs.length - 1;
+    } else {
+        node.outputs[actionIdx].name = "Done";
+        node.outputs[actionIdx].type = LiteGraph.ACTION;
+        node.outputs[actionIdx].queueAction = true;
+    }
+    const groupInputs = getQueueGroupInputs(node);
+    const groupOutputIndices = node.outputs
+        .map((o, idx) => ({ o, idx }))
+        .filter(item => item.idx !== actionIdx && item.o && !isActionType(item.o.type))
+        .map(item => item.idx);
+    groupInputs.forEach((inp, idx) => {
+        if (idx < groupOutputIndices.length) {
+            const out = node.outputs[groupOutputIndices[idx]];
+            out.name = inp.name;
+            out.type = inp.type;
+            out.queueGroup = true;
+        } else {
+            node.addOutput(inp.name || `Group ${idx + 1}`, inp.type, { queueGroup:true });
+        }
+    });
+    for(let i = groupOutputIndices.length - 1; i >= groupInputs.length; i -= 1){
+        node.removeOutput(groupOutputIndices[i]);
+    }
+    node.setDirtyCanvas(true, true);
+}
+function ensureQueueInputs(node){
+    if(!isQueueLogic(node)) return;
+    const links = node.graph ? node.graph.links : (graph && graph.links);
+    node.inputs = node.inputs || [];
+    const triggerInputs = node.inputs.filter(inp => inp && isActionType(inp.type));
+    if(!triggerInputs.length){
+        node.addInput("Trigger", LiteGraph.ACTION, { nameLocked:true, queueTrigger:true, multiple:true });
+    }
+    node.inputs.forEach(inp => {
+        if(!inp) return;
+        if(isActionType(inp.type)){
+            inp.name = "Trigger";
+            inp.type = LiteGraph.ACTION;
+            inp.nameLocked = true;
+            inp.multiple = true;
+        } else {
+            inp.multiple = true;
+        }
+    });
+    const mainIndex = node.inputs.findIndex(s => s && isActionType(s.type));
+    const mainInput = mainIndex >= 0 ? node.inputs[mainIndex] : null;
+    const mainLinks = [];
+    if (mainInput) {
+        if (Array.isArray(mainInput.links)) mainLinks.push(...mainInput.links);
+        else if (mainInput.link != null) mainLinks.push(mainInput.link);
+    }
+    for(let i = node.inputs.length - 1; i >= 0; i -= 1){
+        const inp = node.inputs[i];
+        if(inp && isActionType(inp.type) && i !== mainIndex){
+            const extraLinks = [];
+            if (Array.isArray(inp.links)) extraLinks.push(...inp.links);
+            else if (inp.link != null) extraLinks.push(inp.link);
+            inp.link = null;
+            inp.links = null;
+            extraLinks.forEach(id => {
+                if (!links || !links[id]) return;
+                links[id].target_slot = mainIndex;
+                if (!mainLinks.includes(id)) mainLinks.push(id);
+            });
+            node.removeInput(i);
+        }
+    }
+    if (mainInput) {
+        mainInput.links = mainLinks.length ? mainLinks : null;
+        mainInput.link = mainLinks.length ? mainLinks[0] : null;
+    }
+    syncQueueGroupOutputs(node);
+    updateSlotLabels(node);
+}
+function normalizeLogicNodeInputs(node){
+    if(!node || node.type!=="escape/Logic") return;
+    const logicType = (node.properties?.logicType || "AND").toUpperCase();
+    if(logicType === "QUEUE"){
+        ensureQueueInputs(node);
+        return;
+    }
+    node.inputs = (node.inputs || []).filter(inp => inp && isActionType(inp.type));
+    node.outputs = (node.outputs || []).filter(out => out && isActionType(out.type));
+    ensureLogicInputs(node);
+}
 
 
 // --- UI LOGIK ---
 
 const puzzleList=document.getElementById("puzzle-list"), screenList=document.getElementById("screen-list"), propertiesSidebar=document.getElementById("properties-sidebar"), ioControlsContainer=document.getElementById('properties-form'), logWindow=document.getElementById("log-window"), logContent=document.getElementById("log-content");
 const toggleLogBtn = document.getElementById("toggle-log-btn");
+const clearLogBtn = document.getElementById("clear-log-btn");
 toggleLogBtn?.addEventListener("click", e=>{ if(logWindow.classList.contains("minimized")){ logWindow.classList.remove("minimized");logWindow.classList.add("expanded");e.target.textContent="\u25BC";}else{logWindow.classList.add("minimized");logWindow.classList.remove("expanded");e.target.textContent="\u25B2";} });
 if (toggleLogBtn) toggleLogBtn.textContent = logWindow?.classList.contains("minimized") ? "\u25B2" : "\u25BC";
 let editorLogs = [];
@@ -363,7 +577,7 @@ function renderEditorLogs() {
     });
 
     if (!filtered.length) {
-        logContent.innerHTML = "<div style='color:#555; padding:5px; font-style:italic;'>Keine Logs vorhanden (System wartet...)</div>";
+        logContent.innerHTML = "<div style='color:#555; padding:5px; font-style:italic;'>No logs available (system idle...)</div>";
         return;
     }
 
@@ -372,7 +586,11 @@ function renderEditorLogs() {
     filtered.forEach(log => {
         const div = document.createElement("div");
         div.className = `log-entry log-${log.type}`;
-        div.textContent = `[${log.timestamp}] ${log.msg}`;
+        let metaText = "";
+        if (log?.meta && log.meta.payload) {
+            try { metaText = " | " + JSON.stringify(log.meta.payload); } catch (e) {}
+        }
+        div.textContent = `[${log.timestamp}] ${log.msg}${metaText}`;
         frag.appendChild(div);
     });
     logContent.appendChild(frag);
@@ -391,17 +609,206 @@ function bindLogFilters() {
     });
 }
 bindLogFilters();
+clearLogBtn?.addEventListener("click", () => {
+    fetch('/api/logs/clear', { method: 'POST' })
+        .then(() => {
+            editorLogs = [];
+            renderEditorLogs();
+        })
+        .catch(() => {});
+});
 function updateSidebarHighlight(node){ document.querySelectorAll(".puzzle-item:not(.screen-item)").forEach(el=>el.classList.remove("selected")); if(node&&node.type==="escape/Puzzle"){ const item=document.querySelector(`.puzzle-item[data-node-id="${node.id}"]`); if(item){item.classList.add("selected");item.scrollIntoView({behavior:"smooth",block:"nearest"});} updateScreenHighlight(null); } }
 function updateScreenHighlight(screenId){ document.querySelectorAll(".screen-item").forEach(el=>el.classList.remove("selected")); if(screenId!==null&&screenId!==undefined){ const item=document.querySelector(`.screen-item[data-screen-id="${screenId}"]`); if(item){item.classList.add("selected"); item.scrollIntoView({behavior:"smooth",block:"nearest"});} } }
-function createSidebarListItem(node,text){ const newItem=document.createElement("li"); newItem.className="puzzle-item"; newItem.dataset.nodeId=node.id; newItem.innerHTML=`<span class="puzzle-item-text">${text}</span><span class="puzzle-status status-offline" id="status-${node.id}">offline</span>`; newItem.addEventListener("click",e=>{ e.preventDefault(); if(document.activeElement)document.activeElement.blur(); const nodeInGraph=graph.getNodeById(newItem.dataset.nodeId); if(nodeInGraph){ canvas.deselectAllNodes(); canvas.selectNode(nodeInGraph,false); canvas.centerOnNode(nodeInGraph); canvas.canvas.focus(); updateSidebarHighlight(nodeInGraph); updatePropertiesPanel(nodeInGraph); } }); puzzleList.appendChild(newItem); }
+function createSidebarListItem(node,text){
+    const newItem=document.createElement("li");
+    newItem.className="puzzle-item";
+    newItem.dataset.nodeId=node.id;
+    const displayName = getPuzzleDisplayName(node, text);
+    newItem.innerHTML=`<span class="puzzle-item-text">${displayName}</span><span class="puzzle-status status-offline" id="status-${node.id}">offline</span>`;
+    newItem.addEventListener("click",e=>{ e.preventDefault(); if(document.activeElement)document.activeElement.blur(); const nodeInGraph=graph.getNodeById(newItem.dataset.nodeId); if(nodeInGraph){ canvas.deselectAllNodes(); canvas.selectNode(nodeInGraph,false); canvas.centerOnNode(nodeInGraph); canvas.canvas.focus(); updateSidebarHighlight(nodeInGraph); updatePropertiesPanel(nodeInGraph); } });
+    puzzleList.appendChild(newItem);
+}
 function createScreenListItem(screen){ const newItem=document.createElement("li"); newItem.className="puzzle-item screen-item"; newItem.dataset.screenId=screen.id; newItem.innerHTML=`<span class="puzzle-item-text">${screen.name}</span>`; newItem.addEventListener("click",e=>{ e.preventDefault(); if(document.activeElement)document.activeElement.blur(); selectScreen(screen.id); }); newItem.addEventListener("keydown",e=>{ if(e.key==='Delete'){ deleteScreen(screen.id); } }); newItem.tabIndex=0; screenList.appendChild(newItem); }
 function getCenterPosition(){ const rect=canvas.canvas.getBoundingClientRect(); const centerX=rect.width/2; const centerY=rect.height/2; const ds=canvas.ds; const x=(centerX/ds.scale)-ds.offset[0]; const y=(centerY/ds.scale)-ds.offset[1]; const jitter=()=>(Math.random()*40-20); return[x+jitter(),y+jitter()]; }
+function getNextBranchPairId() {
+    const starts = graph.findNodesByType("escape/Start") || [];
+    const used = new Set();
+    starts.forEach(node => {
+        const id = Number(node?.properties?.pairId);
+        if (Number.isFinite(id) && id > 0) {
+            used.add(id);
+        }
+    });
+    let next = 1;
+    while (used.has(next)) next += 1;
+    return next;
+}
+function assignMissingBranchIds() {
+    const starts = graph.findNodesByType("escape/Start") || [];
+    const used = new Set();
+    starts.forEach(node => {
+        const id = Number(node?.properties?.pairId);
+        if (Number.isFinite(id) && id > 0) {
+            used.add(id);
+        }
+    });
+    let next = 1;
+    const assign = (node) => {
+        const existing = Number(node?.properties?.pairId);
+        if (Number.isFinite(existing) && existing > 0) return;
+        while (used.has(next)) next += 1;
+        if (!node.properties) node.properties = {};
+        node.properties.pairId = next;
+        used.add(next);
+        next += 1;
+    };
+    starts.forEach(assign);
+}
+
+let activeBranchPairId = null;
+let activeBranchSelectedNodeId = null;
+function getBranchCount() {
+    const starts = graph.findNodesByType("escape/Start") || [];
+    return starts.length;
+}
+function getAllBranchNodes() {
+    const starts = graph.findNodesByType("escape/Start") || [];
+    const ends = graph.findNodesByType("escape/End") || [];
+    return starts.concat(ends);
+}
+function getBranchPairNodes(pairId) {
+    if (!Number.isFinite(Number(pairId))) return [];
+    const starts = graph.findNodesByType("escape/Start") || [];
+    const ends = graph.findNodesByType("escape/End") || [];
+    const nodes = [];
+    starts.forEach(node => {
+        if (Number(node?.properties?.pairId) === Number(pairId)) nodes.push(node);
+    });
+    ends.forEach(node => {
+        if (Number(node?.properties?.pairId) === Number(pairId)) nodes.push(node);
+    });
+    return nodes;
+}
+function selectBranchPairForNode(node) {
+    if (!node) return;
+    const pairId = Number(node?.properties?.pairId);
+    if (!(pairId > 0)) return;
+    setBranchPairHighlight(pairId, node.id);
+    activeBranchPairId = pairId;
+    activeBranchSelectedNodeId = node.id;
+    graph.setDirtyCanvas(true, true);
+}
+function deleteBranchPair(pairId) {
+    const nodes = getBranchPairNodes(pairId);
+    if (!nodes.length) return false;
+    nodes.forEach(node => graph.remove(node));
+    if (Number(activeBranchPairId) === Number(pairId)) {
+        clearBranchPairSelection();
+    }
+    reindexBranchPairs();
+    refreshProgressBranchesForSelectedScreen();
+    applyBranchDeleteRules();
+    autoSave();
+    return true;
+}
+function setBranchPairHighlight(pairId, selectedNodeId) {
+    const branchCount = getBranchCount();
+    const allNodes = getAllBranchNodes();
+    allNodes.forEach(node => { node._pairHighlight = false; });
+    if (branchCount <= 1) return;
+    const nodes = getBranchPairNodes(pairId);
+    nodes.forEach(node => {
+        node._pairHighlight = node.id !== selectedNodeId;
+    });
+}
+function clearBranchPairSelection() {
+    const allNodes = getAllBranchNodes();
+    allNodes.forEach(node => { node._pairHighlight = false; });
+    if (activeBranchPairId !== null || activeBranchSelectedNodeId !== null) {
+        activeBranchPairId = null;
+        activeBranchSelectedNodeId = null;
+    }
+    graph.setDirtyCanvas(true, true);
+}
+function reindexBranchPairs() {
+    const starts = graph.findNodesByType("escape/Start") || [];
+    const ends = graph.findNodesByType("escape/End") || [];
+    const sortedStarts = starts.slice().sort((a, b) => (a.id || 0) - (b.id || 0));
+    const sortedEnds = ends.slice().sort((a, b) => (a.id || 0) - (b.id || 0));
+    const count = Math.min(sortedStarts.length, sortedEnds.length);
+    let nextId = 1;
+    for (let i = 0; i < count; i += 1) {
+        const start = sortedStarts[i];
+        const end = sortedEnds[i];
+        if (!start.properties) start.properties = {};
+        if (!end.properties) end.properties = {};
+        start.properties.pairId = nextId;
+        end.properties.pairId = nextId;
+        nextId += 1;
+    }
+    for (let i = count; i < sortedStarts.length; i += 1) {
+        const node = sortedStarts[i];
+        if (!node.properties) node.properties = {};
+        node.properties.pairId = nextId;
+        nextId += 1;
+    }
+    for (let i = count; i < sortedEnds.length; i += 1) {
+        const node = sortedEnds[i];
+        if (!node.properties) node.properties = {};
+        node.properties.pairId = nextId;
+        nextId += 1;
+    }
+}
+function applyBranchDeleteRules() {
+    const branchCount = getBranchCount();
+    const allowDelete = branchCount > 1;
+    const nodes = getAllBranchNodes();
+    nodes.forEach(node => {
+        const hasPair = Number(node?.properties?.pairId) > 0;
+        const canDelete = allowDelete && hasPair;
+        node.removable = !!canDelete;
+        node.clonable = !!canDelete;
+        node.block_delete = !canDelete;
+    });
+}
 
 document.getElementById("add-puzzle-btn").addEventListener("click",()=>{ const node=LiteGraph.createNode("escape/Puzzle"); node.properties.Name="Puzzle "+(graph.findNodesByType("escape/Puzzle").length+1); node.title=node.properties.Name; node.pos=getCenterPosition(); graph.add(node); createSidebarListItem(node,node.title); canvas.deselectAllNodes(); canvas.selectNode(node); canvas.canvas.focus(); updateSidebarHighlight(node); autoSave(); });
 document.getElementById("add-screen-btn").addEventListener("click",()=>{ const screenName="Screen "+(screens.length+1); const newId = nextScreenId++; const rawPath = screenName.replace(/\\s+/g,'-'); const newScreen={id:newId,name:screenName,role:"player",path:ensureUniqueScreenPath(rawPath, newId)}; screens.push(newScreen); renderScreenList(); selectScreen(newScreen.id); refreshExternalSelectionForSelectedPuzzle(); refreshHintSelectionForSelectedPuzzle(); autoSave(); });
 document.getElementById("add-logic-btn").addEventListener("click",()=>{ const node=LiteGraph.createNode("escape/Logic"); node.pos=getCenterPosition(); graph.add(node); canvas.deselectAllNodes(); canvas.selectNode(node); canvas.canvas.focus(); autoSave(); });
+document.getElementById("add-branch-btn").addEventListener("click",()=>{
+    const start = LiteGraph.createNode("escape/Start");
+    const end = LiteGraph.createNode("escape/End");
+    if(!start || !end){ return; }
+    const pairId = getNextBranchPairId();
+    start.properties = start.properties || {};
+    end.properties = end.properties || {};
+    start.properties.pairId = pairId;
+    end.properties.pairId = pairId;
+    start.block_delete = false;
+    end.block_delete = false;
+    start.removable = true;
+    end.removable = true;
+    const center = getCenterPosition();
+    start.pos = [center[0] - 180, center[1]];
+    end.pos = [center[0] + 180, center[1]];
+    graph.add(start);
+    graph.add(end);
+    canvas.deselectAllNodes();
+    canvas.selectNode(start);
+    canvas.canvas.focus();
+    reindexBranchPairs();
+    refreshProgressBranchesForSelectedScreen();
+    applyBranchDeleteRules();
+    autoSave();
+});
 
-function rebuildSidebarList(){ puzzleList.innerHTML=""; const puzzleNodes=graph.findNodesByType("escape/Puzzle"); if(puzzleNodes)puzzleNodes.forEach(node=>createSidebarListItem(node,node.title)); const selected=Object.values(canvas.selected_nodes||{})[0]; updateSidebarHighlight(selected); }
+function rebuildSidebarList(){
+    puzzleList.innerHTML="";
+    const puzzleNodes=graph.findNodesByType("escape/Puzzle");
+    if(puzzleNodes)puzzleNodes.forEach(node=>createSidebarListItem(node,node.title));
+    const selected=Object.values(canvas.selected_nodes||{})[0];
+    updateSidebarHighlight(selected);
+}
 function renderScreenList(){ if(!screenList)return; screenList.innerHTML=""; screens.forEach(scr=>createScreenListItem(scr)); updateScreenHighlight(selectedScreenId); }
 function selectScreen(id){ const screen=screens.find(s=>s.id===id); if(!screen)return; selectedNode=null; suppressSelectionChange=true; canvas.deselectAllNodes(); showScreenProperties(screen); }
 function getInputCapableScreens(){ return screens.filter(s => (s.role || "player") === "player"); }
@@ -415,8 +822,42 @@ document.addEventListener("keydown", (e)=>{
     if(active && (active.tagName === "INPUT" || active.tagName === "TEXTAREA" || active.isContentEditable)) return;
     if(selectedScreenId !== null){
         deleteScreen(selectedScreenId);
+        return;
+    }
+    const selected = Object.values(canvas.selected_nodes || {});
+    const branchNode = selected.find(n => n && (n.type === "escape/Start" || n.type === "escape/End"));
+    if (branchNode) {
+        const pairId = Number(branchNode?.properties?.pairId);
+        if (pairId > 0) {
+            deleteBranchPair(pairId);
+            e.preventDefault();
+            e.stopPropagation();
+        }
+        return;
+    }
+    if (activeBranchPairId > 0) {
+        deleteBranchPair(activeBranchPairId);
+        e.preventDefault();
+        e.stopPropagation();
     }
 });
+const originalDeleteSelectedNodes = canvas.deleteSelectedNodes.bind(canvas);
+canvas.deleteSelectedNodes = function() {
+    const selected = Object.values(this.selected_nodes || {});
+    const branchNode = selected.find(n => n && (n.type === "escape/Start" || n.type === "escape/End"));
+    if (branchNode) {
+        const pairId = Number(branchNode?.properties?.pairId);
+        if (pairId > 0) {
+            deleteBranchPair(pairId);
+            return;
+        }
+    }
+    if (activeBranchPairId > 0) {
+        deleteBranchPair(activeBranchPairId);
+        return;
+    }
+    originalDeleteSelectedNodes();
+};
 
 let selectedNode=null; let selectedScreenId=null; let suppressSelectionChange=false; let lastKnownDevicesStr="";
 let hintModalNode=null;
@@ -444,13 +885,33 @@ const ui={
     hintManualToggle:document.getElementById("hint-manual-toggle"),
     hintShowAssignmentToggle:document.getElementById("hint-show-assignment-toggle"),
     hintList:document.getElementById("hint-list"),
+
+    fallbackModal:document.getElementById("fallback-modal"),
+    fallbackModalTitle:document.getElementById("fallback-modal-title"),
+    fallbackModalClose:document.getElementById("fallback-modal-close"),
+    fallbackInputName:document.getElementById("fallback-input-name"),
+    fallbackInputType:document.getElementById("fallback-input-type"),
+    fallbackInputValue:document.getElementById("fallback-input-value"),
+    fallbackInputError:document.getElementById("fallback-input-error"),
+    fallbackSaveBtn:document.getElementById("fallback-save-btn"),
+    fallbackClearBtn:document.getElementById("fallback-clear-btn"),
     
     tabletCode:document.getElementById("prop-tablet-code"), // NEU
     tabletMsg:document.getElementById("prop-tablet-msg"), // NEU
     screenRole:document.getElementById("prop-screen-role"),
     screenPath:document.getElementById("prop-screen-path"),
+    progressStyle:document.getElementById("prop-progress-style"),
+    progressBranches:document.getElementById("progress-branches-list"),
+    progressRunningTime:document.getElementById("prop-progress-running-time"),
+    progressStyleRow:document.getElementById("progress-style-row"),
+    progressBranchesRow:document.getElementById("progress-branches-row"),
+    progressRunningTimeRow:document.getElementById("progress-running-time-row"),
 
     logicType:document.getElementById("prop-logic-type"), 
+    queueDelay:document.getElementById("prop-queue-delay"),
+    queueDelayRow:document.getElementById("queue-delay-row"),
+    queueActivateAll:document.getElementById("prop-queue-activate-all"),
+    queueActivateAllRow:document.getElementById("queue-activate-all-row"),
     autoRestart:document.getElementById("prop-auto-restart"), 
     restartDelay:document.getElementById("prop-restart-delay"), 
     inputs:document.getElementById("inputs-list"), 
@@ -458,7 +919,10 @@ const ui={
     addInBtn:document.getElementById("add-input-btn"), 
     addOutBtn:document.getElementById("add-output-btn"), 
     inType:document.getElementById("add-input-type"), 
-    outType:document.getElementById("add-output-type") 
+    outType:document.getElementById("add-output-type"),
+    internalList:document.getElementById("internal-list"),
+    addInternalBtn:document.getElementById("add-internal-btn"),
+    internalType:document.getElementById("add-internal-type")
 };
 
 ui.dropdownTrigger.addEventListener("click",e=>{ if(ui.dropdown.classList.contains("dropdown-disabled")) return; ui.dropdownMenu.classList.toggle("open"); e.stopPropagation(); });
@@ -491,11 +955,11 @@ function ensureHints(node){
     }
     node.properties.hints = node.properties.hints.map(h=>{
         if(typeof h === "string"){
-            return { text: h, delayFromStart: 0, delayAfterPrev: 0 };
+            return { text: h, delayFromStart: 60, delayAfterPrev: 0 };
         }
         return {
             text: h.text || "",
-            delayFromStart: Number.isFinite(h.delayFromStart) ? h.delayFromStart : 0,
+            delayFromStart: Number.isFinite(h.delayFromStart) ? h.delayFromStart : 60,
             delayAfterPrev: Number.isFinite(h.delayAfterPrev) ? h.delayAfterPrev : 0
         };
     });
@@ -512,20 +976,226 @@ function ensureHintTriggerDefaults(node){
     }
 }
 
+function ensureInputFallbacks(node){
+    if(!node || !node.properties) return;
+    if(!node.properties.inputFallbacks || typeof node.properties.inputFallbacks !== "object" || Array.isArray(node.properties.inputFallbacks)){
+        node.properties.inputFallbacks = {};
+    }
+}
+
+function ensureInternalVariables(node){
+    if(!node || !node.properties) return;
+    if(!node.properties.internalVariables || typeof node.properties.internalVariables !== "object" || Array.isArray(node.properties.internalVariables)){
+        node.properties.internalVariables = {};
+    }
+}
+
+function normalizeFallbackType(type){
+    const t = (type ?? "").toString().toLowerCase();
+    if(t === "string" || t === "number" || t === "boolean" || t === "media") return t;
+    return "";
+}
+
+function isFallbackCapableType(type){
+    return !!normalizeFallbackType(type);
+}
+
+function parseInternalValue(raw, type){
+    const t = normalizeFallbackType(type);
+    const val = (raw ?? "").toString().trim();
+    if(!val) return null;
+    if(t === "number"){
+        if(!/^-?\d+(?:\.\d+)?$/.test(val)) return null;
+        const num = parseFloat(val);
+        return Number.isFinite(num) ? num : null;
+    }
+    if(t === "boolean"){
+        const lowered = val.toLowerCase();
+        if(["true","1","yes","on"].includes(lowered)) return true;
+        if(["false","0","no","off"].includes(lowered)) return false;
+        return null;
+    }
+    return val;
+}
+
+function getInternalValueEntry(node, name){
+    ensureInternalVariables(node);
+    if(!node || !node.properties || !node.properties.internalVariables) return null;
+    if(!Object.prototype.hasOwnProperty.call(node.properties.internalVariables, name)) return null;
+    return node.properties.internalVariables[name];
+}
+
+function setInternalValueEntry(node, name, entry){
+    ensureInternalVariables(node);
+    node.properties.internalVariables[name] = entry;
+}
+
+function deleteInternalValueEntry(node, name){
+    ensureInternalVariables(node);
+    delete node.properties.internalVariables[name];
+}
+
+function getInputFallbackEntry(node, name){
+    ensureInputFallbacks(node);
+    if(!node || !node.properties || !node.properties.inputFallbacks) return null;
+    if(!Object.prototype.hasOwnProperty.call(node.properties.inputFallbacks, name)) return null;
+    return node.properties.inputFallbacks[name];
+}
+
+function setInputFallbackEntry(node, name, entry){
+    ensureInputFallbacks(node);
+    node.properties.inputFallbacks[name] = entry;
+}
+
+function deleteInputFallbackEntry(node, name){
+    ensureInputFallbacks(node);
+    delete node.properties.inputFallbacks[name];
+}
+
+function renameInputFallbackEntry(node, oldName, newName){
+    if(!node || !oldName || !newName || oldName === newName) return;
+    const entry = getInputFallbackEntry(node, oldName);
+    if(entry){
+        deleteInputFallbackEntry(node, oldName);
+        setInputFallbackEntry(node, newName, entry);
+    }
+}
+
+function ensureOutputValues(node){
+    if(!node || !node.properties) return;
+    if(!node.properties.outputValues || typeof node.properties.outputValues !== "object" || Array.isArray(node.properties.outputValues)){
+        node.properties.outputValues = {};
+    }
+}
+
+function getOutputValueEntry(node, name){
+    ensureOutputValues(node);
+    if(!node || !node.properties || !node.properties.outputValues) return null;
+    if(!Object.prototype.hasOwnProperty.call(node.properties.outputValues, name)) return null;
+    return node.properties.outputValues[name];
+}
+
+function setOutputValueEntry(node, name, entry){
+    ensureOutputValues(node);
+    node.properties.outputValues[name] = entry;
+}
+
+function deleteOutputValueEntry(node, name){
+    ensureOutputValues(node);
+    delete node.properties.outputValues[name];
+}
+
+function renameOutputValueEntry(node, oldName, newName){
+    if(!node || !oldName || !newName || oldName === newName) return;
+    const entry = getOutputValueEntry(node, oldName);
+    if(entry){
+        deleteOutputValueEntry(node, oldName);
+        setOutputValueEntry(node, newName, entry);
+    }
+}
+
+function getFallbackValueString(entry){
+    if(entry && typeof entry === "object" && Object.prototype.hasOwnProperty.call(entry, "value")){
+        return entry.value === undefined || entry.value === null ? "" : String(entry.value);
+    }
+    if(entry === undefined || entry === null) return "";
+    return String(entry);
+}
+
+function parseFallbackValue(raw, type){
+    const t = normalizeFallbackType(type);
+    const val = (raw ?? "").toString().trim();
+    if(!val){
+        return { ok: false, error: "Bitte einen Wert eingeben oder Clear nutzen." };
+    }
+    if(t === "string" || t === "media"){
+        return { ok: true, value: val };
+    }
+    if(t === "number"){
+        if(!/^-?\d+(?:\.\d+)?$/.test(val)){
+            return { ok: false, error: "Ungültige Zahl." };
+        }
+        return { ok: true, value: val };
+    }
+    if(t === "boolean"){
+        const lowered = val.toLowerCase();
+        if(["true","1","yes","on"].includes(lowered)) return { ok: true, value: "true" };
+        if(["false","0","no","off"].includes(lowered)) return { ok: true, value: "false" };
+        return { ok: false, error: "Nur true/false (oder 1/0)." };
+    }
+    return { ok: false, error: "Unbekannter Datentyp." };
+}
+
+let fallbackModalState = null;
+
+function openFallbackModal(node, name, inputType, direction){
+    if(!ui.fallbackModal) return;
+    if(!node || !name) return;
+    const typeLabel = normalizeFallbackType(inputType) || "string";
+    const isOutput = direction === "out";
+    const isInternal = direction === "internal";
+    fallbackModalState = { node, name, inputType: typeLabel, direction };
+    const entry = isInternal
+        ? getInternalValueEntry(node, name)
+        : isOutput
+            ? getOutputValueEntry(node, name)
+            : getInputFallbackEntry(node, name);
+    const titlePrefix = node?.properties?.isAnalog ? "Value" : "Fallback";
+    if(ui.fallbackModalTitle) ui.fallbackModalTitle.textContent = `${titlePrefix} - ${name}`;
+    if(ui.fallbackInputName) ui.fallbackInputName.textContent = name;
+    if(ui.fallbackInputType) ui.fallbackInputType.textContent = typeLabel;
+    if(ui.fallbackInputValue) ui.fallbackInputValue.value = getFallbackValueString(entry);
+    if(ui.fallbackInputError) ui.fallbackInputError.textContent = "";
+    ui.fallbackModal.style.display = "flex";
+    ui.fallbackInputValue?.focus();
+}
+
+function closeFallbackModal(){
+    if(ui.fallbackModal) ui.fallbackModal.style.display = "none";
+    fallbackModalState = null;
+}
+
 function ensureLogicInputs(node){
     if(!node || node.type!=="escape/Logic") return;
-    node.inputs = node.inputs || [];
-    // ensure at least two action inputs
-    while(node.inputs.length < 2){
-        node.addInput(`Input ${node.inputs.length+1}`, LiteGraph.ACTION);
+    const links = node.graph ? node.graph.links : (graph && graph.links);
+    node.inputs = (node.inputs || []).filter(inp => inp && isActionType(inp.type));
+    const mainInput = node.inputs[0];
+    const mainLinks = [];
+    if (mainInput) {
+        if (Array.isArray(mainInput.links)) mainLinks.push(...mainInput.links);
+        else if (mainInput.link != null) mainLinks.push(mainInput.link);
     }
-    node.inputs.forEach((inp, idx)=>{
-        if(!inp) return;
-        inp.type = LiteGraph.ACTION;
-        if(!inp.name || inp.name.startsWith("Input ")){
-            inp.name = `Input ${idx+1}`;
+    if(!node.inputs.length){
+        node.addInput("Trigger", LiteGraph.ACTION, { nameLocked:true, multiple:true, logicTrigger:true });
+    }
+    if(node.inputs[0]){
+        node.inputs[0].name = "Trigger";
+        node.inputs[0].type = LiteGraph.ACTION;
+        node.inputs[0].nameLocked = true;
+        node.inputs[0].multiple = true;
+        node.inputs[0].logicTrigger = true;
+    }
+    for(let i = node.inputs.length - 1; i >= 1; i -= 1){
+        const extra = node.inputs[i];
+        const extraLinks = [];
+        if (extra) {
+            if (Array.isArray(extra.links)) extraLinks.push(...extra.links);
+            else if (extra.link != null) extraLinks.push(extra.link);
+            extra.link = null;
+            extra.links = null;
         }
-    });
+        extraLinks.forEach(id => {
+            if (!links || !links[id]) return;
+            links[id].target_slot = 0;
+            if (!mainLinks.includes(id)) mainLinks.push(id);
+        });
+        node.removeInput(i);
+    }
+    if (node.inputs[0]) {
+        node.inputs[0].links = mainLinks.length ? mainLinks : null;
+        node.inputs[0].link = mainLinks.length ? mainLinks[0] : null;
+    }
+    updateSlotLabels(node);
 }
 
 function updateHintBadge(){
@@ -590,6 +1260,7 @@ function buildExternalVariableOptionsForPuzzle(node) {
 
     const inputs = Array.isArray(node.inputs) ? node.inputs : [];
     const outputs = Array.isArray(node.outputs) ? node.outputs : [];
+    const internalVars = node.properties?.internalVariables || {};
 
     inputs.forEach(inp => {
         if (!inp) return;
@@ -603,6 +1274,13 @@ function buildExternalVariableOptionsForPuzzle(node) {
         if (out.name === "Done") return;
         if (!isCheckVariableType(out.type)) return;
         options.push({ value: `out:${out.name}`, label: `${out.name} (Output)`, type: out.type });
+    });
+
+    Object.entries(internalVars).forEach(([name, entry]) => {
+        if (!name) return;
+        const t = entry?.type || "string";
+        if (!isCheckVariableType(t)) return;
+        options.push({ value: `internal:${name}`, label: `${name} (Internal)`, type: t });
     });
 
     return options;
@@ -670,6 +1348,12 @@ function fillExternalCheckVariableDropdown(node) {
         return;
     }
 
+    if (!enabled) {
+        node.properties.externalCheckVariable = "";
+        setExternalCheckTrigger("- None -", "");
+        return;
+    }
+
     if (ui.extShowAssignment) {
         ui.extShowAssignment.checked = node.properties.externalShowAssignment !== false;
     }
@@ -681,14 +1365,16 @@ function fillExternalCheckVariableDropdown(node) {
     const noneSelected = !selected;
     ui.extCheckMenu.appendChild(createExternalCheckDropdownItem("", "- None -", "", noneSelected));
 
-    ui.extCheckMenu.appendChild(
-        createExternalCheckDropdownItem(
-            EXTERNAL_CHECK_SOLUTION,
-            "Get Solution from Puzzle",
-            "",
-            selected === EXTERNAL_CHECK_SOLUTION
-        )
-    );
+    if (!node.properties?.isAnalog) {
+        ui.extCheckMenu.appendChild(
+            createExternalCheckDropdownItem(
+                EXTERNAL_CHECK_SOLUTION,
+                "Get Solution from Puzzle",
+                "",
+                selected === EXTERNAL_CHECK_SOLUTION
+            )
+        );
+    }
 
     vars.forEach(v => {
         ui.extCheckMenu.appendChild(
@@ -699,6 +1385,9 @@ function fillExternalCheckVariableDropdown(node) {
     const resolved = selected === EXTERNAL_CHECK_SOLUTION
         ? { label: "Get Solution from Puzzle", type: "" }
         : optionMap.get(selected);
+    if (node.properties?.isAnalog && selected === EXTERNAL_CHECK_SOLUTION) {
+        node.properties.externalCheckVariable = "";
+    }
 
     if (selected && !resolved) {
         node.properties.externalCheckVariable = "";
@@ -730,6 +1419,7 @@ function refreshExternalSelectionForSelectedPuzzle(){
     const exists = getInputCapableScreens().some(s=>String(s.id)===String(currentId));
     if(!exists){
         selectedNode.properties.externalScreenId = "";
+        selectedNode.properties.externalCheckVariable = "";
         if(ui.extScreen) ui.extScreen.value = "";
     }
 }
@@ -757,14 +1447,11 @@ if(ui.hintConfigureBtn){
 if(ui.hintModalClose){
     ui.hintModalClose.addEventListener("click", ()=>{ closeHintModal(); });
 }
-if(ui.hintModal){
-    ui.hintModal.addEventListener("click", (e)=>{ if(e.target===ui.hintModal) closeHintModal(); });
-}
 if(ui.hintAddBtn){
     ui.hintAddBtn.addEventListener("click", ()=>{
         if(!hintModalNode) return;
         ensureHints(hintModalNode);
-        hintModalNode.properties.hints.push({ text:"", delayFromStart:0, delayAfterPrev:0 });
+        hintModalNode.properties.hints.push({ text:"", delayFromStart:60, delayAfterPrev:0 });
         renderHintList();
         autoSave();
     });
@@ -787,16 +1474,79 @@ if(ui.hintShowAssignmentToggle){
     });
 }
 
+if(ui.fallbackModalClose){
+    ui.fallbackModalClose.addEventListener("click", ()=>{ closeFallbackModal(); });
+}
+if(ui.fallbackClearBtn){
+    ui.fallbackClearBtn.addEventListener("click", ()=>{
+        if(!fallbackModalState) return;
+        const { node, name, direction } = fallbackModalState;
+        if(direction === "internal"){
+            deleteInternalValueEntry(node, name);
+        } else if(direction === "out"){
+            deleteOutputValueEntry(node, name);
+        } else {
+            deleteInputFallbackEntry(node, name);
+        }
+        autoSave();
+        if(node && node.type === "escape/Puzzle"){
+            renderIOLists(node);
+            renderInternalVariables(node);
+        }
+        closeFallbackModal();
+    });
+}
+if(ui.fallbackSaveBtn){
+    ui.fallbackSaveBtn.addEventListener("click", ()=>{
+        if(!fallbackModalState) return;
+        const { node, name, inputType, direction } = fallbackModalState;
+        const raw = ui.fallbackInputValue ? ui.fallbackInputValue.value : "";
+        const parsed = parseFallbackValue(raw, inputType);
+        if(!parsed.ok){
+            if(ui.fallbackInputError) ui.fallbackInputError.textContent = parsed.error || "Ungültiger Wert.";
+            return;
+        }
+        if(direction === "internal"){
+            setInternalValueEntry(node, name, { value: parsed.value, type: inputType });
+        } else if(direction === "out"){
+            setOutputValueEntry(node, name, { value: parsed.value, type: inputType });
+        } else {
+            setInputFallbackEntry(node, name, { value: parsed.value, type: inputType });
+        }
+        autoSave();
+        if(node && node.type === "escape/Puzzle"){
+            renderIOLists(node);
+            renderInternalVariables(node);
+        }
+        closeFallbackModal();
+    });
+}
+if(ui.fallbackInputValue){
+    ui.fallbackInputValue.addEventListener("keydown", (e)=>{
+        if(e.key === "Enter"){
+            e.preventDefault();
+            ui.fallbackSaveBtn?.click();
+        }
+    });
+}
+
 function updatePropertiesPanel(node){ 
     selectedScreenId=null;
     updateScreenHighlight(null);
     updateSidebarHighlight(node); 
+    closeFallbackModal();
     if(!node){hidePropertiesPanel();return;} 
+    if(node.type !== "escape/Start" && node.type !== "escape/End"){
+        clearBranchPairSelection();
+    }
     selectedNode=node; 
     propertiesSidebar.style.display="block"; 
     logWindow.classList.add("sidebar-open"); 
     const sections=ioControlsContainer.querySelectorAll('.form-item, .io-section, hr, .category, .toggle-row'); 
     sections.forEach(el=>el.style.display='none'); 
+    if (ui.addInBtn) { ui.addInBtn.style.display = ""; ui.addInBtn.disabled = false; }
+    const actionOptDefault = ui.inType?.querySelector?.('option[value="action"]');
+    if (actionOptDefault) { actionOptDefault.style.display = ""; actionOptDefault.disabled = false; }
     
     // PUZZLE
     if(node.type==="escape/Puzzle"){ 
@@ -804,10 +1554,13 @@ function updatePropertiesPanel(node){
         
         ui.name.value=node.properties.Name||""; 
         ui.isStart.checked=node.properties.isStartNode||false;
+        syncPuzzleTriggerInput(node);
         ui.isAnalog.checked=node.properties.isAnalog||false;
         ensureHints(node);
         ensureHintTriggerDefaults(node);
         updateHintBadge();
+        updateSlotLabels(node);
+        renderInternalVariables(node);
         
         const extId = node.properties.externalScreenId || "";
         fillExternalScreenDropdown(extId);
@@ -832,7 +1585,20 @@ function updatePropertiesPanel(node){
         }
 
         ui.inType.style.display=""; 
+        const actionOpt = ui.inType.querySelector('option[value="action"]');
+        if (actionOpt) {
+            actionOpt.style.display = "";
+            actionOpt.disabled = true;
+        }
+        const inputsHeaderLabel = ioControlsContainer.querySelector('.category-header[data-target="inputs-section"] span:last-child');
+        if (inputsHeaderLabel) inputsHeaderLabel.textContent = "Inputs";
+        if (ui.inType.value === "action") ui.inType.value = "boolean";
+        ui.outType.style.display="";
+        ui.addOutBtn.disabled = false;
         renderIOLists(node); 
+        const inputsHeaderEl = ioControlsContainer.querySelector('.category-header[data-target="inputs-section"]');
+        const inputsCategory = inputsHeaderEl ? inputsHeaderEl.closest(".category") : null;
+        if (inputsCategory) inputsCategory.style.display = isAnalog ? "none" : "";
         fillExternalCheckVariableDropdown(node);
         if(ui.hintManualToggle) ui.hintManualToggle.checked = !!node.properties.automaticHintTrigger;
     } 
@@ -846,11 +1612,48 @@ function updatePropertiesPanel(node){
     }
     // LOGIC
     else if(node.type==="escape/Logic"){ 
-        sections.forEach(el=>{if(el.classList.contains('logic-prop')||el.classList.contains('input-section'))el.style.display='';}); 
-        ensureLogicInputs(node);
-        ui.logicType.value=node.properties.logicType||"AND"; 
-        ui.inType.style.display="none"; 
-        renderIOLists(node,true); 
+        const logicType = (node.properties.logicType || "AND").toUpperCase();
+        ui.logicType.value = logicType;
+        const inputsHeader = ioControlsContainer.querySelector('.category-header[data-target="inputs-section"] span:last-child');
+        const inputsHeaderEl = ioControlsContainer.querySelector('.category-header[data-target="inputs-section"]');
+        const inputsCategory = inputsHeaderEl ? inputsHeaderEl.closest(".category") : null;
+        if(logicType === "QUEUE"){
+            sections.forEach(el=>{if(el.classList.contains('io-section')||el.classList.contains('logic-prop'))el.style.display='';}); 
+            ensureQueueInputs(node);
+            if (inputsHeader) inputsHeader.textContent = "Group Inputs";
+            ui.inType.style.display="";
+            const actionOpt = ui.inType.querySelector('option[value="action"]');
+            if (actionOpt) actionOpt.style.display = "none";
+            if (ui.inType.value === "action") ui.inType.value = "boolean";
+            ui.addInBtn.style.display = "";
+            ui.addInBtn.disabled = false;
+            ui.outType.style.display="none";
+            ui.addOutBtn.disabled = true;
+            if (inputsCategory) inputsCategory.style.display = "";
+            if (ui.queueDelayRow) ui.queueDelayRow.style.display = "";
+            if (ui.queueDelay) {
+                const delay = Number(node.properties?.queueDelaySec);
+                ui.queueDelay.value = Number.isFinite(delay) && delay >= 0 ? delay : 0;
+            }
+            if (ui.queueActivateAllRow) ui.queueActivateAllRow.style.display = "";
+            if (ui.queueActivateAll) {
+                ui.queueActivateAll.checked = !!node.properties?.queueActivateAllFree;
+            }
+            renderIOLists(node);
+        } else {
+            sections.forEach(el=>{if(el.classList.contains('logic-prop')||el.classList.contains('input-section'))el.style.display='';}); 
+            ensureLogicInputs(node);
+            if (inputsHeader) inputsHeader.textContent = "Inputs";
+            const actionOpt = ui.inType.querySelector('option[value="action"]');
+            if (actionOpt) actionOpt.style.display = "";
+            ui.inType.style.display="none"; 
+            ui.addInBtn.style.display = "none";
+            ui.addInBtn.disabled = true;
+            if (inputsCategory) inputsCategory.style.display = "none";
+            if (ui.queueDelayRow) ui.queueDelayRow.style.display = "none";
+            if (ui.queueActivateAllRow) ui.queueActivateAllRow.style.display = "none";
+            renderIOLists(node,true); 
+        }
         updateHintBadge();
     } 
     // END
@@ -864,6 +1667,7 @@ function showScreenProperties(screen){
     if(!screen){ hidePropertiesPanel(); return; }
     selectedNode = null;
     selectedScreenId = screen.id;
+    clearBranchPairSelection();
     updateSidebarHighlight(null);
     updateScreenHighlight(screen.id);
     propertiesSidebar.style.display = "block";
@@ -872,12 +1676,104 @@ function showScreenProperties(screen){
     sections.forEach(el=>el.style.display='none');
     sections.forEach(el=>{ if(el.classList.contains('screen-prop')) el.style.display=''; });
     ui.name.value = screen.name || "";
-    if(ui.screenRole) ui.screenRole.value = screen.role === "hint" ? "hint" : "player";
+    applyScreenRoleUI(screen);
     if(ui.screenPath) ui.screenPath.value = screen.path || "";
     updateHintBadge();
 }
 
-function hidePropertiesPanel(){ propertiesSidebar.style.display="none"; selectedNode=null; selectedScreenId=null; updateSidebarHighlight(null); updateScreenHighlight(null); logWindow.classList.remove("sidebar-open"); }
+function normalizeScreenRole(role) {
+    if (role === "hint") return "hint";
+    if (role === "progress") return "progress";
+    return "player";
+}
+
+function applyScreenRoleUI(screen) {
+    if (!screen) return;
+    const role = normalizeScreenRole(screen.role);
+    if (ui.screenRole) ui.screenRole.value = role;
+    const showProgress = role === "progress";
+    if (ui.progressStyleRow) ui.progressStyleRow.style.display = showProgress ? "" : "none";
+    if (ui.progressBranchesRow) ui.progressBranchesRow.style.display = showProgress ? "" : "none";
+    if (ui.progressRunningTimeRow) ui.progressRunningTimeRow.style.display = showProgress ? "" : "none";
+    if (ui.progressStyle) ui.progressStyle.value = screen.progressStyle || "simple";
+    if (ui.progressRunningTime) ui.progressRunningTime.checked = !!screen.showRunningTime;
+    if (showProgress) renderProgressBranchList(screen);
+}
+
+function getAvailableBranchIds() {
+    const starts = graph.findNodesByType("escape/Start") || [];
+    if (!starts.length) return [];
+    let ids = starts.map(node => Number(node?.properties?.pairId))
+        .filter(id => Number.isFinite(id) && id > 0);
+    if (ids.length !== starts.length) {
+        assignMissingBranchIds();
+        ids = starts.map(node => Number(node?.properties?.pairId))
+            .filter(id => Number.isFinite(id) && id > 0);
+    }
+    return Array.from(new Set(ids)).sort((a, b) => a - b);
+}
+
+function renderProgressBranchList(screen) {
+    if (!ui.progressBranches || !screen) return;
+    const branchIds = getAvailableBranchIds();
+    ui.progressBranches.innerHTML = "";
+
+    if (!branchIds.length) {
+        const empty = document.createElement("div");
+        empty.className = "branch-select-item";
+        empty.style.color = "#888";
+        empty.textContent = "No branches available.";
+        ui.progressBranches.appendChild(empty);
+        return;
+    }
+
+    const selected = Array.isArray(screen.branchIds)
+        ? screen.branchIds.map(id => parseInt(id, 10)).filter(id => Number.isFinite(id))
+        : [];
+    const filteredSelected = selected.filter(id => branchIds.includes(id));
+    if (filteredSelected.length !== selected.length) {
+        screen.branchIds = filteredSelected;
+        autoSave();
+    }
+    const selectedSet = new Set(filteredSelected);
+    const showAll = selectedSet.size === 0;
+
+    branchIds.forEach(id => {
+        const row = document.createElement("div");
+        row.className = "branch-select-item";
+
+        const label = document.createElement("span");
+        label.className = "branch-label";
+        label.textContent = `Branch ${id}`;
+
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.checked = showAll || selectedSet.has(id);
+        checkbox.dataset.branchId = String(id);
+        checkbox.addEventListener("change", () => {
+            const checkedIds = Array.from(ui.progressBranches.querySelectorAll("input[type='checkbox']"))
+                .filter(el => el.checked)
+                .map(el => parseInt(el.dataset.branchId, 10))
+                .filter(val => Number.isFinite(val));
+            screen.branchIds = checkedIds.length === branchIds.length ? [] : checkedIds;
+            autoSave();
+        });
+
+        row.appendChild(label);
+        row.appendChild(checkbox);
+        ui.progressBranches.appendChild(row);
+    });
+}
+
+function refreshProgressBranchesForSelectedScreen() {
+    if (selectedScreenId === null) return;
+    const screen = screens.find(s => s.id === selectedScreenId);
+    if (!screen) return;
+    if (normalizeScreenRole(screen.role) !== "progress") return;
+    renderProgressBranchList(screen);
+}
+
+function hidePropertiesPanel(){ propertiesSidebar.style.display="none"; selectedNode=null; selectedScreenId=null; updateSidebarHighlight(null); updateScreenHighlight(null); logWindow.classList.remove("sidebar-open"); closeFallbackModal(); }
 function fillDeviceDropdown(currentSelection,isAnalog=false){ 
     const updateLabel=(text)=>{ ui.dropdownTrigger.innerHTML=`<span>${text}</span><span class="dropdown-arrow">>></span>`; };
     if(isAnalog){
@@ -947,7 +1843,211 @@ function createDropdownItem(id,text,isSelected,isDeletable){
     return div; 
 }
 
- function renderIOLists(node,inputsOnly=false){ const renderList=(elem,items,type)=>{ elem.innerHTML=""; if(!items)return; items.forEach((item,idx)=>{ if(item.name==="Done")return; if(type==='in'&&node.type==="escape/Puzzle"&&item.name==="Trigger")return; const div=document.createElement("div"); div.className="io-item"; div.dataset.type=item.type; let html=`<input type="text" class="io-name-input" value="${item.name}" ${item.nameLocked?'disabled':''}>`; const isLogicNode=(node.type==="escape/Logic"); const isInput=(type==='in'); let showRemove=true; if(isInput){ if(isLogicNode){ showRemove=(items.length>2); } else if(node.type==="escape/Puzzle"){ showRemove=(items.length>1); } } if(showRemove)html+=`<button type="button" class="io-remove">X</button>`; div.innerHTML=html; const input=div.querySelector("input"); input.addEventListener("keydown",e=>{if(e.key==="Enter"){e.preventDefault();input.blur();}}); input.addEventListener("change",e=>{ if(type=='in')node.inputs[idx].name=e.target.value; else node.outputs[idx].name=e.target.value; fillExternalCheckVariableDropdown(node); node.setDirtyCanvas(true,true); autoSave(); }); if(showRemove){ div.querySelector(".io-remove").addEventListener("click",e=>{ e.preventDefault(); if(isLogicNode&&isInput&&node.inputs.length<=2)return; if(type=='in')node.removeInput(idx); else node.removeOutput(idx); updatePropertiesPanel(node); autoSave(); }); } elem.appendChild(div); }); }; renderList(ui.inputs,node.inputs,'in'); if(!inputsOnly)renderList(ui.outputs,node.outputs,'out'); }
+function renderIOLists(node, inputsOnly = false){
+    const renderList = (elem, items, type) => {
+        elem.innerHTML = "";
+        if(!items) return;
+        items.forEach((item, idx) => {
+            if(item.name === "Done") return;
+            if(type === 'in' && node.type === "escape/Puzzle" && item.name === "Trigger") return;
+
+            const div = document.createElement("div");
+            div.className = "io-item";
+            div.dataset.type = item.type;
+
+            const isLogicNode = (node.type === "escape/Logic");
+            const isQueueNode = isQueueLogic(node);
+            const isInput = (type === 'in');
+            if (isQueueNode && isInput && isActionType(item.type)) return;
+            let showRemove = true;
+            if(isInput){
+                if(isLogicNode && !isQueueNode){
+                    showRemove = false;
+                } else if(isQueueNode && isActionType(item.type)){
+                    showRemove = false;
+                } else if(node.type === "escape/Puzzle"){
+                    showRemove = (items.length > 1);
+                }
+            } else if(isQueueNode){
+                showRemove = false;
+            }
+
+            let fallbackBtn = null;
+            let fallbackPreview = null;
+            const fallbackCapable = node.type === "escape/Puzzle" && isFallbackCapableType(item.type);
+            if(fallbackCapable && (isInput || type === "out")){
+                fallbackBtn = document.createElement("button");
+                fallbackBtn.type = "button";
+                fallbackBtn.className = "io-fallback-btn";
+                fallbackBtn.title = node.properties?.isAnalog ? "Value" : "Fallback";
+                fallbackBtn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.65 1.65 0 0 0 15 19.4a1.65 1.65 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82-.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.65 1.65 0 0 0 1 1.5 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9c.57 0 1.08.23 1.46.6.38.38.6.9.6 1.46s-.23 1.08-.6 1.46A1.65 1.65 0 0 0 19.4 15z"></path></svg>`;
+            }
+
+            const input = document.createElement("input");
+            input.type = "text";
+            input.className = "io-name-input";
+            input.value = item.name;
+            if(item.nameLocked) input.disabled = true;
+            if(isQueueLogic(node) && type === "out") input.disabled = true;
+
+            const nameWrap = document.createElement("div");
+            nameWrap.className = "io-name-wrap";
+            nameWrap.appendChild(input);
+            if(fallbackCapable){
+                const entry = isInput
+                    ? getInputFallbackEntry(node, input.value || item.name)
+                    : getOutputValueEntry(node, input.value || item.name);
+                if(entry || (node.properties?.isAnalog && type === "out")){
+                    fallbackPreview = document.createElement("span");
+                    fallbackPreview.className = `io-fallback-preview${node.properties?.isAnalog ? " io-value-preview" : ""}`;
+                    const preview = entry ? getFallbackValueString(entry) : "--";
+                    fallbackPreview.textContent = `(${preview})`;
+                    nameWrap.appendChild(fallbackPreview);
+                }
+            }
+            div.appendChild(nameWrap);
+
+            let removeBtn = null;
+                if(showRemove){
+                    removeBtn = document.createElement("button");
+                    removeBtn.type = "button";
+                    removeBtn.className = "io-remove";
+                    removeBtn.textContent = "X";
+                    removeBtn.addEventListener("click", e => {
+                        e.preventDefault();
+                        if(isLogicNode && !isQueueNode && isInput) return;
+                        if(isQueueNode && isInput && isActionType(item.type)){
+                            return;
+                        }
+                        if(node.type === "escape/Puzzle"){
+                            if(isInput){
+                                deleteInputFallbackEntry(node, input.value || item.name);
+                            } else if(type === "out"){
+                                deleteOutputValueEntry(node, input.value || item.name);
+                            }
+                        }
+                        if(type === 'in') node.removeInput(idx);
+                        else node.removeOutput(idx);
+                if(isQueueNode && type === 'in'){
+                    syncQueueGroupOutputs(node);
+                }
+                        updatePropertiesPanel(node);
+                        autoSave();
+                    });
+                }
+            if(fallbackBtn){
+                fallbackBtn.addEventListener("click", e => {
+                    e.preventDefault();
+                    const inputName = input.value || item.name;
+                    openFallbackModal(node, inputName, item.type, type);
+                });
+                div.appendChild(fallbackBtn);
+            }
+            if(showRemove && removeBtn){
+                div.appendChild(removeBtn);
+            }
+
+            input.addEventListener("keydown", e => { if(e.key === "Enter"){ e.preventDefault(); input.blur(); } });
+            let prevName = item.name;
+            input.addEventListener("change", e => {
+                const newName = e.target.value;
+                if(type === 'in') node.inputs[idx].name = newName;
+                else node.outputs[idx].name = newName;
+                if(node.type === "escape/Puzzle"){
+                    if(type === 'in'){
+                        renameInputFallbackEntry(node, prevName, newName);
+                    } else if(type === 'out'){
+                        renameOutputValueEntry(node, prevName, newName);
+                    }
+                }
+                if(isQueueLogic(node) && type === 'in'){
+                    syncQueueGroupOutputs(node);
+                }
+                prevName = newName;
+                updateSlotLabels(node);
+                fillExternalCheckVariableDropdown(node);
+                node.setDirtyCanvas(true, true);
+                autoSave();
+            });
+
+            elem.appendChild(div);
+        });
+    };
+    renderList(ui.inputs, node.inputs, 'in');
+    if(!inputsOnly) renderList(ui.outputs, node.outputs, 'out');
+}
+
+function renderInternalVariables(node){
+    if(!ui.internalList) return;
+    ui.internalList.innerHTML = "";
+    if(!node || node.type !== "escape/Puzzle") return;
+    ensureInternalVariables(node);
+    const entries = node.properties.internalVariables || {};
+    const names = Object.keys(entries).sort((a,b)=>a.localeCompare(b));
+    names.forEach((name) => {
+        const entry = entries[name] || { type: "string", value: null };
+        const div = document.createElement("div");
+        div.className = "io-item";
+        div.dataset.type = entry.type || "string";
+
+        const nameInput = document.createElement("input");
+        nameInput.type = "text";
+        nameInput.className = "io-name-input";
+        nameInput.value = name;
+
+        const fallbackPreview = document.createElement("span");
+        fallbackPreview.className = `io-fallback-preview${node.properties?.isAnalog ? " io-value-preview" : ""}`;
+        fallbackPreview.textContent = `(${getFallbackValueString(entry) || "--"})`;
+
+        const fallbackBtn = document.createElement("button");
+        fallbackBtn.type = "button";
+        fallbackBtn.className = "io-fallback-btn";
+        fallbackBtn.title = node.properties?.isAnalog ? "Value" : "Fallback";
+        fallbackBtn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.65 1.65 0 0 0 15 19.4a1.65 1.65 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82-.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.65 1.65 0 0 0 1 1.5 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9c.57 0 1.08.23 1.46.6.38.38.6.9.6 1.46s-.23 1.08-.6 1.46A1.65 1.65 0 0 0 19.4 15z"></path></svg>`;
+
+        const removeBtn = document.createElement("button");
+        removeBtn.type = "button";
+        removeBtn.className = "io-remove";
+        removeBtn.textContent = "X";
+
+        nameInput.addEventListener("keydown", e => { if(e.key === "Enter"){ e.preventDefault(); nameInput.blur(); } });
+        nameInput.addEventListener("change", e => {
+            const newName = e.target.value.trim();
+            if(!newName || newName === name) return;
+            if(entries[newName]) return;
+            entries[newName] = entry;
+            delete entries[name];
+            if(node.properties.externalCheckVariable === `internal:${name}`){
+                node.properties.externalCheckVariable = `internal:${newName}`;
+            }
+            fillExternalCheckVariableDropdown(node);
+            renderInternalVariables(node);
+            autoSave();
+        });
+
+        fallbackBtn.addEventListener("click", e => {
+            e.preventDefault();
+            openFallbackModal(node, name, entry.type || "string", "internal");
+        });
+
+        removeBtn.addEventListener("click", e => {
+            e.preventDefault();
+            delete entries[name];
+            if(node.properties.externalCheckVariable === `internal:${name}`){
+                node.properties.externalCheckVariable = "";
+            }
+            fillExternalCheckVariableDropdown(node);
+            renderInternalVariables(node);
+            autoSave();
+        });
+
+        div.appendChild(nameInput);
+        div.appendChild(fallbackPreview);
+        div.appendChild(fallbackBtn);
+        div.appendChild(removeBtn);
+        ui.internalList.appendChild(div);
+    });
+}
 
 
 ioControlsContainer.addEventListener('change',e=>{ 
@@ -965,10 +2065,23 @@ ioControlsContainer.addEventListener('change',e=>{
         } else if (t===ui.screenRole){
             const screen=screens.find(s=>s.id===selectedScreenId);
             if(screen){
-                screen.role = t.value === "hint" ? "hint" : "player";
+                screen.role = normalizeScreenRole(t.value);
+                applyScreenRoleUI(screen);
                 renderScreenList();
                 refreshExternalSelectionForSelectedPuzzle();
                 refreshHintSelectionForSelectedPuzzle();
+                autoSave();
+            }
+        } else if (t===ui.progressStyle) {
+            const screen=screens.find(s=>s.id===selectedScreenId);
+            if (screen) {
+                screen.progressStyle = t.value || "simple";
+                autoSave();
+            }
+        } else if (t===ui.progressRunningTime) {
+            const screen=screens.find(s=>s.id===selectedScreenId);
+            if (screen) {
+                screen.showRunningTime = !!t.checked;
                 autoSave();
             }
         } else if (t===ui.screenPath){
@@ -984,21 +2097,26 @@ ioControlsContainer.addEventListener('change',e=>{
     }
     if(!selectedNode)return; 
     
-    if(t===ui.name) {
-        if(selectedNode.type==="escape/Puzzle"){ 
-            selectedNode.properties.Name=t.value; 
-            selectedNode.title=t.value; 
-            const item=document.querySelector(`.puzzle-item[data-node-id="${selectedNode.id}"] .puzzle-item-text`); 
-            if(item)item.textContent=t.value; 
-        } else if (selectedNode.type==="escape/Tablet") {
-            selectedNode.title = t.value;
-        }
+        if(t===ui.name) {
+            if(selectedNode.type==="escape/Puzzle"){ 
+                selectedNode.properties.Name=t.value; 
+                selectedNode.title=t.value; 
+                const item=document.querySelector(`.puzzle-item[data-node-id="${selectedNode.id}"] .puzzle-item-text`); 
+                if(item)item.textContent=getPuzzleDisplayName(selectedNode, t.value); 
+            } else if (selectedNode.type==="escape/Tablet") {
+                selectedNode.title = t.value;
+            }
     } else if(t===ui.isStart) {
         selectedNode.properties.isStartNode=t.checked;
+        syncPuzzleTriggerInput(selectedNode);
     } else if(t===ui.isAnalog) { 
         selectedNode.properties.isAnalog=t.checked;
         if(t.checked){
             selectedNode.properties.selectedDeviceID="";
+            if (selectedNode.properties.externalCheckVariable === EXTERNAL_CHECK_SOLUTION) {
+                selectedNode.properties.externalCheckVariable = "";
+            }
+            removeNonActionInputsForAnalog(selectedNode);
             if(ui.dropdown){
                 ui.dropdown.classList.add("dropdown-disabled");
                 ui.dropdownTrigger.innerHTML = `<span>Analog - Select Device -</span><span class="dropdown-arrow">>></span>`;
@@ -1008,9 +2126,19 @@ ioControlsContainer.addEventListener('change',e=>{
         }
         const devId = selectedNode.properties.isAnalog ? "" : (selectedNode.properties.selectedDeviceID || "");
         fillDeviceDropdown(devId, t.checked);
+        fillExternalCheckVariableDropdown(selectedNode);
+        if(selectedNode.type === "escape/Puzzle"){
+            renderIOLists(selectedNode);
+            const inputsHeaderEl = ioControlsContainer.querySelector('.category-header[data-target="inputs-section"]');
+            const inputsCategory = inputsHeaderEl ? inputsHeaderEl.closest(".category") : null;
+            if (inputsCategory) inputsCategory.style.display = t.checked ? "none" : "";
+        }
     } else if(t===ui.extScreen){
         selectedNode.properties.externalScreenId = t.value || "";
         selectedNode.properties.externalCheck = !!selectedNode.properties.externalScreenId;
+        if (!selectedNode.properties.externalScreenId) {
+            selectedNode.properties.externalCheckVariable = "";
+        }
         refreshExternalSelectionForSelectedPuzzle();
         if(selectedNode.updateSlots) selectedNode.updateSlots();
         fillExternalCheckVariableDropdown(selectedNode);
@@ -1024,12 +2152,19 @@ ioControlsContainer.addEventListener('change',e=>{
         selectedNode.properties.code=t.value;
     } else if(t===ui.tabletMsg) { 
         selectedNode.properties.message=t.value;
-    } else if(t===ui.logicType){ 
-        selectedNode.properties.logicType=t.value; 
-        selectedNode.title=t.value; 
-    } else if(t===ui.autoRestart) {
-        selectedNode.properties.autoRestart=t.checked; 
-    } else if(t===ui.restartDelay) {
+  } else if(t===ui.logicType){ 
+      selectedNode.properties.logicType=t.value; 
+      selectedNode.title=t.value; 
+      normalizeLogicNodeInputs(selectedNode);
+      updatePropertiesPanel(selectedNode);
+  } else if(t===ui.queueDelay) {
+      const rawDelay = parseFloat(t.value);
+      selectedNode.properties.queueDelaySec = Number.isFinite(rawDelay) && rawDelay >= 0 ? rawDelay : 0;
+  } else if(t===ui.queueActivateAll) {
+      selectedNode.properties.queueActivateAllFree = !!t.checked;
+  } else if(t===ui.autoRestart) {
+      selectedNode.properties.autoRestart=t.checked; 
+  } else if(t===ui.restartDelay) {
         selectedNode.properties.restartDelay=parseInt(t.value); 
     }
     selectedNode.setDirtyCanvas(true,true); 
@@ -1038,9 +2173,24 @@ ioControlsContainer.addEventListener('change',e=>{
 
 
 const allInputs=ioControlsContainer.querySelectorAll('input'); allInputs.forEach(inp=>{inp.addEventListener('keydown',e=>{if(e.key==="Enter"){e.preventDefault();inp.blur();}});});
-ui.addInBtn.addEventListener("click",e=>{ e.preventDefault(); if(!selectedNode)return; let type; if(selectedNode.type==="escape/Logic"){ type=LiteGraph.ACTION; }else{ type=ui.inType.value==='action'?LiteGraph.ACTION:ui.inType.value; } selectedNode.addInput("Input "+(selectedNode.inputs.length+1),type); updatePropertiesPanel(selectedNode); autoSave(); });
-ui.addOutBtn.addEventListener("click",e=>{ e.preventDefault(); if(!selectedNode)return; selectedNode.addOutput("Output "+(selectedNode.outputs.length+1),ui.outType.value==='action'?LiteGraph.EVENT:ui.outType.value); updatePropertiesPanel(selectedNode); autoSave(); });
-graph.onNodeAdded=autoSave; graph.onNodeRemoved=n=>{ rebuildSidebarList(); if(selectedNode&&selectedNode.id===n.id)updatePropertiesPanel(null); autoSave(); }; graph.onNodeConnectionChange=autoSave; canvas.onNodeMoved=autoSave; canvas.onSelectionChange=nodes=>{ if(suppressSelectionChange){ suppressSelectionChange=false; return; } updatePropertiesPanel(nodes?Object.values(nodes)[0]:null); };
+ui.addInBtn.addEventListener("click",e=>{ e.preventDefault(); if(!selectedNode)return; let type; if(selectedNode.type==="escape/Logic"){ const logicType = (selectedNode.properties?.logicType || "AND").toUpperCase(); if(logicType !== "QUEUE") return; type=ui.inType.value; }else{ if(ui.inType.value==='action') return; type=ui.inType.value; } if(isQueueLogic(selectedNode)){ const groupCount = getQueueGroupInputs(selectedNode).length; selectedNode.addInput("In "+(groupCount+1),type,{queueGroup:true,multiple:true}); syncQueueGroupOutputs(selectedNode); }else{ selectedNode.addInput("In "+(selectedNode.inputs.length+1),type); } updatePropertiesPanel(selectedNode); autoSave(); });
+ui.addOutBtn.addEventListener("click",e=>{ e.preventDefault(); if(!selectedNode || isQueueLogic(selectedNode))return; selectedNode.addOutput("Out "+(selectedNode.outputs.length+1),ui.outType.value==='action'?LiteGraph.EVENT:ui.outType.value); updatePropertiesPanel(selectedNode); autoSave(); });
+ui.addInternalBtn?.addEventListener("click", e=>{ 
+    e.preventDefault();
+    if(!selectedNode || selectedNode.type !== "escape/Puzzle") return;
+    ensureInternalVariables(selectedNode);
+    const entries = selectedNode.properties.internalVariables;
+    const base = "Internal";
+    let idx = 1;
+    let name = `${base}${idx}`;
+    while(entries[name]){ idx += 1; name = `${base}${idx}`; }
+    const type = ui.internalType?.value || "string";
+    entries[name] = { type, value: null };
+    fillExternalCheckVariableDropdown(selectedNode);
+    renderInternalVariables(selectedNode);
+    autoSave();
+});
+graph.onNodeAdded=autoSave; graph.onNodeRemoved=n=>{ rebuildSidebarList(); if(selectedNode&&selectedNode.id===n.id)updatePropertiesPanel(null); autoSave(); }; graph.onNodeConnectionChange=autoSave; canvas.onNodeMoved=autoSave; canvas.onSelectionChange=nodes=>{ if(suppressSelectionChange){ suppressSelectionChange=false; return; } const list=nodes?Object.values(nodes):[]; const branchNode=list.find(n=>n && (n.type==="escape/Start" || n.type==="escape/End")); if(branchNode){ selectBranchPairForNode(branchNode); } else { clearBranchPairSelection(); } updatePropertiesPanel(list[0]||null); };
 const origProp=LGraphNode.prototype.onPropertyChanged; LGraphNode.prototype.onPropertyChanged=function(n,v){ if(origProp)origProp.call(this,n,v); autoSave(); };
 function checkForDeviceUpdates(){ if(!selectedNode||selectedNode.type!=="escape/Puzzle")return; fetch('/api/devices').then(r=>r.json()).then(devices=>{ const currentJson=JSON.stringify(devices); if(currentJson!==lastKnownDevicesStr){ lastKnownDevicesStr=currentJson; const devSel = selectedNode.properties.isAnalog ? "" : (selectedNode.properties.selectedDeviceID || ""); fillDeviceDropdown(devSel, !!selectedNode.properties.isAnalog); } }).catch(()=>{}); }
 
@@ -1144,6 +2294,8 @@ window.addEventListener("load", () => {
                 nextScreenId = screens.reduce((max,s)=>Math.max(max, s.id||0), 0) + 1;
                 graph.configure(data); 
                 checkAndRestoreSystemNodes(); 
+                reindexBranchPairs();
+                applyBranchDeleteRules();
                 rebuildSidebarList();
                 renderScreenList();
             }

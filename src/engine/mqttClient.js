@@ -13,9 +13,9 @@ function attachClientHandlers(nextClient) {
     nextClient.on('connect', () => {
         emitter.emit('connect');
         try {
-            nextClient.subscribe('puzzle/+/status');
             nextClient.subscribe('puzzle/+/heartbeat');
             nextClient.subscribe('puzzle/+/data');
+            nextClient.subscribe('puzzle/+/external-check');
         } catch (err) {
             console.error('MQTT subscribe failed:', err);
         }

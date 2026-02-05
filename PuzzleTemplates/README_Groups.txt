@@ -31,8 +31,12 @@ Ziel: Nur die paar Funktionen kennen, die ihr aus dem Template aufrufen müsst, 
   - Beispiel: const code = STATE.inputs["Code"]?.data;
 
 - STATE.state setzen und melden
-  - STATE.state = "running" | "solved" | "locked";
+  - STATE.state = "starting" | "running" | "solved" | "locked";
   - publishHeartbeat();   // meldet aktuellen Status
+
+- Restart-Flow (falls euer Puzzle lange initialisiert)
+  - Hub sendet action "restart" (setzt SystemCommand im Input).
+  - Euer Puzzle startet neu und meldet nach dem Hochfahren "running" (HTTP: /restartComplete oder MQTT heartbeat).
 
 3) Typische Mini-Workflows
 - Ergebnis melden:

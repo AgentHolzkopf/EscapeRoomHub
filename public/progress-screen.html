@@ -1,0 +1,761 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Progress Screen</title>
+    <style>
+        :root {
+            --bg: #121212;
+            --panel: #1c1c1c;
+            --border: #2a2a2a;
+            --text: #e6e6e6;
+            --muted: #9a9a9a;
+            --running: #2c77d1;
+            --solved: #2b8a3e;
+            --locked: #50565f;
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            min-height: 100vh;
+            background: var(--bg);
+            color: var(--text);
+            font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .screensaver {
+            position: fixed;
+            inset: 0;
+            background: var(--bg);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 5;
+        }
+        .victory-overlay {
+            position: fixed;
+            inset: 0;
+            background: #0b0b0b;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 6;
+        }
+        .victory-overlay.active { display: flex; }
+        .victory-card {
+            width: 100%;
+            height: 100%;
+            background: transparent;
+            border: none;
+            border-radius: 0;
+            padding: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 0;
+            box-shadow: none;
+        }
+        .victory-media {
+            width: 100%;
+            height: 100%;
+            border-radius: 0;
+            overflow: hidden;
+            background: #0b0b0b;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .victory-media img,
+        .victory-media iframe {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+            border: none;
+        }
+        .victory-message {
+            position: absolute;
+            left: 50%;
+            bottom: 24px;
+            transform: translateX(-50%);
+            font-size: 18px;
+            font-weight: 700;
+            text-align: center;
+            color: var(--text);
+            z-index: 7;
+        }
+        .screensaver.hidden { display: none; }
+        .screensaver img { width: 100%; height: 100%; object-fit: contain; }
+        .screensaver .fallback { color: var(--muted); font-size: 16px; }
+        .screen {
+            width: min(900px, 96vw);
+            margin: 0 auto;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+        .header {
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 16px 18px;
+            display: grid;
+            grid-template-columns: 1fr auto;
+            gap: 12px;
+            align-items: center;
+        }
+        .header.center-counter {
+            grid-template-columns: 1fr;
+            justify-items: center;
+            text-align: center;
+        }
+        .header.center-counter .counter {
+            text-align: center;
+        }
+        .room-name {
+            font-size: 22px;
+            font-weight: 700;
+            margin: 0;
+        }
+        .counter {
+            font-size: 18px;
+            font-weight: 700;
+            text-align: right;
+        }
+        .style-pill {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            padding: 6px 12px;
+            border-radius: 999px;
+            background: rgba(255,255,255,0.06);
+            border: 1px solid var(--border);
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+            color: var(--muted);
+            justify-self: end;
+        }
+        .style-pill.hidden { display: none; }
+        .timer-pill {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            padding: 6px 12px;
+            border-radius: 999px;
+            background: rgba(255,255,255,0.06);
+            border: 1px solid var(--border);
+            font-size: 12px;
+            font-weight: 700;
+            color: var(--text);
+            justify-self: end;
+        }
+        .timer-pill.hidden { display: none; }
+        .simple-mode .room-name,
+        .simple-mode .style-pill,
+        .simple-mode .message {
+            display: none;
+        }
+        .simple-mode .header {
+            grid-template-columns: 1fr;
+            text-align: center;
+        }
+        .simple-mode .counter {
+            font-size: 26px;
+        }
+        .message {
+            color: var(--muted);
+            font-size: 14px;
+        }
+        .tree {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            align-items: center;
+        }
+        .simple-branches {
+            display: grid;
+            gap: 12px;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 260px));
+            justify-content: center;
+            width: 100%;
+        }
+        .branch-summary {
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 12px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        .branch-summary-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+        }
+        .branch-summary-title {
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--muted);
+            margin: 0;
+        }
+        .branch-summary-count {
+            font-size: 20px;
+            font-weight: 700;
+        }
+        .branch-grid {
+            display: grid;
+            gap: 12px;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 260px));
+            justify-content: center;
+            width: 100%;
+        }
+        .branch-column {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+        .branch-column + .branch-column {
+            border-left: 1px solid rgba(255,255,255,0.08);
+            padding-left: 12px;
+            margin-left: 4px;
+        }
+        .branch-title-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+        }
+        .branch-title {
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--muted);
+            margin: 0 0 6px 0;
+        }
+        .branch-timer {
+            font-size: 11px;
+            font-weight: 700;
+            padding: 4px 8px;
+            border-radius: 999px;
+            border: 1px solid var(--border);
+            background: rgba(255,255,255,0.06);
+            color: var(--text);
+            white-space: nowrap;
+        }
+        .stage {
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 12px;
+        }
+        .stage-title {
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--muted);
+            margin: 0 0 10px 0;
+        }
+        .node-row {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 10px;
+        }
+        .node {
+            border-radius: 10px;
+            border: 1px solid var(--border);
+            padding: 10px 12px;
+            background: rgba(255,255,255,0.03);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+        }
+        .node-name {
+            font-weight: 600;
+            font-size: 14px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .node-state {
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
+            padding: 4px 8px;
+            border-radius: 999px;
+            border: 1px solid transparent;
+        }
+        .node.running { border-color: rgba(44,119,209,0.5); }
+        .node.starting { border-color: rgba(194,123,47,0.55); }
+        .node.solved { border-color: rgba(43,138,62,0.5); }
+        .node.locked { border-color: rgba(80,86,95,0.5); opacity: 0.75; }
+        .node.running .node-state { background: rgba(44,119,209,0.15); color: #b9d8ff; border-color: rgba(44,119,209,0.35); }
+        .node.starting .node-state { background: rgba(194,123,47,0.2); color: #ffe0b8; border-color: rgba(194,123,47,0.35); }
+        .node.solved .node-state { background: rgba(43,138,62,0.18); color: #b9f1c7; border-color: rgba(43,138,62,0.35); }
+        .node.locked .node-state { background: rgba(80,86,95,0.2); color: #c0c5cc; border-color: rgba(80,86,95,0.35); }
+        .hidden { display: none; }
+        @media (max-width: 720px) {
+            .header { grid-template-columns: 1fr; text-align: left; }
+            .counter { text-align: left; }
+            .style-pill { justify-self: start; }
+        }
+    </style>
+</head>
+<body>
+    <div class="screensaver" id="screensaver">
+        <div class="fallback">Screensaver</div>
+    </div>
+    <div class="victory-overlay" id="victory-overlay">
+        <div class="victory-card">
+            <div class="victory-media" id="victory-media">
+                <div class="message">Victory</div>
+            </div>
+        </div>
+        <div class="victory-message" id="victory-message">Room was solved</div>
+    </div>
+    <div class="screen" id="progress-screen">
+        <div class="header">
+            <div>
+                <div class="room-name" id="room-name">Room</div>
+                <div class="message" id="state-message"></div>
+            </div>
+            <div>
+                <div class="counter" id="progress-counter">Puzzle Solved: 0/0</div>
+                <div class="timer-pill hidden" id="room-timer" data-start-time="">--:--</div>
+                <div class="style-pill" id="style-label">Simple</div>
+            </div>
+        </div>
+        <div class="tree" id="tree-container"></div>
+    </div>
+
+    <script>
+        const STYLE_LABELS = {
+            'simple': 'Simple',
+            'progress-tree': 'Progress Tree',
+            'entire-tree': 'Entire Tree'
+        };
+
+        function sanitizeSlug(slug) {
+            return (slug || "").toString().trim().toLowerCase().replace(/[^a-z0-9-_]/g, "");
+        }
+
+        const params = new URLSearchParams(window.location.search);
+        const screenParam = params.get('screen');
+        const rawSlug = screenParam
+            ? screenParam.toString()
+            : window.location.pathname.replace(/^\/+/, '').split(/[?#]/)[0];
+        const screenSlug = sanitizeSlug(rawSlug) || 'progress';
+        const roleUrl = '/api/screens/' + encodeURIComponent(screenSlug) + '/status';
+
+        const roomNameEl = document.getElementById('room-name');
+        const counterEl = document.getElementById('progress-counter');
+        const treeEl = document.getElementById('tree-container');
+        const messageEl = document.getElementById('state-message');
+        const styleLabelEl = document.getElementById('style-label');
+        const saver = document.getElementById('screensaver');
+        const screenEl = document.getElementById('progress-screen');
+        const roomTimerEl = document.getElementById('room-timer');
+        const victoryOverlay = document.getElementById('victory-overlay');
+        const victoryMedia = document.getElementById('victory-media');
+        const victoryMessage = document.getElementById('victory-message');
+
+        let lastRenderKey = '';
+        let saverUrl = null;
+        let saverVisible = null;
+        let serverTimeOffsetMs = 0;
+        let runningTimeEnabled = false;
+        let roomRunning = false;
+        let roomStartTime = null;
+        let victoryUrl = null;
+        let victoryTimer = null;
+        let lastRedirectAt = 0;
+
+        function safeReplace(url) {
+            const now = Date.now();
+            if (now - lastRedirectAt < 2000) return;
+            lastRedirectAt = now;
+            window.location.replace(url);
+        }
+        let branchSolvedCache = new Set();
+
+        function formatElapsed(ms) {
+            if (!Number.isFinite(ms) || ms < 0) return '--:--';
+            const total = Math.floor(ms / 1000);
+            const hours = Math.floor(total / 3600);
+            const minutes = Math.floor((total % 3600) / 60);
+            const seconds = total % 60;
+            if (hours > 0) {
+                return `${hours}:${String(minutes).padStart(2,'0')}:${String(seconds).padStart(2,'0')}`;
+            }
+            return `${String(minutes).padStart(2,'0')}:${String(seconds).padStart(2,'0')}`;
+        }
+
+        function getServerNow() {
+            return Date.now() - serverTimeOffsetMs;
+        }
+
+        function updateRunningTimers() {
+            const timers = document.querySelectorAll('[data-start-time]');
+            timers.forEach(el => {
+                if (!runningTimeEnabled || !roomRunning) {
+                    el.textContent = '--:--';
+                    return;
+                }
+                const start = parseInt(el.dataset.startTime, 10);
+                if (!Number.isFinite(start)) {
+                    el.textContent = '--:--';
+                    return;
+                }
+                el.textContent = formatElapsed(getServerNow() - start);
+            });
+        }
+
+        function cacheBust(url) {
+            const sep = url.includes('?') ? '&' : '?';
+            return `${url}${sep}v=${Date.now()}`;
+        }
+
+        function buildVictoryUrl(url, payload) {
+            if (!payload || !/\.html?(\?|$)/i.test(url)) return url;
+            const sep = url.includes('?') ? '&' : '?';
+            if (payload.room) return `${url}${sep}room=1`;
+            if (Number.isFinite(payload.branch)) return `${url}${sep}branch=${payload.branch}`;
+            return url;
+        }
+
+        function applyVictoryMedia(url, payload) {
+            if (!victoryMedia || !url || url === victoryUrl) return;
+            const resolved = buildVictoryUrl(url, payload);
+            victoryUrl = resolved;
+            victoryMedia.innerHTML = '';
+            if (/\.html?(\?|$)/i.test(url)) {
+                const iframe = document.createElement('iframe');
+                iframe.src = cacheBust(resolved);
+                iframe.title = 'Victory';
+                victoryMedia.appendChild(iframe);
+            } else {
+                const img = document.createElement('img');
+                img.src = cacheBust(resolved);
+                img.alt = 'Victory';
+                victoryMedia.appendChild(img);
+            }
+        }
+
+        function showVictoryFlash(message, url, payload) {
+            if (!victoryOverlay) return;
+            const isHtml = url && /\.html?(\?|$)/i.test(url);
+            if (victoryMessage) {
+                victoryMessage.textContent = message || '';
+                victoryMessage.classList.toggle('hidden', isHtml);
+            }
+            if (url) applyVictoryMedia(url, payload);
+            victoryOverlay.classList.add('active');
+            if (victoryTimer) clearTimeout(victoryTimer);
+            victoryTimer = setTimeout(() => {
+                victoryOverlay.classList.remove('active');
+            }, 5000);
+        }
+
+        function computeSolvedBranches(branches, statusMap) {
+            const solved = new Set();
+            branches.forEach(branch => {
+                const puzzles = branch.puzzles || [];
+                if (!puzzles.length) return;
+                const allSolved = puzzles.every(p => deriveState(p.id, statusMap) === 'solved');
+                if (allSolved) solved.add(branch.id);
+            });
+            return solved;
+        }
+
+        function showSaver(on) {
+            if (!saver || !screenEl) return;
+            const nextVisible = !!on;
+            if (saverVisible === nextVisible) return;
+            saverVisible = nextVisible;
+            saver.classList.toggle('hidden', !nextVisible);
+            screenEl.classList.toggle('hidden', nextVisible);
+        }
+
+        function applySaver(url) {
+            if (!saver || !url || url === saverUrl) return;
+            saverUrl = url;
+            saver.innerHTML = '';
+            if (/\.html?(\?|$)/i.test(url)) {
+                const iframe = document.createElement('iframe');
+                iframe.src = url;
+                iframe.title = 'Screensaver';
+                iframe.style.width = '100%';
+                iframe.style.height = '100%';
+                iframe.style.border = 'none';
+                saver.appendChild(iframe);
+            } else {
+                const img = document.createElement('img');
+                img.src = saverUrl;
+                img.alt = 'Screensaver';
+                saver.appendChild(img);
+            }
+        }
+
+        function deriveState(puzzleId, statusMap) {
+            const state = (statusMap[puzzleId]?.state || 'locked').toLowerCase();
+            if (state === 'solved') return 'solved';
+            if (state === 'starting') return 'starting';
+            if (state === 'active' || state === 'running' || state === 'checking' || state === 'uploading' || state === 'downloading') return 'running';
+            return 'locked';
+        }
+
+        function groupByDepth(puzzles) {
+            const map = new Map();
+            puzzles.forEach(p => {
+                const depth = Number.isFinite(p.depth) ? p.depth : 0;
+                if (!map.has(depth)) map.set(depth, []);
+                map.get(depth).push(p);
+            });
+            return Array.from(map.entries()).sort((a, b) => a[0] - b[0]);
+        }
+
+        function renderSimpleBranches(branchList, statusMap, showRunningTime, running) {
+            if (!branchList.length) {
+                return `<div class="message">No puzzles configured.</div>`;
+            }
+            if (branchList.length === 1) {
+                return '';
+            }
+            const cards = branchList.map((branch, idx) => {
+                const items = branch.puzzles || [];
+                const total = items.length;
+                const solved = items.filter(p => deriveState(p.id, statusMap) === 'solved').length;
+                const startTime = Number.isFinite(branch.startTime) ? branch.startTime : null;
+                const timer = showRunningTime
+                    ? `<div class="branch-timer" data-start-time="${startTime ?? ''}">--:--</div>`
+                    : '';
+                return `
+                    <div class="branch-summary">
+                        <div class="branch-summary-header">
+                            <div class="branch-summary-title">Branch ${idx + 1}</div>
+                            ${timer}
+                        </div>
+                        <div class="branch-summary-count">${solved}/${total}</div>
+                        <div class="message">Solved</div>
+                    </div>`;
+            });
+            return `<div class="simple-branches">${cards.join('')}</div>`;
+        }
+
+        function renderTree(puzzles, statusMap, style, branches, showRunningTime) {
+            if (!treeEl) return;
+            treeEl.innerHTML = '';
+            const branchList = Array.isArray(branches) && branches.length
+                ? branches
+                : [{ id: 1, puzzles }];
+            if (style === 'simple') {
+                treeEl.classList.remove('hidden');
+                treeEl.innerHTML = renderSimpleBranches(branchList, statusMap, showRunningTime, roomRunning);
+                return;
+            }
+            treeEl.classList.remove('hidden');
+            const multipleBranches = branchList.length > 1;
+            const filterVisible = (items) => {
+                if (style !== 'progress-tree') return items;
+                return items.filter(p => {
+                    const st = deriveState(p.id, statusMap);
+                    return st === 'running' || st === 'starting' || st === 'solved';
+                });
+            };
+            let html = `<div class="branch-grid">`;
+            branchList.forEach((branch, idx) => {
+                const visible = filterVisible(branch.puzzles || []);
+                html += `<div class="branch-column">`;
+                if (multipleBranches) {
+                    const startTime = Number.isFinite(branch.startTime) ? branch.startTime : null;
+                    const timer = showRunningTime
+                        ? `<div class="branch-timer" data-start-time="${startTime ?? ''}">--:--</div>`
+                        : '';
+                    html += `<div class="branch-title-row"><div class="branch-title">Branch ${idx + 1}</div>${timer}</div>`;
+                }
+                if (!visible.length) {
+                    html += `<div class="message">${style === 'progress-tree' ? 'No puzzles solved or running yet.' : 'No puzzles configured.'}</div>`;
+                    html += `</div>`;
+                    return;
+                }
+                const grouped = groupByDepth(visible);
+                grouped.forEach(([depth, items]) => {
+                    html += `<div class="stage">`;
+                    html += `<div class="stage-title">Stage ${depth + 1}</div>`;
+                    html += `<div class="node-row">`;
+                    items.forEach(p => {
+                        const state = deriveState(p.id, statusMap);
+                        html += `<div class="node ${state}">`;
+                        html += `<div class="node-name" title="${p.name || 'Puzzle'}">${p.name || 'Puzzle'}</div>`;
+                        html += `<div class="node-state">${state}</div>`;
+                        html += `</div>`;
+                    });
+                    html += `</div></div>`;
+                });
+                html += `</div>`;
+            });
+            html += `</div>`;
+            treeEl.innerHTML = html;
+        }
+
+        async function poll() {
+            try {
+                const [screenRes, flowRes, statusRes, roomRes, settingsRes] = await Promise.all([
+                    fetch(roleUrl, { cache: 'no-store' }),
+                    fetch('/api/runtime/puzzle-flow', { cache: 'no-store' }),
+                    fetch('/api/runtime/status', { cache: 'no-store' }),
+                    fetch('/api/runtime/room/status', { cache: 'no-store' }),
+                    fetch('/api/system/settings', { cache: 'no-store' })
+                ]);
+
+                const flowData = flowRes.ok ? await flowRes.json() : { puzzles: [] };
+                const statusMap = statusRes.ok ? await statusRes.json() : {};
+                const roomStatus = roomRes.ok ? await roomRes.json() : {};
+                const running = roomStatus.running !== false;
+                if (!screenRes.ok) {
+                    if (!running) showSaver(true);
+                    return;
+                }
+                const screenData = await screenRes.json();
+                if (!screenData.exists) {
+                    if (!running) showSaver(true);
+                    return;
+                }
+                const role = (screenData.role || 'player').toLowerCase();
+                if (role !== 'progress' && running) {
+                    safeReplace('/' + encodeURIComponent(screenSlug));
+                    return;
+                }
+
+                const allBranches = Array.isArray(flowData.branches) ? flowData.branches : [];
+                const selectedBranchIds = Array.isArray(screenData.branchIds)
+                    ? screenData.branchIds.map(n => parseInt(n, 10)).filter(n => Number.isFinite(n))
+                    : [];
+                const activeBranches = selectedBranchIds.length
+                    ? allBranches.filter(b => selectedBranchIds.includes(b.id))
+                    : allBranches;
+                const branchPuzzles = activeBranches.flatMap(b => b.puzzles || []);
+                const puzzles = branchPuzzles.length ? branchPuzzles : (Array.isArray(flowData.puzzles) ? flowData.puzzles : []);
+                const total = puzzles.length;
+                const solvedCount = puzzles.filter(p => deriveState(p.id, statusMap) === 'solved').length;
+                const style = STYLE_LABELS[screenData.progressStyle] ? screenData.progressStyle : 'simple';
+                const roomName = flowData.roomName || roomStatus.roomName || 'Room';
+                const solvedAll = total > 0 && solvedCount >= total;
+                const settingsData = settingsRes.ok ? await settingsRes.json() : {};
+                const settings = settingsData.settings || {};
+                const showRunningTime = !!screenData.showRunningTime;
+                const roomStart = Number.isFinite(roomStatus.gameStartTime)
+                    ? roomStatus.gameStartTime
+                    : (Number.isFinite(flowData.gameStartTime) ? flowData.gameStartTime : null);
+                const singleBranchSelected = activeBranches.length === 1;
+                const branchesForVictory = activeBranches.length ? activeBranches : allBranches;
+
+                const renderKey = JSON.stringify({
+                    puzzles: puzzles.map(p => ({ id: p.id, depth: p.depth })),
+                    branches: activeBranches.map(b => ({ id: b.id, count: (b.puzzles || []).length })),
+                    branchStarts: activeBranches.map(b => ({ id: b.id, start: b.startTime || null })),
+                    status: statusMap,
+                    style,
+                    roomName,
+                    running,
+                    solvedAll,
+                    solvedCount,
+                    total,
+                    showRunningTime,
+                    roomStart,
+                    saver: settings.screenSaverImage || '',
+                    victory: settings.victoryScreen || ''
+                });
+                if (Number.isFinite(roomStatus.serverTime)) {
+                    serverTimeOffsetMs = Date.now() - roomStatus.serverTime;
+                }
+                runningTimeEnabled = showRunningTime;
+                roomRunning = running;
+                roomStartTime = roomStart;
+                if (!running) {
+                    branchSolvedCache = new Set();
+                } else if (branchesForVictory.length) {
+                    const solvedNow = computeSolvedBranches(branchesForVictory, statusMap);
+                    branchesForVictory.forEach((branch, idx) => {
+                        if (solvedNow.has(branch.id) && !branchSolvedCache.has(branch.id)) {
+                            const isRoom = branchesForVictory.length <= 1;
+                            const label = isRoom ? 'The room was solve' : `Branch ${idx + 1} was solved`;
+                            showVictoryFlash(label, settings.victoryScreen, { room: isRoom, branch: idx + 1 });
+                        }
+                    });
+                    branchSolvedCache = solvedNow;
+                }
+                if (roomTimerEl) {
+                    const showRoomTimer = showRunningTime && singleBranchSelected;
+                    roomTimerEl.classList.toggle('hidden', !showRoomTimer);
+                    roomTimerEl.dataset.startTime = showRoomTimer && Number.isFinite(roomStart) ? roomStart : '';
+                    if (!showRoomTimer) {
+                        roomTimerEl.textContent = '--:--';
+                    }
+                }
+                if (renderKey === lastRenderKey) {
+                    updateRunningTimers();
+                    return;
+                }
+                lastRenderKey = renderKey;
+
+                if (!running) {
+                    if (settings.screenSaverImage) {
+                        applySaver(settings.screenSaverImage);
+                    }
+                    showSaver(true);
+                    if (messageEl) messageEl.textContent = '';
+                    return;
+                }
+
+                showSaver(false);
+                if (roomNameEl) roomNameEl.textContent = roomName.replace('.json','');
+                if (counterEl) counterEl.textContent = `Puzzle Solved: ${solvedCount}/${total || 0}`;
+                if (styleLabelEl) {
+                    if (style === 'entire-tree') {
+                        styleLabelEl.classList.add('hidden');
+                    } else {
+                        styleLabelEl.classList.remove('hidden');
+                        styleLabelEl.textContent = STYLE_LABELS[style] || 'Simple';
+                    }
+                }
+                document.body.classList.toggle('simple-mode', style === 'simple');
+                const headerEl = document.querySelector('.header');
+                if (headerEl) {
+                    headerEl.classList.toggle('center-counter', style === 'simple');
+                }
+
+                if (messageEl) {
+                    messageEl.textContent = running ? '' : 'Room not running.';
+                }
+
+                renderTree(puzzles, statusMap, style, activeBranches, showRunningTime);
+                updateRunningTimers();
+            } catch (err) {
+                if (messageEl) messageEl.textContent = 'Connection lost.';
+            }
+        }
+
+        poll();
+        setInterval(poll, 5000);
+
+        const eventSource = new EventSource('/api/events');
+        eventSource.addEventListener('update', (evt) => {
+            try {
+                const data = JSON.parse(evt.data || '{}');
+                const type = (data?.type || '').toString();
+                if (['puzzle-state', 'room-restart', 'branch-restart', 'hints', 'room-config'].includes(type)) {
+                    poll();
+                }
+            } catch (e) {}
+        });
+    </script>
+</body>
+</html>

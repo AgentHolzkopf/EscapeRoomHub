@@ -74,10 +74,53 @@ LiteGraph.registerNodeType("escape/Tablet", TabletNode);
 function LogicNode() {
     this.properties = { logicType: "AND" };
     this.addOutput("Done", LiteGraph.ACTION);
-    this.addInput("Trigger 1", LiteGraph.ACTION);
-    this.addInput("Trigger 2", LiteGraph.ACTION);
+    this.addInput("Trigger", LiteGraph.ACTION);
     this.triggeredInputs = new Set();
 }
+LogicNode.prototype.onConfigure = function() {
+    const logicType = (this.properties?.logicType || "AND").toUpperCase();
+    const links = this.graph ? this.graph.links : null;
+    this.inputs = this.inputs || [];
+    const actionInputs = this.inputs.filter(inp => inp && (inp.type === LiteGraph.ACTION || inp.type === LiteGraph.EVENT || inp.type === "action" || inp.type === "event" || inp.type === -1));
+    if (!actionInputs.length) {
+        this.addInput("Trigger", LiteGraph.ACTION);
+    }
+    const mainIndex = this.inputs.findIndex(inp => inp && (inp.type === LiteGraph.ACTION || inp.type === LiteGraph.EVENT || inp.type === "action" || inp.type === "event" || inp.type === -1));
+    const mainInput = mainIndex >= 0 ? this.inputs[mainIndex] : null;
+    const mainLinks = [];
+    if (mainInput) {
+        if (Array.isArray(mainInput.links)) mainLinks.push(...mainInput.links);
+        else if (mainInput.link != null) mainLinks.push(mainInput.link);
+        mainInput.name = "Trigger";
+        mainInput.type = LiteGraph.ACTION;
+        mainInput.nameLocked = true;
+        mainInput.multiple = true;
+    }
+    for (let i = this.inputs.length - 1; i >= 0; i -= 1) {
+        const inp = this.inputs[i];
+        if (!inp) continue;
+        const isAction = (inp.type === LiteGraph.ACTION || inp.type === LiteGraph.EVENT || inp.type === "action" || inp.type === "event" || inp.type === -1);
+        if (isAction && i !== mainIndex) {
+            const extraLinks = [];
+            if (Array.isArray(inp.links)) extraLinks.push(...inp.links);
+            else if (inp.link != null) extraLinks.push(inp.link);
+            inp.link = null;
+            inp.links = null;
+            extraLinks.forEach(id => {
+                if (!links || !links[id]) return;
+                links[id].target_slot = mainIndex;
+                if (!mainLinks.includes(id)) mainLinks.push(id);
+            });
+            this.removeInput(i);
+        } else if (!isAction && logicType !== "QUEUE") {
+            this.removeInput(i);
+        }
+    }
+    if (mainInput) {
+        mainInput.links = mainLinks.length ? mainLinks : null;
+        mainInput.link = mainLinks.length ? mainLinks[0] : null;
+    }
+};
 LogicNode.prototype.onAction = function(action, param, options, slot_index) {
     console.log(`SERVER: LogicNode input ${slot_index} triggered.`);
     

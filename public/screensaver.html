@@ -83,6 +83,37 @@
 
         async function poll() {
             try {
+                const [statusRes, settingsRes] = await Promise.all([
+                    fetch('/api/runtime/room/status', { cache: 'no-store' }),
+                    fetch('/api/system/settings', { cache: 'no-store' })
+                ]);
+                const status = await statusRes.json();
+                const settings = await settingsRes.json();
+                const total = status?.puzzles?.total || 0;
+                const solved = status?.puzzles?.solved || 0;
+                const solvedAll = total > 0 && solved >= total;
+                const running = !!status.running;
+                const startTs = status?.gameStartTime || null;
+                if (startTs) {
+                    if (lastGameStart === null) lastGameStart = startTs;
+                } else if (!running) {
+                    lastGameStart = null;
+                }
+                const victoryUrl = settings.settings?.victoryScreen || null;
+                const forceVictory = mode === 'victory';
+                const shouldShowVictory = victoryUrl && (solvedAll || forceVictory);
+                const screenSaverUrl = settings.settings?.screenSaverImage || null;
+                const baseSaverType = screenParam ? 'hint' : 'player';
+                const gameRestarted = lastGameStart !== null && startTs !== null && startTs !== lastGameStart;
+
+                if (!running) {
+                    victoryActive = false;
+                    if (screenSaverUrl) {
+                        applySaver(screenSaverUrl);
+                    }
+                    return;
+                }
+
                 const targetPath = returnUrl || '/';
                 const targetSlug = getReturnSlug();
 
@@ -112,30 +143,8 @@
                         return;
                     }
                 }
-                const [statusRes, settingsRes] = await Promise.all([
-                    fetch('/api/runtime/room/status', { cache: 'no-store' }),
-                    fetch('/api/system/settings', { cache: 'no-store' })
-                ]);
-                const status = await statusRes.json();
-                const settings = await settingsRes.json();
-                const total = status?.puzzles?.total || 0;
-                const solved = status?.puzzles?.solved || 0;
-                const solvedAll = total > 0 && solved >= total;
-                const running = !!status.running;
-                const startTs = status?.gameStartTime || null;
-                if (startTs) {
-                    if (lastGameStart === null) lastGameStart = startTs;
-                } else if (!running) {
-                    lastGameStart = null;
-                }
-                const victoryUrl = settings.settings?.victoryScreen || null;
-                const forceVictory = mode === 'victory';
-                const shouldShowVictory = victoryUrl && (solvedAll || forceVictory);
-                const screenSaverUrl = settings.settings?.screenSaverImage || null;
-                const baseSaverType = screenParam ? 'hint' : 'player';
-                const gameRestarted = lastGameStart !== null && startTs !== null && startTs !== lastGameStart;
 
-                if (mode === 'victory' && (!running || !solvedAll || gameRestarted)) {
+                if (mode === 'victory' && (!solvedAll || gameRestarted)) {
                     redirected = true;
                     victoryActive = false;
                     const fallback = new URL('/screensaver.html', window.location.origin);

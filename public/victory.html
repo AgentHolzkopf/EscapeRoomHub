@@ -65,9 +65,27 @@
 </head>
 <body>
     <div class="card">
-        <div class="badge">Room Complete</div>
+        <div class="badge" id="victory-badge">The room was solve</div>
         <h1>Congratulations</h1>
-        <p>The room has been completed. Await further instructions.</p>
+        <p id="victory-text">The room was solve.</p>
     </div>
+    <script>
+        (function () {
+            const params = new URLSearchParams(window.location.search);
+            const badge = document.getElementById('victory-badge');
+            const text = document.getElementById('victory-text');
+            const branchRaw = params.get('branch');
+            const roomFlag = params.has('room');
+            const branchNum = branchRaw ? parseInt(branchRaw, 10) : null;
+            let message = 'The room was solve';
+
+            if (!roomFlag && Number.isFinite(branchNum)) {
+                message = `Branch ${branchNum} was solved`;
+            }
+
+            if (badge) badge.textContent = message;
+            if (text) text.textContent = `${message}.`;
+        })();
+    </script>
 </body>
 </html>

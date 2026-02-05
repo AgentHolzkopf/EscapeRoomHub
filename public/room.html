@@ -16,7 +16,7 @@
         .monitor-container {
             display: grid;
             grid-template-rows: auto 1fr auto;
-            grid-template-columns: 1fr 360px;
+            grid-template-columns: 1fr 260px;
             gap: 14px;
             height: calc(100vh - 32px);
             padding: 16px;
@@ -62,6 +62,74 @@
         .flow-scroll {
             overflow-y: auto;
             padding-right: 6px;
+            flex: 1 1 auto;
+        }
+        .branch-grid {
+            display: grid;
+            gap: 12px;
+            grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+        }
+        .branch-column {
+            background: #262626;
+            border: 1px solid #3d3d3d;
+            border-radius: 10px;
+            padding: 10px;
+            display: flex;
+            flex-direction: column;
+            min-height: 100%;
+        }
+        .branch-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            margin-bottom: 8px;
+        }
+        .branch-timer {
+            font-weight: 700;
+            font-size: 12px;
+            padding: 4px 8px;
+            border-radius: 999px;
+            border: 1px solid #3a3a3a;
+            background: rgba(255,255,255,0.04);
+            color: #e6e6e6;
+        }
+        .branch-title {
+            font-size: 13px;
+            font-weight: 700;
+            color: #d3e2f0;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .branch-body {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        .branch-footer {
+            margin-top: auto;
+            padding-top: 10px;
+        }
+        .branch-restart-btn {
+            width: 100%;
+            background: #3a3a3a;
+            border: 1px solid #555;
+            color: #e6e6e6;
+            border-radius: 8px;
+            padding: 8px 12px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.15s ease;
+        }
+        .branch-restart-btn:hover {
+            border-color: #2c77d1;
+            color: #fff;
+        }
+        .branch-footer-grid {
+            display: grid;
+            gap: 12px;
+            grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+            margin-top: 10px;
         }
         .stage {
             margin-bottom: 12px;
@@ -79,7 +147,6 @@
             padding: 8px;
             min-width: 220px;
             max-width: 280px;
-            min-height: 150px;
             flex: 1 1 220px;
             display: flex;
             flex-direction: column;
@@ -94,8 +161,13 @@
         .badge { padding: 2px 8px; border-radius: 6px; font-size: 11px; font-weight: 700; text-transform: uppercase; }
         .badge.locked { background: #444; color: #aaa; }
         .badge.running { background: #2c77d1; color: #fff; }
+        .badge.starting { background: #c27b2f; color: #fff; }
+        .badge.checking { background: #3b82f6; color: #fff; }
         .badge.solved { background: #2b8a3e; color: #fff; }
         .badge.offline { background: #7a2b2b; color: #fff; }
+        .badge.uploading { background: #0f766e; color: #e5fffb; }
+        .badge.downloading { background: #0b3b91; color: #e3ecff; }
+        .badge.queueing { background: #7c5a2a; color: #fff; }
         .badge.analog { background: #555; color: #ddd; }
         .info-line { display: flex; align-items: center; gap: 8px; font-size: 12px; color: #cfd7e0; }
         .dot { width: 10px; height: 10px; border-radius: 50%; background: #888; }
@@ -117,7 +189,8 @@
             overflow: hidden;
             text-overflow: ellipsis;
         }
-        .chip-ext { border-color: #2c77d1; color: #d4e5ff; background: rgba(44,119,209,0.15); }
+        .chip-ext { border-color: #3c3c3c; color: #b6c0cc; background: rgba(255,255,255,0.04); }
+        .chip-ext.checking { border-color: #2c77d1; color: #d4e5ff; background: rgba(44,119,209,0.15); }
         .chip-ext.no { border-color: #704040; background: rgba(156,78,78,0.15); color: #f4d5d5; }
         .chip.muted { color: #9aa6b5; border-color: #3c3c3c; }
         .chip.status-chip { padding: 4px 8px; height: 28px; min-height: 28px; }
@@ -133,15 +206,21 @@
         .card-footer .card-action { flex: 1 1 0; text-align: center; }
         .card-action:hover { border-color: #2c77d1; color: #fff; }
         .card-action.disabled { opacity: 0.5; pointer-events: none; }
-        .solve-row { margin-top: 6px; }
-        .solve-btn { background: #2b8a3e; border-color: #2b8a3e; color: #fff; width: 100%; text-align: center; }
+        .solve-btn { background: #2b8a3e; border-color: #2b8a3e; color: #fff; width: 100%; text-align: center; flex: 2 1 0; }
         .solve-btn:hover { background: #247434; border-color: #247434; color: #fff; }
         .solve-btn.solved { background: #3a3a3a; border-color: #4a4a4a; color: #bfc7d1; cursor: not-allowed; }
         .solve-btn.solved:hover { background: #3a3a3a; color: #bfc7d1; }
+        .solve-btn-inline { margin-left: auto; min-width: 80px; }
         .puzzle-card.state-running { border-color: #2c77d1; box-shadow: 0 0 0 1px rgba(44,119,209,0.25); }
+        .puzzle-card.state-starting { border-color: #c27b2f; box-shadow: 0 0 0 1px rgba(194,123,47,0.25); }
+        .puzzle-card.state-checking { border-color: #3b82f6; box-shadow: 0 0 0 1px rgba(59,130,246,0.25); }
         .puzzle-card.state-solved { border-color: #2b8a3e; box-shadow: 0 0 0 1px rgba(43,138,62,0.25); }
         .puzzle-card.state-offline { border-color: #7a2b2b; box-shadow: 0 0 0 1px rgba(122,43,43,0.25); }
+        .puzzle-card.state-uploading { border-color: #0f766e; box-shadow: 0 0 0 1px rgba(15,118,110,0.25); }
+        .puzzle-card.state-downloading { border-color: #0b3b91; box-shadow: 0 0 0 1px rgba(11,59,145,0.25); }
+        .puzzle-card.state-queueing { border-color: #7c5a2a; box-shadow: 0 0 0 1px rgba(124,90,42,0.25); }
         .puzzle-card.state-locked { border-color: #3f3f3f; }
+        .puzzle-card.queue-blocked { opacity: 0.45; filter: grayscale(0.4); }
 
         /* Data panel */
         .detail-panel {
@@ -159,21 +238,45 @@
             background: #242424;
             border: 1px solid #3a3a3a;
             border-radius: 8px;
-            padding: 10px;
+            padding: 8px;
             display: grid;
             grid-template-columns: 1fr auto;
             gap: 6px 12px;
             align-items: center;
         }
-        .data-row .meta { font-size: 12px; color: #9fb5c9; display: flex; gap: 8px; align-items: center; }
-        .data-row .key { font-weight: 700; color: #f2f2f2; }
-        .data-row .value { color: #cfd7e0; font-family: 'Consolas','Courier New',monospace; word-break: break-all; }
-        .data-row .type { color: #e6eef7; padding: 2px 6px; border-radius: 4px; font-size: 11px; border: 1px solid #12324f; background: #1f2f44; text-transform: capitalize; }
+        .data-row.external {
+            grid-template-columns: 1fr auto;
+            align-items: start;
+            padding: 5px 6px;
+            row-gap: 2px;
+        }
+        .data-row .meta { font-size: 11px; color: #9fb5c9; display: flex; flex-direction: column; gap: 4px; align-items: flex-end; }
+        .data-row .key { font-weight: 700; color: #f2f2f2; font-size: 13px; min-width: 0; }
+        .data-row .key-line { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+        .data-row .value { color: #cfd7e0; font-family: 'Consolas','Courier New',monospace; word-break: break-all; font-size: 12px; }
+        .data-row.external .key { align-self: start; }
+        .data-row.external .value { font-size: 14px; font-weight: 700; color: #e8eef7; }
+        .data-row.external .meta { align-self: start; }
+        .data-row .type { color: #e6eef7; padding: 2px 6px; border-radius: 4px; font-size: 10px; border: 1px solid #12324f; background: #1f2f44; text-transform: capitalize; }
         .data-row .type[data-type="string"] { background: var(--type-string-bg); border-color: var(--type-string-border); color: #f4e299; }
         .data-row .type[data-type="number"] { background: var(--type-number-bg); border-color: var(--type-number-border); color: #d6e6ff; }
         .data-row .type[data-type="boolean"] { background: var(--type-boolean-bg); border-color: var(--type-boolean-border); color: #efd9ff; }
+        .data-row .type[data-type="media"] { background: var(--type-media-bg); border-color: var(--type-media-border); color: #c7f0df; }
         .data-row .type[data-type="action"], .data-row .type[data-type="-1"] { background: var(--type-action-bg); border-color: var(--type-action-border); color: #e8e8ff; }
-        .data-row .ts { font-size: 11px; color: #8aa0b5; }
+        .data-row .ts { font-size: 10px; color: #8aa0b5; }
+        .data-row.state-running { border-color: #2c77d1; box-shadow: 0 0 0 1px rgba(44,119,209,0.25); }
+        .data-row.state-starting { border-color: #c27b2f; box-shadow: 0 0 0 1px rgba(194,123,47,0.25); }
+        .data-row.state-checking { border-color: #3b82f6; box-shadow: 0 0 0 1px rgba(59,130,246,0.25); }
+        .data-row.state-solved { border-color: #2b8a3e; box-shadow: 0 0 0 1px rgba(43,138,62,0.25); }
+        .data-row.state-offline { border-color: #7a2b2b; box-shadow: 0 0 0 1px rgba(122,43,43,0.25); }
+        .data-row.state-uploading { border-color: #0f766e; box-shadow: 0 0 0 1px rgba(15,118,110,0.25); }
+        .data-row.state-downloading { border-color: #0b3b91; box-shadow: 0 0 0 1px rgba(11,59,145,0.25); }
+        .data-row.state-queueing { border-color: #7c5a2a; box-shadow: 0 0 0 1px rgba(124,90,42,0.25); }
+        .data-row.state-locked { border-color: #3f3f3f; }
+        .ext-check-tag { padding: 2px 6px; border-radius: 999px; font-size: 10px; font-weight: 700; border: 1px solid #1e3a8a; color: #cfe0ff; background: rgba(30,58,138,0.18); }
+        .ext-check-tag.active { border-color: #1d4ed8; color: #d9e7ff; background: rgba(29,78,216,0.2); }
+        .ext-check-tag.solved { border-color: #2b8a3e; color: #b9f1c7; background: rgba(43,138,62,0.2); }
+        .ext-check-tag { font-size: 10px; color: #8aa0b5; display: inline-block; padding: 2px 6px; border-radius: 4px; border: 1px solid #3b3b3b; background: #232323; }
 
         /* Runtime log */
         .runtime-log {
@@ -189,7 +292,7 @@
             z-index: 600;
             font-family: monospace;
         }
-        .runtime-log.expanded { max-height: 240px; }
+        .runtime-log.expanded { max-height: 240px; height: 240px; }
         .runtime-log.collapsed { max-height: 26px; }
         .runtime-log-header {
             display: flex;
@@ -243,6 +346,18 @@
             margin-left: auto;
         }
         .runtime-log-toggle:hover { color: #fff; }
+        .runtime-log.collapsed .runtime-log-clear { display: none; }
+        .runtime-log-clear {
+            border: 1px solid #3a3a3a;
+            background: #2a2a2a;
+            color: #d7dee8;
+            border-radius: 4px;
+            padding: 2px 8px;
+            font-size: 11px;
+            cursor: pointer;
+            transition: all 0.15s ease;
+        }
+        .runtime-log-clear:hover { color: #fff; border-color: #4a4a4a; }
         .runtime-log-body {
             display: none;
             padding: 0;
@@ -260,11 +375,19 @@
             font-size: 11px;
             line-height: 1.5;
         }
-        .runtime-log-entry { color: #ccc; }
+        .runtime-log-entry { color: #fff; }
         .runtime-log-entry.log-success { color: #4caf50; }
         .runtime-log-entry.log-warn { color: #ffc107; }
         .runtime-log-entry.log-error { color: #ff5555; }
+        .runtime-log-entry.log-system { color: #4aa3ff; }
+        .runtime-log-entry.log-data { color: #4caf50; }
         .runtime-log-empty { color: #9aa6b5; font-size: 11px; padding: 4px 0 10px 10px; }
+        .fallback-tag { color: #ff5555; font-size: 11px; margin-left: 6px; }
+        .room-timer { color: #eaeaea; font-weight: 600; font-size: 13px; padding: 6px 10px; border-radius: 8px; border: 1px solid #2f2f2f; background: rgba(255,255,255,0.04); width: 80px; text-align: center; }
+        .room-status { font-size: 11px; font-weight: 700; text-transform: uppercase; padding: 5px 10px; border-radius: 999px; border: 1px solid #3b3b3b; background: #2a2a2a; color: #cfd7e0; }
+        .room-status.running { background: #1f2f44; border-color: #2c77d1; color: #d6e6ff; }
+        .room-status.solved { background: #1f3225; border-color: #2b8a3e; color: #9ae6b4; }
+        .room-status.stopped { background: #2e2e2e; border-color: #555; color: #c0c5cc; }
 
         /* Scrollbars */
         .flow-scroll::-webkit-scrollbar,
@@ -306,13 +429,14 @@
         .file-label { flex: 1; min-width: 200px; }
         /* Hint modal */
         .hint-modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: none; align-items: center; justify-content: center; z-index: 4500; }
-        .hint-modal { width: min(520px, 95vw); background: #2f2f2f; border: 1px solid #0f2f45; border-radius: 12px; box-shadow: 0 18px 50px rgba(0,0,0,0.6); color: #eaeaea; display: flex; flex-direction: column; overflow: hidden; }
+        .hint-modal { width: min(520px, 95vw); height: 520px; background: #2f2f2f; border: 1px solid #0f2f45; border-radius: 12px; box-shadow: 0 18px 50px rgba(0,0,0,0.6); color: #eaeaea; display: flex; flex-direction: column; overflow: hidden; }
         .hint-modal-header { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; background: #2f2f2f; border-bottom: 1px solid #0f2f45; }
         .hint-modal-header h3 { margin: 0; font-size: 18px; }
-        .hint-modal-body { padding: 14px 16px; display: flex; flex-direction: column; gap: 12px; background: #3a3a3a; border: 1px solid #0f2f45; }
+        .hint-modal-body { padding: 14px 16px; display: flex; flex-direction: column; gap: 12px; background: #3a3a3a; border: 1px solid #0f2f45; flex: 1 1 auto; overflow: hidden; }
+        .hint-toggle-row { display: flex; gap: 10px; flex-wrap: wrap; }
         .hint-textarea {
             width: 100%;
-            min-height: 140px;
+            height: 78px;
             background: #0a3d57;
             border: 1px solid #0f2f45;
             color: #e6e6e6;
@@ -325,10 +449,31 @@
         }
         .hint-textarea::placeholder { color: #b5c2cc; }
         .hint-textarea:focus { outline: 1px solid #0f82c4; border-color: #0f82c4; }
-        .hint-modal-footer { padding: 12px 16px; display: flex; justify-content: flex-end; gap: 8px; border-top: 1px solid #0f2f45; background: #2f2f2f; }
+        .hint-pending { border-top: 1px solid #27485f; padding-top: 8px; flex: 1 1 auto; overflow: hidden; }
+        .hint-pending-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; max-height: 200px; overflow-y: auto; }
+        .hint-pending-item { font-size: 12px; color: #d5e0ea; background: #2f2f2f; border: 1px solid #1f3b4d; border-radius: 8px; padding: 6px 8px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+        .hint-pending-text { flex: 1 1 auto; word-break: break-word; }
+        .hint-pending-actions { display: flex; gap: 6px; align-items: center; }
+        .hint-action { border: 1px solid transparent; background: #233548; color: #dfe9f7; border-radius: 6px; padding: 4px 6px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
+        .hint-action svg { width: 14px; height: 14px; }
+        .hint-action.send { background: #1f6f3a; color: #e8ffef; }
+        .hint-action.move { background: #1b3f7a; color: #d9e7ff; }
+        .hint-action.delete { background: #7a2b2b; color: #ffe3e3; }
+        .hint-pending-empty { font-size: 12px; color: #9fb5c9; }
+        .hint-flag { background: #1a3a5c; color: #cfe0ff; border: 1px solid #1f4f7a; border-radius: 999px; padding: 2px 6px; font-size: 10px; font-weight: 700; white-space: nowrap; }
+        .hint-input-wrap { position: relative; }
+        .hint-send-btn { position: absolute; right: 14px; top: 50%; transform: translateY(-50%); border: 1px solid #1f6f3a; background: #1f6f3a; color: #e8ffef; border-radius: 6px; padding: 4px 6px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
+        .hint-send-btn svg { width: 14px; height: 14px; }
+        .hint-textarea { padding-right: 52px; }
+        .hint-textarea::-webkit-scrollbar { width: 8px; }
+        .hint-textarea::-webkit-scrollbar-track { background: #1f1f1f; border-radius: 6px; }
+        .hint-textarea::-webkit-scrollbar-thumb { background: linear-gradient(180deg, #2c6aa3, #1f4f7a); border-radius: 6px; border: 1px solid #12324f; }
+        .hint-textarea::-webkit-scrollbar-thumb:hover { background: linear-gradient(180deg, #3587d4, #236299); }
+        .hint-pending-list::-webkit-scrollbar { width: 8px; }
+        .hint-pending-list::-webkit-scrollbar-track { background: #1f1f1f; border-radius: 6px; }
+        .hint-pending-list::-webkit-scrollbar-thumb { background: linear-gradient(180deg, #2c6aa3, #1f4f7a); border-radius: 6px; border: 1px solid #12324f; }
+        .hint-pending-list::-webkit-scrollbar-thumb:hover { background: linear-gradient(180deg, #3587d4, #236299); }
         .hint-btn { border: 1px solid #555; border-radius: 6px; background: #3a3a3a; color: #eee; padding: 8px 12px; font-weight: 600; cursor: pointer; transition: all 0.15s ease; }
-        .hint-btn.primary { background: #2c77d1; border-color: #2c77d1; }
-        .hint-btn.primary:disabled { opacity: 0.6; cursor: not-allowed; }
         .hint-btn:hover:not(:disabled) { border-color: #3b82f6; color: #fff; }
     </style>
 </head>
@@ -338,6 +483,8 @@
             <div class="header-left">
                 <div class="room-title-row">
                     <div class="room-title" id="room-name">No Room</div>
+                    <div class="room-timer" id="room-timer">--:--</div>
+                    <div class="room-status running" id="room-status">Running</div>
                 </div>
                 <div class="room-sub" id="room-sub">Monitoring</div>
             </div>
@@ -357,6 +504,7 @@
             <div class="flow-scroll" id="flow-container">
                 <div class="loading">Loading flow...</div>
             </div>
+            <div id="branch-footer-container"></div>
         </div>
 
         <div class="detail-panel" id="detail-panel">
@@ -379,9 +527,10 @@
                 <div class="runtime-log-filters">
                     <label class="log-filter"><input type="checkbox" value="heartbeat" checked> Heartbeats</label>
                     <label class="log-filter"><input type="checkbox" value="mqtt" checked> MQTT Messages</label>
-                    <label class="log-filter"><input type="checkbox" value="error" checked> Error Messages</label>
+                    <label class="log-filter"><input type="checkbox" value="error" checked> Warnings/Error Messages</label>
                     <label class="log-filter"><input type="checkbox" value="system" checked> System Messages</label>
                 </div>
+                <button class="runtime-log-clear" type="button" id="runtime-log-clear" aria-label="Clear log">Clear</button>
                 <button class="runtime-log-toggle" type="button" id="runtime-log-toggle" aria-label="Toggle log window">&#9650;</button>
             </div>
             <div class="runtime-log-body">
@@ -418,6 +567,18 @@
                     </div>
                     <div class="settings-sub" id="victory-status"></div>
                 </div>
+                <div class="settings-section">
+                    <div class="settings-title">Media Server</div>
+                    <div class="settings-sub">Allow puzzles to upload and download media files from the Pi.</div>
+                    <div class="settings-field settings-label-row">
+                        <label class="switch">
+                            <input type="checkbox" id="media-server-toggle">
+                            <span class="slider"></span>
+                            <span class="switch-label">Use Mediaserver</span>
+                        </label>
+                    </div>
+                    <div class="settings-sub" id="media-server-status"></div>
+                </div>
             </div>
         </div>
     </div>
@@ -426,30 +587,55 @@
         <div class="hint-modal">
             <div class="hint-modal-header">
                 <h3 id="hint-modal-title">Give Hint</h3>
-                <button class="hint-btn" id="hint-modal-cancel">Close</button>
+                <button class="settings-close-btn" id="hint-modal-cancel" aria-label="Close">X</button>
             </div>
             <div class="hint-modal-body">
-                <label class="switch hint-toggle" style="align-self:flex-start;">
-                    <input type="checkbox" id="hint-show-assignment-toggle" checked>
-                    <span class="slider"></span>
-                    <span class="switch-label">Show Puzzle Assignment</span>
-                </label>
-                <textarea id="hint-text" class="hint-textarea" placeholder="Enter hint text..."></textarea>
-            </div>
-            <div class="hint-modal-footer">
-                <button class="hint-btn primary" id="hint-modal-send" disabled>Send</button>
+                <div class="hint-toggle-row">
+                    <label class="switch hint-toggle">
+                        <input type="checkbox" id="hint-show-assignment-toggle" checked>
+                        <span class="slider"></span>
+                        <span class="switch-label">Show Puzzle Assignment</span>
+                    </label>
+                    <label class="switch hint-toggle">
+                        <input type="checkbox" id="hint-auto-trigger-toggle" checked>
+                        <span class="slider"></span>
+                        <span class="switch-label">Automatic Trigger</span>
+                    </label>
+                </div>
+                <div class="hint-input-wrap">
+                    <textarea id="hint-text" class="hint-textarea" placeholder="Enter hint text..." rows="3"></textarea>
+                    <button class="hint-send-btn" id="hint-send-btn" title="Send">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M5 12h14"></path>
+                            <path d="M13 5l7 7-7 7"></path>
+                        </svg>
+                    </button>
+                </div>
+                <div class="hint-pending">
+                    <div id="hint-pending-list" class="hint-pending-list"></div>
+                </div>
             </div>
         </div>
     </div>
 
     <script>
         let puzzleFlow = [];
+        let branchFlow = [];
+        let branchStartTimes = {};
         let puzzleStatuses = {};
         let dataSnapshot = [];
         let autoRestart = false;
         let autoRestartDelay = 5;
+        let roomStartTime = null;
+        let roomSolvedAt = null;
+        const branchSolvedAt = {};
+        const branchSolvedState = {};
+        const branchStartTimesCache = {};
+        let roomRunning = false;
+        let serverTimeOffsetMs = 0;
 
         const flowContainer = document.getElementById('flow-container');
+        const branchFooterContainer = document.getElementById('branch-footer-container');
         const dataList = document.getElementById('data-list');
         const autoRestartToggle = document.getElementById('auto-restart-toggle');
         const autoRestartDelayInput = document.getElementById('auto-restart-delay');
@@ -464,17 +650,28 @@
         const victoryBtn = document.getElementById('choose-victory-btn');
         const victoryLabel = document.getElementById('victory-file-label');
         const victoryStatus = document.getElementById('victory-status');
-        let systemSettings = { screenSaverImage: null, victoryScreen: null };
+        const mediaServerToggle = document.getElementById('media-server-toggle');
+        const mediaServerStatus = document.getElementById('media-server-status');
+        let systemSettings = { screenSaverImage: null, victoryScreen: null, mediaServerEnabled: false };
+        const roomTimerEl = document.getElementById('room-timer');
+        const roomStatusEl = document.getElementById('room-status');
+        let roomStatus = 'Running';
         const hintModal = document.getElementById('hint-modal');
         const hintModalTitle = document.getElementById('hint-modal-title');
         const hintModalCancel = document.getElementById('hint-modal-cancel');
-        const hintModalSend = document.getElementById('hint-modal-send');
         const hintText = document.getElementById('hint-text');
+        const hintSendBtn = document.getElementById('hint-send-btn');
         const hintShowAssignmentToggle = document.getElementById('hint-show-assignment-toggle');
+        const hintAutoTriggerToggle = document.getElementById('hint-auto-trigger-toggle');
+        const hintPendingList = document.getElementById('hint-pending-list');
         let currentHintPuzzleId = null;
         let currentHintPuzzleName = '';
+        let hintCountdown = [];
+        let hintRefreshTimer = null;
+        let hintRefreshTick = 0;
         const runtimeLogEl = document.getElementById('runtime-log');
         const runtimeLogToggle = document.getElementById('runtime-log-toggle');
+        const runtimeLogClear = document.getElementById('runtime-log-clear');
         const runtimeLogList = document.getElementById('runtime-log-list');
         const runtimeLogEmpty = document.getElementById('runtime-log-empty');
         let runtimeLogs = [];
@@ -483,7 +680,7 @@
         function normalizeDataType(type) {
             const t = (type ?? "string").toString().toLowerCase();
             if (t === "event" || t === "action" || t === "-1") return "action";
-            if (["string", "number", "boolean"].includes(t)) return t;
+            if (["string", "number", "boolean", "media"].includes(t)) return t;
             return "string";
         }
 
@@ -506,8 +703,127 @@
             const type = (entry?.type || '').toLowerCase();
             if (msg.includes('heartbeat')) return 'heartbeat';
             if (msg.includes('mqtt')) return 'mqtt';
-            if (type === 'error' || msg.includes('error')) return 'error';
+            if (type === 'error' || type === 'warn' || type === 'warning' || msg.includes('error') || msg.includes('warn')) return 'error';
             return 'system';
+        }
+
+        function formatElapsed(ms) {
+            if (!Number.isFinite(ms) || ms < 0) return '--:--';
+            const total = Math.floor(ms / 1000);
+            const hours = Math.floor(total / 3600);
+            const minutes = Math.floor((total % 3600) / 60);
+            const seconds = total % 60;
+            if (hours > 0) {
+                return `${hours}:${String(minutes).padStart(2,'0')}:${String(seconds).padStart(2,'0')}`;
+            }
+            return `${String(minutes).padStart(2,'0')}:${String(seconds).padStart(2,'0')}`;
+        }
+
+        function getServerNow() {
+            return Date.now() - serverTimeOffsetMs;
+        }
+
+        function updateRoomTimer() {
+            if (!roomTimerEl) return;
+            const normalized = (roomStatus || '').toString().toLowerCase();
+            if (normalized === 'solved') {
+                if (!roomSolvedAt) {
+                    roomSolvedAt = getServerNow();
+                }
+            } else {
+                roomSolvedAt = null;
+            }
+            if (!roomRunning || !roomStartTime) {
+                roomTimerEl.textContent = '--:--';
+                updateBranchTimers();
+                return;
+            }
+            const endTime = roomSolvedAt || getServerNow();
+            roomTimerEl.textContent = formatElapsed(endTime - roomStartTime);
+            updateBranchTimers();
+        }
+
+        function getSingleBranchStartTime() {
+            if (!Array.isArray(branchFlow) || branchFlow.length !== 1) return null;
+            const branchId = branchFlow[0]?.id;
+            if (!Number.isFinite(branchId)) return null;
+            const start = branchStartTimes[branchId];
+            return Number.isFinite(start) ? start : null;
+        }
+
+        function isBranchSolved(branch) {
+            if (!branch || !Array.isArray(branch.puzzles) || !branch.puzzles.length) return false;
+            return branch.puzzles.every(p => deriveState(p) === 'solved');
+        }
+
+        function updateBranchTimers() {
+            const timers = document.querySelectorAll('.branch-timer');
+            timers.forEach(el => {
+                const raw = el.dataset.branchId;
+                const branchId = parseInt(raw, 10);
+                if (!roomRunning) {
+                    el.textContent = '--:--';
+                    return;
+                }
+                const start = branchStartTimes[branchId];
+                if (!start) {
+                    el.textContent = '--:--';
+                    return;
+                }
+                if (branchStartTimesCache[branchId] && branchStartTimesCache[branchId] !== start) {
+                    delete branchSolvedAt[branchId];
+                }
+                branchStartTimesCache[branchId] = start;
+                const branch = (branchFlow || []).find(b => b.id === branchId);
+                const solved = isBranchSolved(branch);
+                if (solved && !branchSolvedAt[branchId]) {
+                    branchSolvedAt[branchId] = getServerNow();
+                } else if (!solved && branchSolvedAt[branchId]) {
+                    delete branchSolvedAt[branchId];
+                }
+                const endTime = branchSolvedAt[branchId] || getServerNow();
+                el.textContent = formatElapsed(endTime - start);
+            });
+        }
+
+        function updateRoomStatusUI(status) {
+            if (!roomStatusEl) return;
+            const normalized = (status || 'Running').toString().toLowerCase();
+            const label = normalized === 'solved' ? 'Solved' : normalized === 'stopped' ? 'Stopped' : 'Running';
+            roomStatusEl.textContent = label;
+            roomStatusEl.classList.remove('running', 'solved', 'stopped');
+            roomStatusEl.classList.add(normalized === 'solved' ? 'solved' : normalized === 'stopped' ? 'stopped' : 'running');
+        }
+
+        async function pollRoomStatus() {
+            try {
+                const res = await fetch(`/api/runtime/room/status?_ts=${Date.now()}`, { cache: 'no-store' });
+                if (!res.ok) return;
+                const status = await res.json();
+                const nextRunning = !!status?.running;
+                const nextStart = Number.isFinite(status?.gameStartTime) ? status.gameStartTime : null;
+                if (Number.isFinite(status?.serverTime)) {
+                    serverTimeOffsetMs = Date.now() - status.serverTime;
+                }
+                if (!nextRunning) {
+                    roomStartTime = null;
+                } else {
+                    const singleBranchStart = getSingleBranchStartTime();
+                    if (singleBranchStart && singleBranchStart !== roomStartTime) {
+                        roomStartTime = singleBranchStart;
+                    } else if (nextStart && nextStart !== roomStartTime) {
+                        roomStartTime = nextStart;
+                    } else if (!roomStartTime) {
+                        roomStartTime = getServerNow();
+                    }
+                }
+                roomRunning = nextRunning;
+                roomStatus = status?.roomStatus || roomStatus;
+                updateRoomStatusUI(roomStatus);
+                updateRoomTimer();
+            } catch (err) {
+                // ignore transient errors
+            }
         }
 
         function applyAutoRestartUI() {
@@ -528,6 +844,8 @@
             if (victoryLabel && !victoryLabel.value && systemSettings.victoryScreen) {
                 victoryLabel.value = systemSettings.victoryScreen.split('/').pop();
             }
+            if (mediaServerToggle) mediaServerToggle.checked = !!systemSettings.mediaServerEnabled;
+            if (mediaServerStatus) mediaServerStatus.textContent = systemSettings.mediaServerEnabled ? 'Enabled' : 'Disabled';
         }
 
         function openHintModal(puzzleId, puzzleName) {
@@ -535,8 +853,14 @@
             currentHintPuzzleName = puzzleName || 'Puzzle';
             hintModalTitle.textContent = `Give Hint – ${currentHintPuzzleName}`;
             hintText.value = '';
-            hintModalSend.disabled = true;
-            hintShowAssignmentToggle.checked = true;
+            const meta = puzzleFlow.find(p => p.id === puzzleId);
+            hintShowAssignmentToggle.checked = meta ? meta.showHintAssignment !== false : true;
+            if (hintAutoTriggerToggle && hintAutoTriggerToggle.checked === false) {
+                hintAutoTriggerToggle.checked = true;
+            }
+            syncHintCountdown(meta);
+            renderPendingHints(meta);
+            startHintRefresh();
             hintModal.style.display = 'flex';
             hintText.focus();
         }
@@ -544,18 +868,129 @@
         function closeHintModal() {
             currentHintPuzzleId = null;
             currentHintPuzzleName = '';
+            stopHintRefresh();
             hintModal.style.display = 'none';
         }
 
-        function onHintTextChange() {
-            const hasText = hintText.value.trim().length > 0;
-            hintModalSend.disabled = !hasText;
+        function formatHintEta(seconds) {
+            if (!Number.isFinite(seconds)) return "--:--";
+            const clamped = Math.max(0, Math.floor(seconds));
+            const mins = Math.floor(clamped / 60);
+            const secs = clamped % 60;
+            return `${mins}:${String(secs).padStart(2,'0')}`;
+        }
+
+        function syncHintCountdown(meta) {
+            const remaining = meta?.hintRemaining || [];
+            hintCountdown = remaining.map(entry => {
+                if (entry && typeof entry === "object" && Number.isFinite(entry.etaSec)) {
+                    return Math.max(0, Math.floor(entry.etaSec));
+                }
+                return null;
+            });
+        }
+
+        function tickHintCountdown() {
+            hintCountdown = hintCountdown.map(val => (Number.isFinite(val) ? Math.max(0, val - 1) : null));
+        }
+
+        function renderPendingHints(meta) {
+            if (!hintPendingList) return;
+            const remaining = meta?.hintRemaining || [];
+            const autoOn = hintAutoTriggerToggle ? hintAutoTriggerToggle.checked : true;
+            if (autoOn) {
+                if (hintCountdown.length !== remaining.length) {
+                    syncHintCountdown(meta);
+                }
+            } else if (hintCountdown.length !== remaining.length) {
+                const next = [];
+                for (let i = 0; i < remaining.length; i += 1) {
+                    next[i] = hintCountdown[i] ?? null;
+                }
+                hintCountdown = next;
+            }
+            if (!remaining.length) {
+                hintPendingList.innerHTML = `<div class="hint-pending-empty">Keine weiteren Hints</div>`;
+                return;
+            }
+            const showFlags = autoOn;
+            hintPendingList.innerHTML = remaining
+                .map((entry, idx) => {
+                    const text = typeof entry === "string" ? entry : (entry?.text || "");
+                    const eta = hintCountdown[idx];
+                    const flagHtml = (showFlags && Number.isFinite(eta))
+                        ? `<span class="hint-flag">${formatHintEta(eta)}</span>`
+                        : "";
+                    return `
+                    <div class="hint-pending-item">
+                        ${flagHtml}
+                        <div class="hint-pending-text">${escapeHtml(text)}</div>
+                        <div class="hint-pending-actions">
+                            <button class="hint-action send" data-action="send" data-index="${idx}" title="Send">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M5 12h14"></path>
+                                    <path d="M13 5l7 7-7 7"></path>
+                                </svg>
+                            </button>
+                            <button class="hint-action move" data-action="up" data-index="${idx}" title="Move up">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M12 19V5"></path>
+                                    <path d="M5 12l7-7 7 7"></path>
+                                </svg>
+                            </button>
+                            <button class="hint-action move" data-action="down" data-index="${idx}" title="Move down">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M12 5v14"></path>
+                                    <path d="M19 12l-7 7-7-7"></path>
+                                </svg>
+                            </button>
+                            <button class="hint-action delete" data-action="delete" data-index="${idx}" title="Delete">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M18 6L6 18"></path>
+                                    <path d="M6 6l12 12"></path>
+                                </svg>
+                            </button>
+                        </div>
+                    </div>
+                `;
+                })
+                .join('');
+        }
+
+        function startHintRefresh() {
+            stopHintRefresh();
+            hintRefreshTick = 0;
+            hintRefreshTimer = setInterval(async () => {
+                if (!currentHintPuzzleId) return;
+                const autoOn = hintAutoTriggerToggle ? hintAutoTriggerToggle.checked : true;
+                hintRefreshTick += 1;
+                if (hintRefreshTick % 5 === 0) {
+                    await loadPuzzleFlow();
+                    const meta = puzzleFlow.find(p => p.id === currentHintPuzzleId);
+                    if (autoOn) {
+                        syncHintCountdown(meta);
+                    }
+                    renderPendingHints(meta);
+                    return;
+                }
+                if (autoOn) {
+                    tickHintCountdown();
+                }
+                const meta = puzzleFlow.find(p => p.id === currentHintPuzzleId);
+                renderPendingHints(meta);
+            }, 1000);
+        }
+
+        function stopHintRefresh() {
+            if (hintRefreshTimer) {
+                clearInterval(hintRefreshTimer);
+                hintRefreshTimer = null;
+            }
         }
 
         async function sendCustomHint() {
             const text = hintText.value.trim();
             if (!currentHintPuzzleId || !text) return;
-            hintModalSend.disabled = true;
             try {
                 const res = await fetch(`/api/runtime/puzzles/${currentHintPuzzleId}/hint/custom`, {
                     method: 'POST',
@@ -566,10 +1001,70 @@
                 if (!res.ok || data.success === false) {
                     throw new Error(data.error || 'Send failed');
                 }
-                closeHintModal();
+                hintText.value = '';
+                await loadPuzzleFlow();
+                const meta = puzzleFlow.find(p => p.id === currentHintPuzzleId);
+                syncHintCountdown(meta);
+                renderPendingHints(meta);
             } catch (err) {
                 alert('Hint send failed: ' + err.message);
-                hintModalSend.disabled = false;
+            }
+        }
+
+        async function handleHintListAction(e) {
+            const btn = e.target.closest('button');
+            if (!btn || !currentHintPuzzleId) return;
+            const index = parseInt(btn.dataset.index, 10);
+            if (!Number.isFinite(index)) return;
+            const actionMap = {
+                send: "send",
+                up: "move_up",
+                down: "move_down",
+                delete: "delete"
+            };
+            const action = actionMap[btn.dataset.action];
+            if (!action) return;
+            try {
+                const res = await fetch(`/api/runtime/puzzles/${currentHintPuzzleId}/hint/remaining`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action, index })
+                });
+                const data = await res.json();
+                if (!res.ok || data.success === false) {
+                    throw new Error(data.error || 'Update failed');
+                }
+                await loadPuzzleFlow();
+                const meta = puzzleFlow.find(p => p.id === currentHintPuzzleId);
+                syncHintCountdown(meta);
+                renderPendingHints(meta);
+            } catch (err) {
+                alert('Hint konnte nicht aktualisiert werden: ' + err.message);
+            }
+        }
+
+        async function persistHintSettings() {
+            if (!currentHintPuzzleId) return;
+            const payload = {
+                showHintAssignment: !!hintShowAssignmentToggle.checked
+            };
+            try {
+                const res = await fetch(`/api/runtime/puzzles/${currentHintPuzzleId}/hint/settings`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const data = await res.json();
+                if (!res.ok || data.success === false) {
+                    throw new Error(data.error || 'Update failed');
+                }
+                const meta = puzzleFlow.find(p => p.id === currentHintPuzzleId);
+                if (meta) {
+                    meta.showHintAssignment = payload.showHintAssignment;
+                    meta.automaticHintTrigger = payload.automaticHintTrigger;
+                }
+            } catch (err) {
+                alert('Konnte Hint-Einstellungen nicht speichern: ' + err.message);
             }
         }
 
@@ -665,6 +1160,33 @@
             }
         }
 
+        async function persistMediaServerSetting() {
+            if (!mediaServerToggle) return;
+            const next = !!mediaServerToggle.checked;
+            if (mediaServerStatus) mediaServerStatus.textContent = next ? 'Enabling...' : 'Disabling...';
+            mediaServerToggle.disabled = true;
+            try {
+                const res = await fetch('/api/system/media-server', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ enabled: next })
+                });
+                const data = await res.json();
+                if (!res.ok || data.success === false) {
+                    throw new Error(data.error || 'Update failed');
+                }
+                systemSettings.mediaServerEnabled = !!data.enabled;
+                mediaServerToggle.checked = systemSettings.mediaServerEnabled;
+                if (mediaServerStatus) mediaServerStatus.textContent = systemSettings.mediaServerEnabled ? 'Enabled' : 'Disabled';
+            } catch (err) {
+                mediaServerToggle.checked = !!systemSettings.mediaServerEnabled;
+                if (mediaServerStatus) mediaServerStatus.textContent = 'Update failed';
+                alert('Media server update failed: ' + err.message);
+            } finally {
+                mediaServerToggle.disabled = false;
+            }
+        }
+
         async function persistAutoRestartSettings() {
             autoRestart = !!autoRestartToggle.checked;
             const parsed = parseInt(autoRestartDelayInput.value, 10);
@@ -691,15 +1213,57 @@
         }
 
         function statusBadge(state) {
-            const cls = state === 'solved' ? 'solved' : state === 'running' ? 'running' : state === 'offline' ? 'offline' : 'locked';
-            const label = state === 'solved' ? 'Solved' : state === 'running' ? 'Running' : state === 'offline' ? 'Offline' : 'Locked';
+            const cls = state === 'solved'
+                ? 'solved'
+                : state === 'checking'
+                    ? 'checking'
+                    : state === 'starting'
+                        ? 'starting'
+                    : state === 'running'
+                        ? 'running'
+                        : state === 'uploading'
+                            ? 'uploading'
+                            : state === 'downloading'
+                                ? 'downloading'
+                                : state === 'queueing'
+                                    ? 'queueing'
+                                    : state === 'offline'
+                                        ? 'offline'
+                                        : 'locked';
+            const label = state === 'solved'
+                ? 'Solved'
+                : state === 'checking'
+                    ? 'Checking'
+                    : state === 'starting'
+                        ? 'Starting'
+                    : state === 'running'
+                        ? 'Running'
+                        : state === 'uploading'
+                            ? 'Uploading'
+                            : state === 'downloading'
+                                ? 'Downloading'
+                                : state === 'queueing'
+                                    ? 'Queueing'
+                                    : state === 'offline'
+                                        ? 'Offline'
+                                        : 'Locked';
             return `<span class="badge ${cls}">${label}</span>`;
         }
 
         function deriveState(puzzle) {
             const st = puzzleStatuses[puzzle.id] || {};
-            if (st.solved) return 'solved';
-            if (st.running || st.active) return 'running';
+            const serverState = (st.state || '').toLowerCase();
+            if (serverState === 'uploading' || serverState === 'downloading') return serverState;
+            if (puzzle.queueState === 'queueing') return 'queueing';
+            if (puzzle.queueSolved) return 'solved';
+            if (puzzle.queueControlled && puzzle.queueActive === false) return 'locked';
+            if (serverState === 'solved' || st.solved) return 'solved';
+            const isDigital = !puzzle.isAnalog;
+            if (serverState === 'starting') return 'starting';
+            if (serverState === 'active') return isDigital ? 'starting' : 'running';
+            if (isDigital && st.active && serverState !== 'running' && serverState !== 'solved') return 'starting';
+            if (st.checking) return 'checking';
+            if (serverState === 'running' || st.running || st.active) return 'running';
             if (!puzzle.isAnalog && st.online === false) return 'offline';
             return 'locked';
         }
@@ -714,96 +1278,114 @@
         }
 
         function renderFlow() {
-            if (!puzzleFlow.length) {
+            const hasBranches = Array.isArray(branchFlow) && branchFlow.length > 0;
+            const branches = hasBranches ? branchFlow : [{ id: 1, puzzles: puzzleFlow }];
+            const hasPuzzles = branches.some(b => Array.isArray(b.puzzles) && b.puzzles.length);
+            if (!hasPuzzles) {
                 flowContainer.innerHTML = '<div class="loading">No puzzles found</div>';
                 return;
             }
-            const rowsByDepth = {};
-            puzzleFlow.forEach(p => {
-                const d = p.depth || 0;
-                if (!rowsByDepth[d]) rowsByDepth[d] = [];
-                rowsByDepth[d].push(p);
-            });
-            const depths = Object.keys(rowsByDepth).map(Number).sort((a,b)=>a-b);
-            let html = '';
-            depths.forEach(depth => {
-                html += `<div class="stage"><div class="stage-title">Stage ${depth+1}</div><div class="stage-row">`;
-                rowsByDepth[depth].forEach(p => {
-                    const st = puzzleStatuses[p.id] || {};
-                    const state = deriveState(p);
-                    const cardStateClass = `state-${state}`;
-                    const online = st.online !== false;
-                    const analog = !!p.isAnalog;
-                    const externalConfigured = !!p.externalInputConfigured;
-                    const deviceLabel = p.deviceName || p.device || 'No Device';
-                    const solved = state === 'solved';
-                    const hintDisabled = solved || !p.hintAvailable;
-                    const hintBtnClass = hintDisabled ? "card-action disabled" : "card-action";
-                    const hintBtnAttrs = hintDisabled ? 'disabled title="No hints available or puzzle solved"' : '';
-                    const giveHintDisabled = !p.hintScreenPath;
-                    const giveHintClass = giveHintDisabled ? "card-action disabled" : "card-action";
-                    const giveHintAttrs = giveHintDisabled ? 'disabled title="Hint system not configured"' : '';
-                    const extBadge = externalConfigured ? `<span class="chip chip-ext">Player Input aktiv</span>` : '';
-                    const typeChip = `<span class="chip type-chip">${analog?'Analog':'Digital'}</span>`;
-                    const statusChip = analog ? '' : `<span class="chip status-chip"><span class="dot ${online?'online':'offline'}"></span><span>${deviceLabel}</span></span>`;
-                    const statusList = [statusChip, extBadge].filter(Boolean);
-                    const statusClass = statusList.length > 1 ? 'multi' : 'single';
-                    const statusContent = statusList.length ? statusList.join('') : `<span class="chip placeholder-chip"></span>`;
-                    const statusLine = `<div class="info-line status-line ${statusClass}">${statusContent}</div>`;
-                    const solveClass = solved ? "card-action solve-btn solved disabled" : "card-action solve-btn";
-                    const solveAttrs = solved ? 'disabled title="Bereits gelöst"' : '';
-                    html += `
-                        <div class="puzzle-card ${cardStateClass}" data-id="${p.id}">
-                            <div class="puzzle-header">
-                                <div class="puzzle-title">
-                                    <div class="puzzle-name" title="${p.name || p.title || 'Puzzle'}">${p.name || p.title || 'Puzzle'}</div>
-                                    ${typeChip}
-                                </div>
-                                ${statusBadge(state)}
-                            </div>
-                            ${statusLine}
-                            <div class="card-footer">
-                                <button class="card-action" data-action="activate" data-id="${p.id}">Activate</button>
-                                <button class="${hintBtnClass}" data-action="hint" data-id="${p.id}" ${hintBtnAttrs}>Trigger Hint</button>
-                                <button class="${giveHintClass}" data-action="give-hint" data-id="${p.id}" data-name="${p.name || p.title || 'Puzzle'}" ${giveHintAttrs}>Give Hint</button>
-                            </div>
-                            <div class="solve-row"><button class="${solveClass}" data-action="solve" data-id="${p.id}" ${solveAttrs}>Mark Solved</button></div>
-                        </div>`;
+
+            const multipleBranches = branches.length > 1;
+            let html = '<div class="branch-grid">';
+            branches.forEach((branch, index) => {
+                const puzzles = branch.puzzles || [];
+                const rowsByDepth = {};
+                puzzles.forEach(p => {
+                    const d = p.depth || 0;
+                    if (!rowsByDepth[d]) rowsByDepth[d] = [];
+                    rowsByDepth[d].push(p);
                 });
-                html += `</div></div>`;
+                const depths = Object.keys(rowsByDepth).map(Number).sort((a,b)=>a-b);
+                const titleText = multipleBranches ? `Branch ${index + 1}` : '';
+                const header = `<div class="branch-header"><div class="branch-title">${titleText}</div><div class="branch-timer" data-branch-id="${branch.id}">--:--</div></div>`;
+                html += `<div class="branch-column">${header}<div class="branch-body">`;
+                depths.forEach(depth => {
+                    html += `<div class="stage"><div class="stage-title">Stage ${depth+1}</div><div class="stage-row">`;
+                    rowsByDepth[depth].forEach(p => {
+                        const st = puzzleStatuses[p.id] || {};
+                        const state = deriveState(p);
+                        const cardStateClass = `state-${state}`;
+                        const online = st.online !== false;
+                        const analog = !!p.isAnalog;
+                        const queueBlocked = !!p.queueBlocked;
+                        const externalConfigured = !!p.externalInputConfigured;
+                        const checking = queueBlocked ? false : !!st.checking;
+                        const deviceLabel = p.deviceName || p.device || 'No Device';
+                        const solved = state === 'solved';
+                        const giveHintDisabled = queueBlocked || !p.hintScreenPath;
+                        const giveHintClass = giveHintDisabled ? 'card-action disabled' : 'card-action';
+                        const giveHintAttrs = giveHintDisabled ? 'disabled title="Hint system not configured"' : '';
+                        const extBadge = externalConfigured ? `<span class="chip chip-ext${checking ? ' checking' : ''}">Player Input aktiv</span>` : '';
+                        const typeChip = `<span class="chip type-chip">${analog?'Analog':'Digital'}</span>`;
+                        const statusChip = analog ? '' : `<span class="chip status-chip"><span class="dot ${online?'online':'offline'}"></span><span>${deviceLabel}</span></span>`;
+                        const statusList = [statusChip, extBadge].filter(Boolean);
+                        const statusClass = statusList.length > 1 ? 'multi' : 'single';
+                        const statusContent = statusList.length ? statusList.join('') : `<span class="chip placeholder-chip"></span>`;
+                        const statusLine = `<div class="info-line status-line ${statusClass}">${statusContent}</div>`;
+                        const solveClass = (solved || queueBlocked) ? 'card-action solve-btn solved disabled' : 'card-action solve-btn';
+                        const solveAttrs = solved ? 'disabled title="Bereits geloest"' : (queueBlocked ? 'disabled title="Queue path not active"' : '');
+                        html += `
+                            <div class="puzzle-card ${cardStateClass}${queueBlocked ? ' queue-blocked' : ''}" data-id="${p.id}">
+                                <div class="puzzle-header">
+                                    <div class="puzzle-title">
+                                        <div class="puzzle-name" title="${p.name || p.title || 'Puzzle'}">${p.name || p.title || 'Puzzle'}</div>
+                                        ${typeChip}
+                                    </div>
+                                    ${statusBadge(state)}
+                                </div>
+                                ${statusLine}
+                                <div class="card-footer">
+                                    <button class="${giveHintClass}" data-action="give-hint" data-id="${p.id}" data-name="${p.name || p.title || 'Puzzle'}" ${giveHintAttrs}>Give Hint</button>
+                                      <button class="${solveClass}" data-action="solve" data-id="${p.id}" data-branch-id="${branch.id}" ${solveAttrs}>Solve</button>
+                                </div>
+                            </div>`;
+                    });
+                    html += '</div></div>';
+                });
+                html += '</div></div>';
             });
+            html += '</div>';
             flowContainer.innerHTML = html;
             syncTypeChipWidths();
+            updateBranchTimers();
 
-            flowContainer.querySelectorAll('.card-action').forEach(btn => {
+            if (branchFooterContainer) {
+                if (multipleBranches) {
+                    branchFooterContainer.innerHTML = `<div class="branch-footer-grid">${branches.map(branch => {
+                        return `<div class="branch-footer"><button class="branch-restart-btn" data-branch-id="${branch.id}">Restart Branch</button></div>`;
+                    }).join('')}</div>`;
+                } else {
+                    branchFooterContainer.innerHTML = '';
+                }
+            }
+
+              flowContainer.querySelectorAll('.card-action').forEach(btn => {
+                  btn.addEventListener('click', (e) => {
+                      e.stopPropagation();
+                      const id = parseInt(btn.dataset.id,10);
+                      const action = btn.dataset.action;
+                      const branchId = btn.dataset.branchId ? parseInt(btn.dataset.branchId, 10) : null;
+                      handleCardAction(action, id, Number.isFinite(branchId) ? branchId : null);
+                  });
+              });
+            const restartButtons = branchFooterContainer
+                ? branchFooterContainer.querySelectorAll('.branch-restart-btn')
+                : flowContainer.querySelectorAll('.branch-restart-btn');
+            restartButtons.forEach(btn => {
                 btn.addEventListener('click', (e) => {
                     e.stopPropagation();
-                    const id = parseInt(btn.dataset.id,10);
-                    const action = btn.dataset.action;
-                    handleCardAction(action, id);
+                    const branchId = Number(btn.dataset.branchId);
+                    if (Number.isFinite(branchId)) {
+                        restartBranch(branchId);
+                    }
                 });
             });
         }
-
-        async function handleCardAction(action, id) {
-            if(action === 'solve') {
-                await markPuzzleSolved(id);
-            } else if(action === 'hint') {
-                try {
-                    const res = await fetch('/api/runtime/puzzle/hint', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ puzzleId: id })
-                    });
-                    const data = await res.json();
-                    if (!res.ok || data.success === false) {
-                        throw new Error(data.error || 'Hint trigger failed');
-                    }
-                    await loadPuzzleFlow(); // refresh hint availability
-            } catch (err) {
-                alert('Hint trigger fehlgeschlagen: ' + err.message);
-            }
-        } else if(action === 'give-hint') {
+        async function handleCardAction(action, id, branchId = null) {
+              if(action === 'solve') {
+                  await markPuzzleSolved(id, branchId);
+              } else if(action === 'give-hint') {
             const puzzle = puzzleFlow.find(p => p.id === id);
             const name = puzzle?.name || puzzle?.title || 'Puzzle';
             openHintModal(id, name);
@@ -819,7 +1401,51 @@
             try {
                 const res = await fetch('/api/runtime/puzzle-flow');
                 const data = await res.json();
+                try {
+                    const statusRes = await fetch('/api/runtime/room/status', { cache: 'no-store' });
+                    if (statusRes.ok) {
+                        const status = await statusRes.json();
+                        const nextRunning = !!status?.running;
+                        const nextStart = Number.isFinite(status?.gameStartTime) ? status.gameStartTime : null;
+                        if (!nextRunning) {
+                            roomStartTime = null;
+                        } else if (nextStart && nextStart !== roomStartTime) {
+                            roomStartTime = nextStart;
+                        } else if (!roomStartTime) {
+                            roomStartTime = Date.now();
+                        }
+                        roomRunning = nextRunning;
+                        roomStatus = status?.roomStatus || roomStatus;
+                        updateRoomTimer();
+                        updateRoomStatusUI(roomStatus);
+                        if (!roomRunning) {
+                            window.location.replace('index.html');
+                            return;
+                        }
+                    }
+                } catch (e) {}
                 puzzleFlow = data.puzzles || [];
+                branchFlow = Array.isArray(data.branches) ? data.branches : [];
+                branchStartTimes = {};
+                Object.keys(branchStartTimesCache).forEach(key => delete branchStartTimesCache[key]);
+                Object.keys(branchSolvedAt).forEach(key => delete branchSolvedAt[key]);
+                Object.keys(branchSolvedState).forEach(key => delete branchSolvedState[key]);
+                branchFlow.forEach(branch => {
+                    if (branch && branch.startTime) {
+                        branchStartTimes[branch.id] = branch.startTime;
+                    }
+                });
+                if (roomRunning) {
+                    const singleBranchStart = getSingleBranchStartTime();
+                    if (singleBranchStart) {
+                        roomStartTime = singleBranchStart;
+                    }
+                }
+                updateRoomTimer();
+                const multipleBranches = branchFlow.length > 1;
+                if (roomTimerEl) {
+                    roomTimerEl.style.display = multipleBranches ? 'none' : '';
+                }
                 if (data.roomName) document.getElementById('room-name').textContent = data.roomName.replace('.json','');
                 autoRestart = !!data.autoRestart;
                 if (Number.isFinite(data.autoRestartDelay)) {
@@ -832,7 +1458,9 @@
                 renderDataList();
             } catch (err) {
                 console.error(err);
-                flowContainer.innerHTML = '<div class="loading">Failed to load flow.</div>';
+                if (!puzzleFlow.length && !branchFlow.length) {
+                    flowContainer.innerHTML = '<div class="loading">Failed to load flow.</div>';
+                }
             }
         }
 
@@ -840,20 +1468,62 @@
             try {
                 const res = await fetch('/api/runtime/status');
                 puzzleStatuses = await res.json();
+                const branches = branchFlow || [];
+                let refresh = false;
+                branches.forEach(branch => {
+                    const solved = isBranchSolved(branch);
+                    const prev = branchSolvedState[branch.id];
+                    branchSolvedState[branch.id] = solved;
+                    if (prev === true && solved === false) {
+                        refresh = true;
+                    }
+                });
+                if (refresh) {
+                    await refreshBranchStartTimes();
+                }
             } catch (err) {
                 console.error('status fetch failed', err);
             }
         }
 
-        async function markPuzzleSolved(id) {
+        async function refreshBranchStartTimes() {
             try {
-                const response = await fetch('/api/runtime/puzzle/solve', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ puzzleId: id })
+                const res = await fetch('/api/runtime/puzzle-flow');
+                if (!res.ok) return;
+                const data = await res.json();
+                const nextBranches = Array.isArray(data.branches) ? data.branches : [];
+                branchFlow = nextBranches;
+                branchStartTimes = {};
+                Object.keys(branchStartTimesCache).forEach(key => delete branchStartTimesCache[key]);
+                Object.keys(branchSolvedAt).forEach(key => delete branchSolvedAt[key]);
+                Object.keys(branchSolvedState).forEach(key => delete branchSolvedState[key]);
+                nextBranches.forEach(branch => {
+                    if (branch && branch.startTime) {
+                        branchStartTimes[branch.id] = branch.startTime;
+                    }
                 });
+            } catch (err) {
+                console.error('branch time refresh failed', err);
+            }
+        }
+
+          async function markPuzzleSolved(id, branchId) {
+              try {
+                  const response = await fetch('/api/runtime/puzzle/solve', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ puzzleId: id, branchId })
+                  });
                 const data = await response.json();
                 if (!response.ok || !data.success) throw new Error(data.error || 'Solve failed');
+                if (Number.isFinite(branchId)) {
+                    const branch = (branchFlow || []).find(b => b.id === branchId);
+                    const entry = branch?.puzzles?.find(p => p.id === id);
+                    if (entry) {
+                        entry.queueSolved = true;
+                        entry.queueActive = false;
+                    }
+                }
                 await updatePuzzleStatuses();
                 renderFlow();
             } catch (err) {
@@ -863,16 +1533,60 @@
 
         async function restartRoom() {
             try {
-                await fetch('/api/runtime/reset', { method:'POST', headers:{'Content-Type':'application/json'} });
-                const start = await fetch('/api/room/start', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ force:true }) });
-                const data = await start.json();
-                if(!start.ok || data.status!=="ok") throw new Error(data.error || 'Start failed');
+                const restart = await fetch('/api/runtime/restart', {
+                    method:'POST',
+                    headers:{'Content-Type':'application/json'},
+                    body: JSON.stringify({ auto: false })
+                });
+                const data = await restart.json();
+                if(!restart.ok || data.success === false) throw new Error(data.error || 'Restart failed');
+                roomStatus = 'Restarting';
+                roomSolvedAt = null;
+                updateRoomStatusUI(roomStatus);
                 await loadPuzzleFlow();
                 await updateDataSnapshot();
                 renderDataList();
             } catch (err) {
                 alert('Restart failed: ' + err.message);
             }
+        }
+
+        async function restartBranch(branchId) {
+            try {
+                const res = await fetch('/api/runtime/branch/restart', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ branchId })
+                });
+                const data = await res.json();
+                if (!res.ok || data.success === false) {
+                    throw new Error(data.error || 'Branch restart failed');
+                }
+                delete branchSolvedAt[branchId];
+                delete branchSolvedState[branchId];
+                delete branchStartTimesCache[branchId];
+                await loadPuzzleFlow();
+                await updateDataSnapshot();
+                renderDataList();
+            } catch (err) {
+                alert('Branch restart failed: ' + err.message);
+            }
+        }
+
+        async function waitForRoomStop(retries = 10, delayMs = 200) {
+            for (let i = 0; i < retries; i++) {
+                try {
+                    const res = await fetch('/api/runtime/room/status', { cache: 'no-store' });
+                    if (res.ok) {
+                        const status = await res.json();
+                        if (!status?.running) {
+                            return true;
+                        }
+                    }
+                } catch (err) {}
+                await new Promise(resolve => setTimeout(resolve, delayMs));
+            }
+            return false;
         }
 
         async function updateDataSnapshot() {
@@ -900,18 +1614,37 @@
             sorted.forEach((p, idx) => {
                 const outputs = (p.outputs && p.outputs.length) ? p.outputs : [];
                 outputs.forEach(out => {
-                    const ts = out.updatedAt ? new Date(out.updatedAt).toLocaleTimeString() : 'Pending';
-                    const value = formatValue(out.data);
+                    const ts = out.updatedAt ? new Date(out.updatedAt).toLocaleTimeString() : '';
+                    const externalMode = out.externalCheckMode || (out.externalCheck ? "runtime" : "");
+                    const isExternal = externalMode === "runtime";
+                    const showPlayerValue = !out.externalCheck || externalMode !== "runtime" || !!out.externalCheckActive;
+                    const value = showPlayerValue ? formatValue(out.data) : '--';
+                    const fallbackTag = (!isExternal && out.fallback) ? ' <span class="fallback-tag">(Fallback)</span>' : '';
                     const typeKey = normalizeDataType(out.type);
+                    const puzzleMeta = puzzleFlow.find(pz => pz.id === p.id);
+                    const derivedState = puzzleMeta ? deriveState(puzzleMeta) : (p.state || '');
+                    const stateClass = derivedState ? ` state-${derivedState}` : '';
                     const name = p.name || ('Puzzle ' + (idx+1));
-                    const keyText = out.key ? ` | ${out.key}` : '';
-                    const targetText = out.target ? ` -> ${out.target}` : '';
+                    const keyText = (!isExternal && out.key) ? ` (${out.key})` : '';
+                    const extCheckClass = out.externalCheckSolved ? ' solved' : out.externalCheckActive ? ' active' : '';
+                    const extCheckTag = out.externalCheck ? `<span class="ext-check-tag${extCheckClass}">Player Input</span>` : '';
+                    const sourceText = (!isExternal && out.source) ? `from ${out.source}${out.sourceKey ? ` (${out.sourceKey})` : ''}` : '';
+                    const targetText = (!isExternal && out.target) ? `-> ${out.target}${out.inputKey ? ` (${out.inputKey})` : ''}` : '';
                     rows++;
+                    if (isExternal) {
+                        html += `
+                            <div class="data-row external${stateClass}">
+                                <div class="key"><span class="key-line">${name}</span></div>
+                                <div class="meta"><span class="type" data-type="${typeKey}">${typeKey}</span>${extCheckTag}<span class="ts">${ts}</span></div>
+                                <div class="value">${value || '--'}</div>
+                            </div>`;
+                        return;
+                    }
                     html += `
-                        <div class="data-row">
-                            <div class="key">${name}${keyText}${targetText}</div>
-                            <div class="meta"><span class="type" data-type="${typeKey}">${typeKey}</span><span class="ts">${ts}</span></div>
-                            <div class="value">${value}</div>
+                        <div class="data-row${stateClass}">
+                            <div class="key"><span class="key-line">${name}${keyText}</span>${sourceText ? `<span class="key-line">${sourceText}</span>` : ''}${targetText ? `<span class="key-line">${targetText}</span>` : ''}</div>
+                            <div class="meta"><span class="type" data-type="${typeKey}">${typeKey}</span>${extCheckTag}<span class="ts">${ts}</span></div>
+                            <div class="value">${value}${fallbackTag}</div>
                         </div>`;
                 });
             });
@@ -930,18 +1663,24 @@
                 return;
             }
             const html = filtered.map(entry => {
-                const cat = categorizeLog(entry);
                 const typeClass = (entry?.type || '').toLowerCase();
                 const cls = [
                     'runtime-log-entry',
+                    typeClass === 'data' ? 'log-data' :
                     typeClass === 'success' ? 'log-success' :
                     typeClass === 'warn' || typeClass === 'warning' ? 'log-warn' :
                     typeClass === 'error' ? 'log-error' :
-                    (cat === 'heartbeat' || cat === 'mqtt') ? 'log-success' : ''
+                    typeClass === 'system' ? 'log-system' : ''
                 ].filter(Boolean).join(' ');
                 const time = escapeHtml(entry.timestamp || '--:--:--');
                 const msg = escapeHtml(entry.msg || '');
-                return `<div class="${cls}">[${time}] ${msg}</div>`;
+                let metaText = '';
+                if (entry?.meta && entry.meta.payload) {
+                    try {
+                        metaText = ' | ' + escapeHtml(JSON.stringify(entry.meta.payload));
+                    } catch (e) {}
+                }
+                return `<div class="${cls}">[${time}] ${msg}${metaText}</div>`;
             }).join('');
             runtimeLogList.innerHTML = html;
             if (runtimeLogEmpty) runtimeLogEmpty.style.display = 'none';
@@ -964,6 +1703,15 @@
             const isCollapsed = runtimeLogEl.classList.contains('collapsed');
             runtimeLogEl.classList.toggle('expanded', !isCollapsed);
             runtimeLogToggle.textContent = isCollapsed ? '\u25B2' : '\u25BC';
+        }
+
+        function clearRuntimeLog() {
+            fetch('/api/logs/clear', { method: 'POST' })
+                .then(() => {
+                    runtimeLogs = [];
+                    renderRuntimeLogs();
+                })
+                .catch(() => {});
         }
 
         function bindRuntimeLogFilters() {
@@ -990,37 +1738,56 @@
             autoRestartDelayInput.addEventListener('change', persistAutoRestartSettings);
             document.getElementById('restart-btn').addEventListener('click', restartRoom);
             document.getElementById('exit-btn').addEventListener('click', async ()=>{
-                try { await fetch('/api/runtime/reset', { method:'POST', headers:{'Content-Type':'application/json'} }); } catch(e){}
+                try { sessionStorage.setItem('skip-room-redirect', String(Date.now())); } catch(e){}
+                try { await fetch('/api/runtime/reset', { method:'POST', headers:{'Content-Type':'application/json'}, cache: 'no-store' }); } catch(e){}
+                await waitForRoomStop();
                 window.location.href='index.html';
             });
         if (settingsOpenBtn && settingsModal) {
             settingsOpenBtn.addEventListener('click', openSettingsModal);
             settingsCloseBtn?.addEventListener('click', closeSettingsModal);
-            settingsModal.addEventListener('click', (e)=>{ if (e.target === settingsModal) closeSettingsModal(); });
             screenSaverBtn?.addEventListener('click', ()=> screenSaverInput.click());
             screenSaverInput?.addEventListener('change', ()=> uploadScreenSaver(screenSaverInput.files[0]));
             victoryBtn?.addEventListener('click', ()=> victoryInput.click());
             victoryInput?.addEventListener('change', ()=> uploadVictoryScreen(victoryInput.files[0]));
+            mediaServerToggle?.addEventListener('change', persistMediaServerSetting);
         }
         hintModalCancel.addEventListener('click', closeHintModal);
-        hintModal.addEventListener('click', (e)=>{ if (e.target === hintModal) closeHintModal(); });
-        hintText.addEventListener('input', onHintTextChange);
-        hintModalSend.addEventListener('click', sendCustomHint);
-        hintShowAssignmentToggle.addEventListener('change', onHintTextChange);
+        hintModal.addEventListener('click', (e)=>{ if (e.target === hintModal) e.stopPropagation(); });
+        hintPendingList?.addEventListener('click', handleHintListAction);
+        hintSendBtn?.addEventListener('click', sendCustomHint);
+        hintShowAssignmentToggle.addEventListener('change', persistHintSettings);
+        hintAutoTriggerToggle?.addEventListener('change', () => {
+            const meta = puzzleFlow.find(p => p.id === currentHintPuzzleId);
+            if (hintAutoTriggerToggle.checked) {
+                syncHintCountdown(meta);
+            }
+            renderPendingHints(meta);
+        });
         runtimeLogToggle?.addEventListener('click', toggleRuntimeLog);
         if (runtimeLogToggle) runtimeLogToggle.textContent = '\u25B2';
+        runtimeLogClear?.addEventListener('click', clearRuntimeLog);
         bindRuntimeLogFilters();
 
         // poll statuses and data (includes updated puzzle flow for hint availability)
         setInterval(async ()=>{
             await loadPuzzleFlow(false);
         }, 2000);
+        setInterval(pollRoomStatus, 2000);
+        setInterval(updateRoomTimer, 1000);
         setInterval(loadRuntimeLogs, 3000);
 
         loadPuzzleFlow(true);
+        pollRoomStatus();
         loadSystemSettingsFromServer();
         loadRuntimeLogs();
         window.addEventListener('resize', syncTypeChipWidths);
+        window.addEventListener('pageshow', (event) => {
+            if (!event.persisted) return;
+            roomStartTime = null;
+            roomRunning = false;
+            loadPuzzleFlow(true);
+        });
     </script>
 </body>
 </html>
