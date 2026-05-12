@@ -1,0 +1,12 @@
+{
+  "hubHost": "escapehub.local",
+  "mqttBroker": "escapehub.local",
+  "mqttPort": 1883,
+  "puzzleName": "TestPuzzle",
+  "heartbeatIntervalMs": 2000,
+  "debug": false,
+  "mediaServer": "http://escapehub.local",
+  "mediaLocalDir": "MediaStorage",
+  "printData": true,
+  "needRestart": false,
+}

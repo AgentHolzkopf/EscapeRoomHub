@@ -3,7 +3,7 @@
   <component name="WebServers">
     <option name="servers">
       <webServer id="5fa563c3-b827-478b-bffb-0af42d41bcb3" name="EscapeHub">
-        <fileTransfer rootFolder="/home" accessType="SFTP" host="admin@escapeHub" port="22" sshConfigId="b59842c4-7eb8-48a5-9b6f-f8e2cdeb67f1" sshConfig="EscpapeHubPi">
+        <fileTransfer rootFolder="/home" accessType="SFTP" host="escapehub.local" port="22" sshConfigId="b59842c4-7eb8-48a5-9b6f-f8e2cdeb67f1" sshConfig="EscpapeHubPi">
           <advancedOptions>
             <advancedOptions dataProtectionLevel="Private" passiveMode="true" shareSSLContext="true" />
           </advancedOptions>

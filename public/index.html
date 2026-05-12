@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Escape Room Control</title> 
+    <link rel="icon" type="image/png" href="/favicon.png">
     <link rel="stylesheet" type="text/css" href="litegraph.css?v=dev">
     <link rel="stylesheet" type="text/css" href="style.css?v=dev2">
     <style>
@@ -82,6 +83,37 @@
                     <div class="settings-sub" id="victory-status"></div>
                 </div>
                 <div class="settings-section">
+                    <div class="settings-title">DMX Adapter / Service</div>
+                    <div class="settings-sub">Detected USB-DMX interface for lighting output.</div>
+                    <div class="settings-sub" id="dmx-adapter-status">No adapter connected</div>
+                    <div class="settings-field settings-label-row">
+                        <label class="switch">
+                            <input type="checkbox" id="dmx-service-toggle">
+                            <span class="slider"></span>
+                            <span class="switch-label">DMX Service</span>
+                        </label>
+                    </div>
+                    <div class="settings-sub" id="dmx-service-status">Disabled</div>
+                </div>
+                <div class="settings-section">
+                    <div class="settings-title">Zigbee Bridge</div>
+                    <div class="settings-sub">Run the Zigbee2MQTT bridge service in the background.</div>
+                    <div class="settings-field settings-label-row">
+                        <label class="switch">
+                            <input type="checkbox" id="zigbee-bridge-toggle">
+                            <span class="slider"></span>
+                            <span class="switch-label">Zigbee Bridge</span>
+                        </label>
+                    </div>
+                    <div class="settings-sub" id="zigbee-bridge-status">Disabled</div>
+                    <div class="settings-sub" id="zigbee-adapter-status">No adapter connected</div>
+                </div>
+                <div class="settings-section">
+                    <div class="settings-title">Sound</div>
+                    <div class="settings-sub">Selected audio playback device.</div>
+                    <div class="settings-sub" id="sound-output-status">Unknown</div>
+                </div>
+                <div class="settings-section">
                     <div class="settings-title">Media Server</div>
                     <div class="settings-sub">Allow puzzles to upload and download media files from the Pi.</div>
                     <div class="settings-field settings-label-row">
@@ -104,6 +136,223 @@
                         </label>
                     </div>
                     <div class="settings-sub" id="autostart-status"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="lighting-modal-overlay" class="modal-overlay lighting-modal-overlay" style="display: none;">
+        <div class="modal-content lighting-modal-content">
+            <div class="lighting-modal-header">
+                <div class="lighting-modal-title-row">
+                    <h2>Lighting / DMX</h2>
+                    <span id="lighting-dmx-status" class="lighting-dmx-status disconnected">no DMX Adapter connected</span>
+                </div>
+                <button id="lighting-modal-close" class="modal-close-btn" type="button" aria-label="Close">&times;</button>
+            </div>
+            <div class="lighting-modal-body">
+                <div class="lighting-column">
+                    <h3>Lamps</h3>
+                    <div class="lighting-form-grid lighting-lamp-add-row">
+                        <input type="text" id="lighting-fixture-name" placeholder="Lamp name">
+                        <button type="button" id="lighting-add-fixture-btn" class="btn-primary">Add Lamp</button>
+                        <button type="button" id="lighting-open-preset-btn" class="btn-secondary">Add Preset</button>
+                    </div>
+                    <ul id="lighting-fixture-list" class="lighting-list"></ul>
+                    <h3>Scenes</h3>
+                    <div class="lighting-form-grid lighting-lamp-add-row">
+                        <input type="text" id="lighting-group-name" placeholder="Scene name">
+                        <button type="button" id="lighting-add-group-btn" class="btn-primary">Add Scene</button>
+                        <span></span>
+                    </div>
+                    <ul id="lighting-group-list" class="lighting-list"></ul>
+                </div>
+
+                <div class="lighting-column">
+                    <h3 id="lighting-selected-fixture-title">Cues</h3>
+                    <div class="lighting-middle-stack">
+                        <div class="lighting-middle-pane" id="lighting-middle-top-pane">
+                            <h4 id="lighting-middle-top-title" class="lighting-subtitle">Cues</h4>
+                            <div class="lighting-form-grid lighting-cue-add-row">
+                                <input type="text" id="lighting-cue-name" placeholder="Cue Name">
+                                <select id="lighting-group-member-select" style="display:none;"></select>
+                                <button type="button" id="lighting-add-cue-btn" class="btn-primary">Add Cue</button>
+                                <button type="button" id="lighting-test-cue-btn" class="btn-secondary">Test Cue</button>
+                            </div>
+                            <ul id="lighting-cue-list" class="lighting-list"></ul>
+                        </div>
+                        <div class="lighting-middle-pane" id="lighting-middle-bottom-pane">
+                            <h4 id="lighting-middle-bottom-title" class="lighting-subtitle">Channels</h4>
+                            <div class="lighting-form-grid lighting-channel-add-row">
+                                <input type="number" id="lighting-channel-number" min="1" max="512" placeholder="Channel number">
+                                <input type="text" id="lighting-group-cue-name" placeholder="Scene Cue Name" style="display:none;">
+                                <select id="lighting-group-cue-source" style="display:none;"></select>
+                                <button type="button" id="lighting-add-channel-btn" class="btn-secondary">Add Channel</button>
+                                <button type="button" id="lighting-test-scene-btn" class="btn-secondary" style="display:none;">Test Scene</button>
+                            </div>
+                            <div id="lighting-channel-editor" class="lighting-channel-editor"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="lighting-column">
+                    <div id="lighting-cue-details-section">
+                        <h3>DMX Payload</h3>
+                        <div class="lighting-note">Payload of selected cue.</div>
+                        <pre id="lighting-cue-preview" class="lighting-preview">{}</pre>
+                        <div id="lighting-effects-section">
+                            <h3>Effects</h3>
+                            <div class="lighting-effects-grid">
+                                <label for="lighting-effect-delay">Delay (ms)</label>
+                                <input type="number" id="lighting-effect-delay" min="0" step="10" value="0">
+                                <label for="lighting-effect-fade-in">Fade In (ms)</label>
+                                <input type="number" id="lighting-effect-fade-in" min="0" step="10" value="0">
+                                <label for="lighting-effect-fade-out">Fade Out (ms)</label>
+                                <input type="number" id="lighting-effect-fade-out" min="0" step="10" value="0">
+                                <label for="lighting-effect-duration">Duration (ms)</label>
+                                <input type="number" id="lighting-effect-duration" min="0" step="10" value="0">
+                            </div>
+                            <div id="lighting-effects-note" class="lighting-note"></div>
+                        </div>
+                    </div>
+                    <div id="lighting-group-assignment-section" style="display:none;">
+                        <h3>Assign Scene Cue</h3>
+                        <div class="lighting-note">Assign lamp cues to the selected Scene Cue.</div>
+                        <div class="lighting-form-grid lighting-cue-add-row">
+                            <select id="lighting-group-assign-lamp"></select>
+                            <select id="lighting-group-assign-cue"></select>
+                            <button type="button" id="lighting-group-assign-btn" class="btn-secondary">Add Cue</button>
+                        </div>
+                        <div id="lighting-group-assignment-list" class="lighting-channel-editor"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="lighting-preset-overlay" class="modal-overlay lighting-preset-overlay" style="display: none;">
+        <div class="modal-content lighting-preset-content">
+            <div class="lighting-modal-header">
+                <h2>Lamp Preset</h2>
+                <button id="lighting-preset-close" class="modal-close-btn" type="button" aria-label="Close">&times;</button>
+            </div>
+            <div class="lighting-preset-body">
+                <div class="lighting-column">
+                    <h3>Presets</h3>
+                    <div class="lighting-form-grid lighting-preset-add-row">
+                        <input type="text" id="lighting-preset-name" placeholder="Preset name">
+                        <button type="button" id="lighting-add-preset-btn" class="btn-primary">Add Preset</button>
+                    </div>
+                    <ul id="lighting-preset-list" class="lighting-list"></ul>
+                </div>
+                <div class="lighting-column">
+                    <h3 id="lighting-selected-preset-title">Preset Channels</h3>
+                    <div class="lighting-form-grid lighting-preset-channel-add-row">
+                        <input type="text" id="lighting-preset-channel-name" placeholder="Channel name">
+                        <input type="number" id="lighting-preset-channel-address" min="1" max="512" placeholder="DMX address">
+                        <button type="button" id="lighting-add-preset-channel-btn" class="btn-secondary">Add Channel</button>
+                    </div>
+                    <ul id="lighting-preset-channel-list" class="lighting-list"></ul>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="zigbee-modal-overlay" class="modal-overlay zigbee-modal-overlay" style="display: none;">
+        <div class="modal-content zigbee-modal-content">
+            <div class="lighting-modal-header">
+                <div class="lighting-modal-title-row">
+                    <h2>Zigbee / Sensors</h2>
+                    <span id="zigbee-bridge-badge" class="zigbee-bridge-badge disconnected">Bridge unknown</span>
+                </div>
+                <button id="zigbee-modal-close" class="modal-close-btn" type="button" aria-label="Close">&times;</button>
+            </div>
+            <div class="zigbee-modal-body">
+                <div class="zigbee-toolbar">
+                    <button type="button" id="zigbee-refresh-btn" class="btn-secondary">Refresh</button>
+                    <button type="button" id="zigbee-discovery-toggle-btn" class="btn-primary zigbee-discovery-toggle">Start Discover</button>
+                    <span id="zigbee-discovery-status" class="zigbee-discovery-status">Discovery inactive</span>
+                </div>
+                <div class="zigbee-layout">
+                    <div class="zigbee-device-pane">
+                        <ul id="zigbee-device-list" class="zigbee-device-list"></ul>
+                    </div>
+                    <div class="zigbee-detail-pane">
+                        <div class="zigbee-detail-header">
+                            <div id="zigbee-selected-device-name" class="zigbee-selected-device-name">No sensor selected</div>
+                        </div>
+                        <div id="zigbee-device-message-list" class="zigbee-device-message-list"></div>
+                    </div>
+                </div>
+                <div class="zigbee-log-panel">
+                    <div class="zigbee-log-title">Zigbee2MQTT Messages</div>
+                    <pre id="zigbee-message-log" class="zigbee-message-log"></pre>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="sounds-modal-overlay" class="modal-overlay sounds-modal-overlay" style="display: none;">
+        <div class="modal-content sounds-modal-content">
+            <div class="lighting-modal-header">
+                <div class="lighting-modal-title-row">
+                    <h2>Sounds</h2>
+                </div>
+                <button id="sounds-modal-close" class="modal-close-btn" type="button" aria-label="Close">&times;</button>
+            </div>
+            <div class="sounds-modal-body">
+                <div class="sounds-toolbar">
+                    <button type="button" id="sounds-add-btn" class="btn-primary">Add</button>
+                    <input type="file" id="sounds-file-input" accept="audio/*" style="display:none;">
+                    <span id="sounds-upload-status" class="sounds-upload-status"></span>
+                </div>
+                <div class="sounds-layout">
+                    <div class="sounds-list-pane">
+                        <ul id="sounds-file-list" class="sounds-file-list"></ul>
+                    </div>
+                    <div class="sounds-detail-pane">
+                        <div class="sounds-detail-title" id="sounds-selected-name">No sound selected</div>
+                        <div class="sounds-volume-row">
+                            <label for="sounds-volume-slider">Volume</label>
+                            <input type="range" id="sounds-volume-slider" min="0" max="100" step="1" value="100">
+                            <span id="sounds-volume-value">100%</span>
+                            <button type="button" id="sounds-test-btn" class="btn-secondary">Test</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="scripting-modal-overlay" class="modal-overlay scripting-modal-overlay" style="display: none;">
+        <div class="modal-content scripting-modal-content">
+            <div class="scripting-modal-header">
+                <h2 id="scripting-modal-title">Puzzle Skripting</h2>
+                <button id="scripting-modal-close" class="modal-close-btn" type="button" aria-label="Close">&times;</button>
+            </div>
+            <div class="scripting-modal-body">
+                <div class="scripting-toolbar">
+                    <span id="scripting-status" class="scripting-status"></span>
+                </div>
+                <div id="scripting-rule-list" class="scripting-rule-list">
+                    <button id="scripting-center-btn" class="scripting-center-btn" type="button" title="Center Canvas" aria-label="Center Canvas"></button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="room-scripting-modal-overlay" class="modal-overlay scripting-modal-overlay" style="display: none;">
+        <div class="modal-content scripting-modal-content">
+            <div class="scripting-modal-header">
+                <h2 id="room-scripting-modal-title">Room Skripting</h2>
+                <button id="room-scripting-modal-close" class="modal-close-btn" type="button" aria-label="Close">&times;</button>
+            </div>
+            <div class="scripting-modal-body">
+                <div class="scripting-toolbar">
+                    <span id="room-scripting-status" class="scripting-status"></span>
+                </div>
+                <div id="room-scripting-rule-list" class="scripting-rule-list">
+                    <button id="room-scripting-center-btn" class="scripting-center-btn" type="button" title="Center Canvas" aria-label="Center Canvas"></button>
                 </div>
             </div>
         </div>
@@ -133,6 +382,10 @@
                     </button>
                 </div>
                 <button id="manage-rooms-btn">Manage Rooms</button>
+                <button id="open-lighting-btn">Lighting / DMX</button>
+                <button id="open-zigbee-btn">Zigbee / Sensors</button>
+                <button id="open-sounds-btn">Sounds</button>
+                <button id="open-room-scripting-btn">Room Skripting</button>
                 <button id="start-room-btn" class="start-room-btn">Start Room</button>
             </div>
             
@@ -154,6 +407,7 @@
 
         <div id="main-content">
             <canvas id="graphcanvas" tabindex="1"></canvas>
+            <button id="center-flow-btn" type="button" title="Center Flow" aria-label="Center Flow"></button>
         </div>
 
         <div id="properties-sidebar">
@@ -409,6 +663,9 @@
                         <span class="path-prefix">http://escapehub.local/</span>
                         <input type="text" id="prop-screen-path" placeholder="mein-screen">
                     </div>
+                    <div style="margin-top:8px;">
+                        <button type="button" id="prop-screen-open-page" class="btn-secondary">Open Page</button>
+                    </div>
                 </div>
                 <div class="form-item screen-prop" id="progress-branches-row" style="display: none;">
                     <label>Shown Branches</label>
@@ -430,6 +687,9 @@
                     <label>Delay (Seconds)</label> 
                     <input type="number" id="prop-restart-delay" min="0" value="5">
                 </div>
+                <div class="form-item puzzle-prop">
+                    <button type="button" id="open-scripting-btn" class="btn-primary scripting-open-btn">Open Puzzle Skripting</button>
+                </div>
             </form>
         </div>
     </div>
@@ -440,6 +700,8 @@
             <div id="log-filters" class="log-filters" aria-label="Log filters">
                 <label class="log-filter"><input type="checkbox" value="heartbeat" checked> Heartbeats</label>
                 <label class="log-filter"><input type="checkbox" value="mqtt" checked> MQTT Messages</label>
+                <label class="log-filter"><input type="checkbox" value="dmx" checked> DMX Messages</label>
+                <label class="log-filter"><input type="checkbox" value="zigbee" checked> Zigbee Messages</label>
                 <label class="log-filter"><input type="checkbox" value="error" checked> Warnings/Error Messages</label>
                 <label class="log-filter"><input type="checkbox" value="system" checked> System Messages</label>
             </div>
@@ -451,7 +713,37 @@
     
     <div id="save-status">Connecting...</div>
     <script src="litegraph.js"></script>
-    <script src="editor.js?v=dev"></script>
+    <script>
+        (function () {
+            const blocklyCandidates = [
+                "vendor/blockly.min.js",
+                "vendor/blockly/blockly.min.js",
+                "https://unpkg.com/blockly/blockly.min.js"
+            ];
+
+            function loadScript(src) {
+                return new Promise((resolve, reject) => {
+                    const script = document.createElement("script");
+                    script.src = src;
+                    script.onload = () => resolve(true);
+                    script.onerror = () => reject(new Error(`Failed to load ${src}`));
+                    document.body.appendChild(script);
+                });
+            }
+
+            function loadBlockly(index) {
+                if (window.Blockly) return Promise.resolve(true);
+                if (index >= blocklyCandidates.length) return Promise.resolve(false);
+                return loadScript(blocklyCandidates[index])
+                    .then(() => (window.Blockly ? true : loadBlockly(index + 1)))
+                    .catch(() => loadBlockly(index + 1));
+            }
+
+            loadBlockly(0).finally(() => {
+                loadScript("editor.js?v=dev");
+            });
+        })();
+    </script>
     <script>
         (function () {
             const startBtn = document.getElementById('start-room-btn');
@@ -470,12 +762,38 @@
             const victoryBtn = document.getElementById('choose-victory-btn');
             const victoryLabel = document.getElementById('victory-file-label');
             const victoryStatus = document.getElementById('victory-status');
+            const dmxAdapterStatus = document.getElementById('dmx-adapter-status');
+            const zigbeeAdapterStatus = document.getElementById('zigbee-adapter-status');
+            const lightingDmxStatus = document.getElementById('lighting-dmx-status');
+            const openLightingBtn = document.getElementById('open-lighting-btn');
             const mediaServerToggle = document.getElementById('media-server-toggle');
             const mediaServerStatus = document.getElementById('media-server-status');
             const autostartToggle = document.getElementById('autostart-toggle');
             const autostartStatus = document.getElementById('autostart-status');
-            let systemSettings = { screenSaverImage: null, victoryScreen: null, mediaServerEnabled: false, autostartEnabled: false, autostartStatus: null };
+            const dmxServiceToggle = document.getElementById('dmx-service-toggle');
+            const dmxServiceStatus = document.getElementById('dmx-service-status');
+            const zigbeeBridgeToggle = document.getElementById('zigbee-bridge-toggle');
+            const zigbeeBridgeStatus = document.getElementById('zigbee-bridge-status');
+            const soundOutputStatus = document.getElementById('sound-output-status');
+            let systemSettings = {
+                screenSaverImage: null,
+                victoryScreen: null,
+                mediaServerEnabled: false,
+                autostartEnabled: false,
+                autostartStatus: null,
+                dmxServiceEnabled: false,
+                dmxServiceStatus: null,
+                dmxServiceAvailable: true,
+                zigbeeBridgeEnabled: false,
+                zigbeeBridgeStatus: null,
+                zigbeeBridgeAvailable: true,
+                dmxAdapter: { connected: false, label: 'No adapter connected', port: null, source: null },
+                zigbeeAdapter: { connected: false, label: 'No adapter connected', port: null, source: null },
+                soundOutput: null
+            };
             let redirectedToRoom = false;
+            let startRoomInFlight = false;
+            let runtimeEventSource = null;
 
             if (!startBtn) return;
 
@@ -499,6 +817,9 @@
             }
 
             async function startRoomImmediate(force) {
+                if (startRoomInFlight) return;
+                startRoomInFlight = true;
+                startBtn.disabled = true;
                 const payload = force ? { force: true } : {};
                 try {
                     const res = await fetch('/api/room/start', {
@@ -515,9 +836,13 @@
                         }
                         throw new Error(data.error || 'Start failed');
                     }
-                    window.location.href = 'room.html';
+                    redirectedToRoom = true;
+                    window.location.replace('room.html');
                 } catch (err) {
                     alert('Start failed: ' + err.message);
+                } finally {
+                    startRoomInFlight = false;
+                    startBtn.disabled = false;
                 }
             }
 
@@ -534,11 +859,66 @@
                 if (victoryLabel && !victoryLabel.value && systemSettings.victoryScreen) {
                     victoryLabel.value = systemSettings.victoryScreen.split('/').pop();
                 }
+                if (dmxAdapterStatus) {
+                    const adapter = systemSettings.dmxAdapter || {};
+                    if (adapter.connected) {
+                        const label = adapter.label || 'USB DMX adapter';
+                        dmxAdapterStatus.textContent = adapter.port ? `${label} (${adapter.port})` : label;
+                    } else {
+                        dmxAdapterStatus.textContent = 'No adapter connected';
+                    }
+                }
+                if (zigbeeAdapterStatus) {
+                    const adapter = systemSettings.zigbeeAdapter || {};
+                    if (adapter.connected) {
+                        const label = adapter.label || 'USB Zigbee adapter';
+                        zigbeeAdapterStatus.textContent = adapter.port ? `${label} (${adapter.port})` : label;
+                    } else {
+                        zigbeeAdapterStatus.textContent = 'No adapter connected';
+                    }
+                }
+                if (lightingDmxStatus) {
+                    const adapter = systemSettings.dmxAdapter || {};
+                    if (adapter.connected) {
+                        lightingDmxStatus.textContent = 'DMX adapter connected';
+                        lightingDmxStatus.classList.remove('disconnected');
+                        lightingDmxStatus.classList.add('connected');
+                        const label = adapter.label || 'USB DMX adapter';
+                        lightingDmxStatus.title = adapter.port ? `${label} (${adapter.port})` : label;
+                    } else {
+                        lightingDmxStatus.textContent = 'no DMX Adapter connected';
+                        lightingDmxStatus.classList.remove('connected');
+                        lightingDmxStatus.classList.add('disconnected');
+                        lightingDmxStatus.title = 'No adapter connected';
+                    }
+                }
                 if (mediaServerToggle) mediaServerToggle.checked = !!systemSettings.mediaServerEnabled;
                 if (mediaServerStatus) mediaServerStatus.textContent = systemSettings.mediaServerEnabled ? 'Enabled' : 'Disabled';
                 if (autostartToggle) autostartToggle.checked = !!systemSettings.autostartEnabled;
                 if (autostartStatus) {
                     autostartStatus.textContent = systemSettings.autostartStatus || (systemSettings.autostartEnabled ? 'Enabled' : 'Disabled');
+                }
+                if (dmxServiceToggle) {
+                    dmxServiceToggle.checked = !!systemSettings.dmxServiceEnabled;
+                    dmxServiceToggle.disabled = systemSettings.dmxServiceAvailable === false;
+                }
+                if (dmxServiceStatus) {
+                    dmxServiceStatus.textContent = systemSettings.dmxServiceStatus || (systemSettings.dmxServiceEnabled ? 'Running' : 'Stopped');
+                }
+                if (zigbeeBridgeToggle) {
+                    zigbeeBridgeToggle.checked = !!systemSettings.zigbeeBridgeEnabled;
+                    zigbeeBridgeToggle.disabled = systemSettings.zigbeeBridgeAvailable === false;
+                }
+                if (zigbeeBridgeStatus) {
+                    zigbeeBridgeStatus.textContent = systemSettings.zigbeeBridgeStatus || (systemSettings.zigbeeBridgeEnabled ? 'Running' : 'Stopped');
+                }
+                if (soundOutputStatus) {
+                    const sound = systemSettings.soundOutput || {};
+                    if (sound.device) {
+                        soundOutputStatus.textContent = `${sound.device}${sound.status ? ` (${sound.status})` : ''}`;
+                    } else {
+                        soundOutputStatus.textContent = sound.status || 'Unknown';
+                    }
                 }
             }
 
@@ -722,6 +1102,102 @@
                 }
             }
 
+            function connectRuntimeEvents() {
+                if (!window.EventSource) return;
+                if (runtimeEventSource) {
+                    try { runtimeEventSource.close(); } catch (e) {}
+                }
+                runtimeEventSource = new EventSource('/api/events');
+                runtimeEventSource.addEventListener('update', (evt) => {
+                    try {
+                        const data = JSON.parse(evt.data || '{}');
+                        const type = String(data?.type || '');
+                        if (!type || type === 'connected') return;
+                        if (type === 'room-reset') {
+                            redirectedToRoom = false;
+                            return;
+                        }
+                        if (type === 'room-started' || type === 'room-restart') {
+                            if (shouldSkipRoomRedirect()) return;
+                            if (!redirectedToRoom) {
+                                redirectedToRoom = true;
+                                window.location.replace('room.html');
+                            }
+                        }
+                    } catch (e) {}
+                });
+            }
+
+            async function persistZigbeeBridgeSetting() {
+                if (!zigbeeBridgeToggle) return;
+                const next = !!zigbeeBridgeToggle.checked;
+                if (zigbeeBridgeStatus) zigbeeBridgeStatus.textContent = next ? 'Starting...' : 'Stopping...';
+                zigbeeBridgeToggle.disabled = true;
+                try {
+                    const res = await fetch('/api/system/zigbee-bridge', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ enabled: next })
+                    });
+                    const data = await res.json();
+                    if (!res.ok || data.success === false) {
+                        throw new Error(data.error || 'Update failed');
+                    }
+                    systemSettings.zigbeeBridgeEnabled = !!data.enabled;
+                    systemSettings.zigbeeBridgeStatus = data.status || null;
+                    systemSettings.zigbeeBridgeAvailable = data.available !== false;
+                    zigbeeBridgeToggle.checked = systemSettings.zigbeeBridgeEnabled;
+                    zigbeeBridgeToggle.disabled = systemSettings.zigbeeBridgeAvailable === false;
+                    if (zigbeeBridgeStatus) {
+                        zigbeeBridgeStatus.textContent = systemSettings.zigbeeBridgeStatus || (systemSettings.zigbeeBridgeEnabled ? 'Running' : 'Stopped');
+                    }
+                } catch (err) {
+                    zigbeeBridgeToggle.checked = !!systemSettings.zigbeeBridgeEnabled;
+                    zigbeeBridgeToggle.disabled = systemSettings.zigbeeBridgeAvailable === false;
+                    if (zigbeeBridgeStatus) zigbeeBridgeStatus.textContent = 'Update failed';
+                    alert('Zigbee Bridge update failed: ' + err.message);
+                } finally {
+                    if (zigbeeBridgeToggle && systemSettings.zigbeeBridgeAvailable !== false) {
+                        zigbeeBridgeToggle.disabled = false;
+                    }
+                }
+            }
+
+            async function persistDmxServiceSetting() {
+                if (!dmxServiceToggle) return;
+                const next = !!dmxServiceToggle.checked;
+                if (dmxServiceStatus) dmxServiceStatus.textContent = next ? 'Starting...' : 'Stopping...';
+                dmxServiceToggle.disabled = true;
+                try {
+                    const res = await fetch('/api/system/dmx-service', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ enabled: next })
+                    });
+                    const data = await res.json();
+                    if (!res.ok || data.success === false) {
+                        throw new Error(data.error || 'Update failed');
+                    }
+                    systemSettings.dmxServiceEnabled = !!data.enabled;
+                    systemSettings.dmxServiceStatus = data.status || null;
+                    systemSettings.dmxServiceAvailable = data.available !== false;
+                    dmxServiceToggle.checked = systemSettings.dmxServiceEnabled;
+                    dmxServiceToggle.disabled = systemSettings.dmxServiceAvailable === false;
+                    if (dmxServiceStatus) {
+                        dmxServiceStatus.textContent = systemSettings.dmxServiceStatus || (systemSettings.dmxServiceEnabled ? 'Running' : 'Stopped');
+                    }
+                } catch (err) {
+                    dmxServiceToggle.checked = !!systemSettings.dmxServiceEnabled;
+                    dmxServiceToggle.disabled = systemSettings.dmxServiceAvailable === false;
+                    if (dmxServiceStatus) dmxServiceStatus.textContent = 'Update failed';
+                    alert('DMX Service update failed: ' + err.message);
+                } finally {
+                    if (dmxServiceToggle && systemSettings.dmxServiceAvailable !== false) {
+                        dmxServiceToggle.disabled = false;
+                    }
+                }
+            }
+
             startBtn.addEventListener('click', function () {
                 preflightStart();
             });
@@ -743,6 +1219,9 @@
             settingsOpenBtn.addEventListener('click', () => {
                 loadSystemSettings().then(openSettingsModal);
             });
+            openLightingBtn?.addEventListener('click', () => {
+                loadSystemSettings();
+            });
             settingsCloseBtn.addEventListener('click', closeSettingsModal);
             screenSaverBtn.addEventListener('click', ()=> screenSaverInput.click());
             screenSaverInput.addEventListener('change', ()=> uploadScreenSaver(screenSaverInput.files[0]));
@@ -750,9 +1229,12 @@
             victoryInput.addEventListener('change', ()=> uploadVictoryScreen(victoryInput.files[0]));
             mediaServerToggle?.addEventListener('change', persistMediaServerSetting);
             autostartToggle?.addEventListener('change', persistAutostartSetting);
+            dmxServiceToggle?.addEventListener('change', persistDmxServiceSetting);
+            zigbeeBridgeToggle?.addEventListener('change', persistZigbeeBridgeSetting);
 
             pollRoomStatus();
-            setInterval(pollRoomStatus, 2000);
+            connectRuntimeEvents();
+            setInterval(pollRoomStatus, 5000);
         })();
     </script>
 </body>

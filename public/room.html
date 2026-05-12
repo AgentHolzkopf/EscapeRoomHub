@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Room Monitor</title>
+    <link rel="icon" type="image/png" href="/favicon.png">
     <link rel="stylesheet" href="style.css?v=dev">
     <style>
         body {
@@ -85,6 +86,32 @@
             gap: 8px;
             margin-bottom: 8px;
         }
+        .branch-header-right {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .branch-status {
+            padding: 4px 8px;
+            border-radius: 999px;
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
+            border: 1px solid #3a3a3a;
+            background: rgba(255,255,255,0.04);
+            color: #c8d5e3;
+            letter-spacing: 0.3px;
+        }
+        .branch-status.running {
+            border-color: #2c77d1;
+            background: rgba(44,119,209,0.2);
+            color: #d9ebff;
+        }
+        .branch-status.solved {
+            border-color: #2b8a3e;
+            background: rgba(43,138,62,0.22);
+            color: #dff7e5;
+        }
         .branch-timer {
             font-weight: 700;
             font-size: 12px;
@@ -158,6 +185,28 @@
         .puzzle-header { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
         .puzzle-title { display: flex; align-items: center; gap: 8px; min-width: 0; }
         .puzzle-name { font-weight: 700; font-size: 14px; color: #f2f2f2; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .puzzle-script-indicator {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 22px;
+            height: 18px;
+            padding: 0 6px;
+            border-radius: 6px;
+            font-size: 11px;
+            font-weight: 700;
+            background: #2f333b;
+            color: #c8cfdb;
+            border: 1px solid #4b5261;
+            line-height: 1;
+            flex: 0 0 auto;
+            transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+        }
+        .puzzle-script-indicator.active {
+            background: #2c77d1;
+            color: #fff;
+            border-color: #6eaaf0;
+        }
         .badge { padding: 2px 8px; border-radius: 6px; font-size: 11px; font-weight: 700; text-transform: uppercase; }
         .badge.locked { background: #444; color: #aaa; }
         .badge.running { background: #2c77d1; color: #fff; }
@@ -374,12 +423,19 @@
             color: #ccc;
             font-size: 11px;
             line-height: 1.5;
+            scrollbar-width: thin;
+            scrollbar-color: #2c6aa3 #1f1f1f;
         }
         .runtime-log-entry { color: #fff; }
         .runtime-log-entry.log-success { color: #4caf50; }
         .runtime-log-entry.log-warn { color: #ffc107; }
         .runtime-log-entry.log-error { color: #ff5555; }
         .runtime-log-entry.log-system { color: #4aa3ff; }
+        .runtime-log-entry.log-zigbee { color: #67e8f9; }
+        .runtime-log-entry.log-scripting { color: #c084fc; }
+        .runtime-log-entry.log-mqtt-in { color: #7dd3fc; }
+        .runtime-log-entry.log-mqtt-out { color: #fbbf24; }
+        .runtime-log-entry.log-dmx { color: #f59e0b; }
         .runtime-log-entry.log-data { color: #4caf50; }
         .runtime-log-empty { color: #9aa6b5; font-size: 11px; padding: 4px 0 10px 10px; }
         .fallback-tag { color: #ff5555; font-size: 11px; margin-left: 6px; }
@@ -388,29 +444,59 @@
         .room-status.running { background: #1f2f44; border-color: #2c77d1; color: #d6e6ff; }
         .room-status.solved { background: #1f3225; border-color: #2b8a3e; color: #9ae6b4; }
         .room-status.stopped { background: #2e2e2e; border-color: #555; color: #c0c5cc; }
+        .room-script-indicator {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 22px;
+            height: 22px;
+            padding: 0 6px;
+            border-radius: 6px;
+            font-size: 11px;
+            font-weight: 700;
+            line-height: 1;
+            background: #2f333b;
+            color: #b9c0cd;
+            border: 1px solid #4b5261;
+            transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+        }
+        .room-script-indicator.active {
+            background: #2c77d1;
+            color: #fff;
+            border-color: #6eaaf0;
+        }
+        .room-script-indicator.hidden { display: none; }
 
         /* Scrollbars */
         .flow-scroll::-webkit-scrollbar,
         .detail-panel::-webkit-scrollbar,
-        .data-list::-webkit-scrollbar {
+        .data-list::-webkit-scrollbar,
+        .runtime-log-list::-webkit-scrollbar,
+        .runtime-log-body::-webkit-scrollbar {
             width: 8px;
         }
         .flow-scroll::-webkit-scrollbar-track,
         .detail-panel::-webkit-scrollbar-track,
-        .data-list::-webkit-scrollbar-track {
+        .data-list::-webkit-scrollbar-track,
+        .runtime-log-list::-webkit-scrollbar-track,
+        .runtime-log-body::-webkit-scrollbar-track {
             background: #1f1f1f;
             border-radius: 6px;
         }
         .flow-scroll::-webkit-scrollbar-thumb,
         .detail-panel::-webkit-scrollbar-thumb,
-        .data-list::-webkit-scrollbar-thumb {
+        .data-list::-webkit-scrollbar-thumb,
+        .runtime-log-list::-webkit-scrollbar-thumb,
+        .runtime-log-body::-webkit-scrollbar-thumb {
             background: linear-gradient(180deg, #2c6aa3, #1f4f7a);
             border-radius: 6px;
             border: 1px solid #12324f;
         }
         .flow-scroll::-webkit-scrollbar-thumb:hover,
         .detail-panel::-webkit-scrollbar-thumb:hover,
-        .data-list::-webkit-scrollbar-thumb:hover {
+        .data-list::-webkit-scrollbar-thumb:hover,
+        .runtime-log-list::-webkit-scrollbar-thumb:hover,
+        .runtime-log-body::-webkit-scrollbar-thumb:hover {
             background: linear-gradient(180deg, #3587d4, #236299);
         }
         .settings-modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: none; align-items: center; justify-content: center; z-index: 4000; }
@@ -485,6 +571,7 @@
                     <div class="room-title" id="room-name">No Room</div>
                     <div class="room-timer" id="room-timer">--:--</div>
                     <div class="room-status running" id="room-status">Running</div>
+                    <span class="room-script-indicator hidden" id="room-scripting-indicator" title="Room Skripting aktiv">{}</span>
                 </div>
                 <div class="room-sub" id="room-sub">Monitoring</div>
             </div>
@@ -527,6 +614,9 @@
                 <div class="runtime-log-filters">
                     <label class="log-filter"><input type="checkbox" value="heartbeat" checked> Heartbeats</label>
                     <label class="log-filter"><input type="checkbox" value="mqtt" checked> MQTT Messages</label>
+                    <label class="log-filter"><input type="checkbox" value="dmx" checked> DMX Messages</label>
+                    <label class="log-filter"><input type="checkbox" value="zigbee" checked> Zigbee Messages</label>
+                    <label class="log-filter"><input type="checkbox" value="scripting" checked> Skripting Logik</label>
                     <label class="log-filter"><input type="checkbox" value="error" checked> Warnings/Error Messages</label>
                     <label class="log-filter"><input type="checkbox" value="system" checked> System Messages</label>
                 </div>
@@ -579,6 +669,23 @@
                     </div>
                     <div class="settings-sub" id="media-server-status"></div>
                 </div>
+                <div class="settings-section">
+                    <div class="settings-title">DMX Service</div>
+                    <div class="settings-sub">Run the OLA DMX service in the background.</div>
+                    <div class="settings-field settings-label-row">
+                        <label class="switch">
+                            <input type="checkbox" id="dmx-service-toggle">
+                            <span class="slider"></span>
+                            <span class="switch-label">DMX Service</span>
+                        </label>
+                    </div>
+                    <div class="settings-sub" id="dmx-service-status">Disabled</div>
+                </div>
+                <div class="settings-section">
+                    <div class="settings-title">Sound</div>
+                    <div class="settings-sub">Selected audio playback device.</div>
+                    <div class="settings-sub" id="sound-output-status">Unknown</div>
+                </div>
             </div>
         </div>
     </div>
@@ -623,7 +730,16 @@
         let branchFlow = [];
         let branchStartTimes = {};
         let puzzleStatuses = {};
+        const puzzleScriptFlashUntil = {};
+        const puzzleScriptLastSeq = {};
+        let puzzleScriptSeqInitialized = false;
+        let roomScriptingConfigured = false;
+        let roomScriptFlashUntil = 0;
+        let roomScriptLastSeq = 0;
+        let roomScriptSeqInitialized = false;
         let dataSnapshot = [];
+        const dataRowOrder = new Map();
+        let dataRowOrderNext = 1;
         let autoRestart = false;
         let autoRestartDelay = 5;
         let roomStartTime = null;
@@ -633,6 +749,15 @@
         const branchStartTimesCache = {};
         let roomRunning = false;
         let serverTimeOffsetMs = 0;
+        const solveInFlight = new Set();
+        let restartRoomInFlight = false;
+        const restartBranchInFlight = new Set();
+        let flowLoadInFlight = false;
+        let flowReloadQueued = false;
+        let runtimeEventSource = null;
+        let runtimeRealtimeRefreshTimer = null;
+        let roomResetWaiter = null;
+        let exitRoomInFlight = false;
 
         const flowContainer = document.getElementById('flow-container');
         const branchFooterContainer = document.getElementById('branch-footer-container');
@@ -652,9 +777,21 @@
         const victoryStatus = document.getElementById('victory-status');
         const mediaServerToggle = document.getElementById('media-server-toggle');
         const mediaServerStatus = document.getElementById('media-server-status');
-        let systemSettings = { screenSaverImage: null, victoryScreen: null, mediaServerEnabled: false };
+        const dmxServiceToggle = document.getElementById('dmx-service-toggle');
+        const dmxServiceStatus = document.getElementById('dmx-service-status');
+        const soundOutputStatus = document.getElementById('sound-output-status');
+        let systemSettings = {
+            screenSaverImage: null,
+            victoryScreen: null,
+            mediaServerEnabled: false,
+            dmxServiceEnabled: false,
+            dmxServiceStatus: null,
+            dmxServiceAvailable: true,
+            soundOutput: null
+        };
         const roomTimerEl = document.getElementById('room-timer');
         const roomStatusEl = document.getElementById('room-status');
+        const roomScriptingIndicatorEl = document.getElementById('room-scripting-indicator');
         let roomStatus = 'Running';
         const hintModal = document.getElementById('hint-modal');
         const hintModalTitle = document.getElementById('hint-modal-title');
@@ -675,7 +812,7 @@
         const runtimeLogList = document.getElementById('runtime-log-list');
         const runtimeLogEmpty = document.getElementById('runtime-log-empty');
         let runtimeLogs = [];
-        const runtimeLogFiltersState = { heartbeat: true, mqtt: true, error: true, system: true };
+        const runtimeLogFiltersState = { heartbeat: true, mqtt: true, dmx: true, zigbee: true, scripting: true, error: true, system: true };
 
         function normalizeDataType(type) {
             const t = (type ?? "string").toString().toLowerCase();
@@ -701,9 +838,13 @@
         function categorizeLog(entry) {
             const msg = (entry?.msg || '').toLowerCase();
             const type = (entry?.type || '').toLowerCase();
+            const topic = (entry?.meta?.topic || '').toLowerCase();
+            if (type === 'error' || type === 'warn' || type === 'warning' || msg.includes('error') || msg.includes('warn')) return 'error';
+            if (type === 'scripting' || msg.includes('[puzzle script]') || msg.includes('[room script]')) return 'scripting';
+            if (type === 'dmx' || msg.includes('dmx')) return 'dmx';
+            if (type === 'zigbee' || msg.includes('zigbee') || topic.startsWith('zigbee2mqtt/')) return 'zigbee';
             if (msg.includes('heartbeat')) return 'heartbeat';
             if (msg.includes('mqtt')) return 'mqtt';
-            if (type === 'error' || type === 'warn' || type === 'warning' || msg.includes('error') || msg.includes('warn')) return 'error';
             return 'system';
         }
 
@@ -753,7 +894,26 @@
 
         function isBranchSolved(branch) {
             if (!branch || !Array.isArray(branch.puzzles) || !branch.puzzles.length) return false;
-            return branch.puzzles.every(p => deriveState(p) === 'solved');
+            return branch.puzzles.every(p => {
+                if (p.queueBlocked) return true;
+                return deriveState(p) === 'solved';
+            });
+        }
+
+        function syncBranchRuntimeCaches() {
+            const validIds = new Set((branchFlow || []).map(b => b.id));
+            Object.keys(branchStartTimesCache).forEach(key => {
+                const id = parseInt(key, 10);
+                if (!validIds.has(id)) delete branchStartTimesCache[key];
+            });
+            Object.keys(branchSolvedAt).forEach(key => {
+                const id = parseInt(key, 10);
+                if (!validIds.has(id)) delete branchSolvedAt[key];
+            });
+            Object.keys(branchSolvedState).forEach(key => {
+                const id = parseInt(key, 10);
+                if (!validIds.has(id)) delete branchSolvedState[key];
+            });
         }
 
         function updateBranchTimers() {
@@ -761,6 +921,16 @@
             timers.forEach(el => {
                 const raw = el.dataset.branchId;
                 const branchId = parseInt(raw, 10);
+                const branch = (branchFlow || []).find(b => b.id === branchId);
+                const solved = isBranchSolved(branch);
+                const branchEl = el.closest('.branch-header');
+                const badgeEl = branchEl ? branchEl.querySelector('.branch-status') : null;
+                if (badgeEl) {
+                    const statusClass = solved ? 'solved' : 'running';
+                    badgeEl.classList.remove('solved', 'running');
+                    badgeEl.classList.add(statusClass);
+                    badgeEl.textContent = solved ? 'SOLVED' : 'RUNNING';
+                }
                 if (!roomRunning) {
                     el.textContent = '--:--';
                     return;
@@ -774,8 +944,6 @@
                     delete branchSolvedAt[branchId];
                 }
                 branchStartTimesCache[branchId] = start;
-                const branch = (branchFlow || []).find(b => b.id === branchId);
-                const solved = isBranchSolved(branch);
                 if (solved && !branchSolvedAt[branchId]) {
                     branchSolvedAt[branchId] = getServerNow();
                 } else if (!solved && branchSolvedAt[branchId]) {
@@ -793,6 +961,28 @@
             roomStatusEl.textContent = label;
             roomStatusEl.classList.remove('running', 'solved', 'stopped');
             roomStatusEl.classList.add(normalized === 'solved' ? 'solved' : normalized === 'stopped' ? 'stopped' : 'running');
+        }
+
+        function updateRoomScriptingIndicator(status) {
+            if (!roomScriptingIndicatorEl) return;
+            if (status && typeof status === 'object') {
+                roomScriptingConfigured = !!status.roomScriptingConfigured;
+                const now = Date.now();
+                const seq = Number(status.roomScriptingSeq || 0);
+                if (roomScriptSeqInitialized && seq > roomScriptLastSeq) {
+                    roomScriptFlashUntil = now + 2000;
+                }
+                roomScriptLastSeq = seq;
+                if (!roomScriptSeqInitialized) {
+                    roomScriptSeqInitialized = true;
+                }
+                const backendUntil = Number(status.roomScriptingActiveUntil || 0);
+                const active = backendUntil > now || roomScriptFlashUntil > now;
+                roomScriptingIndicatorEl.classList.toggle('hidden', !roomScriptingConfigured);
+                roomScriptingIndicatorEl.classList.toggle('active', !!roomScriptingConfigured && active);
+                return;
+            }
+            roomScriptingIndicatorEl.classList.toggle('hidden', !roomScriptingConfigured);
         }
 
         async function pollRoomStatus() {
@@ -820,6 +1010,7 @@
                 roomRunning = nextRunning;
                 roomStatus = status?.roomStatus || roomStatus;
                 updateRoomStatusUI(roomStatus);
+                updateRoomScriptingIndicator(status);
                 updateRoomTimer();
             } catch (err) {
                 // ignore transient errors
@@ -846,6 +1037,21 @@
             }
             if (mediaServerToggle) mediaServerToggle.checked = !!systemSettings.mediaServerEnabled;
             if (mediaServerStatus) mediaServerStatus.textContent = systemSettings.mediaServerEnabled ? 'Enabled' : 'Disabled';
+            if (dmxServiceToggle) {
+                dmxServiceToggle.checked = !!systemSettings.dmxServiceEnabled;
+                dmxServiceToggle.disabled = systemSettings.dmxServiceAvailable === false;
+            }
+            if (dmxServiceStatus) {
+                dmxServiceStatus.textContent = systemSettings.dmxServiceStatus || (systemSettings.dmxServiceEnabled ? 'Running' : 'Stopped');
+            }
+            if (soundOutputStatus) {
+                const sound = systemSettings.soundOutput || {};
+                if (sound.device) {
+                    soundOutputStatus.textContent = `${sound.device}${sound.status ? ` (${sound.status})` : ''}`;
+                } else {
+                    soundOutputStatus.textContent = sound.status || 'Unknown';
+                }
+            }
         }
 
         function openHintModal(puzzleId, puzzleName) {
@@ -1187,6 +1393,41 @@
             }
         }
 
+        async function persistDmxServiceSetting() {
+            if (!dmxServiceToggle) return;
+            const next = !!dmxServiceToggle.checked;
+            if (dmxServiceStatus) dmxServiceStatus.textContent = next ? 'Starting...' : 'Stopping...';
+            dmxServiceToggle.disabled = true;
+            try {
+                const res = await fetch('/api/system/dmx-service', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ enabled: next })
+                });
+                const data = await res.json();
+                if (!res.ok || data.success === false) {
+                    throw new Error(data.error || 'Update failed');
+                }
+                systemSettings.dmxServiceEnabled = !!data.enabled;
+                systemSettings.dmxServiceStatus = data.status || null;
+                systemSettings.dmxServiceAvailable = data.available !== false;
+                dmxServiceToggle.checked = systemSettings.dmxServiceEnabled;
+                dmxServiceToggle.disabled = systemSettings.dmxServiceAvailable === false;
+                if (dmxServiceStatus) {
+                    dmxServiceStatus.textContent = systemSettings.dmxServiceStatus || (systemSettings.dmxServiceEnabled ? 'Running' : 'Stopped');
+                }
+            } catch (err) {
+                dmxServiceToggle.checked = !!systemSettings.dmxServiceEnabled;
+                dmxServiceToggle.disabled = systemSettings.dmxServiceAvailable === false;
+                if (dmxServiceStatus) dmxServiceStatus.textContent = 'Update failed';
+                alert('DMX Service update failed: ' + err.message);
+            } finally {
+                if (dmxServiceToggle && systemSettings.dmxServiceAvailable !== false) {
+                    dmxServiceToggle.disabled = false;
+                }
+            }
+        }
+
         async function persistAutoRestartSettings() {
             autoRestart = !!autoRestartToggle.checked;
             const parsed = parseInt(autoRestartDelayInput.value, 10);
@@ -1253,19 +1494,57 @@
         function deriveState(puzzle) {
             const st = puzzleStatuses[puzzle.id] || {};
             const serverState = (st.state || '').toLowerCase();
+            const restartPending = !!st.restartPending;
             if (serverState === 'uploading' || serverState === 'downloading') return serverState;
-            if (puzzle.queueState === 'queueing') return 'queueing';
-            if (puzzle.queueSolved) return 'solved';
-            if (puzzle.queueControlled && puzzle.queueActive === false) return 'locked';
+            const queueInstanceState = puzzle.queueInstanceState || null;
+            if (queueInstanceState === 'solved' || puzzle.queueSolved) return 'solved';
+            if (queueInstanceState === 'queueing') return 'queueing';
+            if (queueInstanceState === 'locked') return 'locked';
+            if (queueInstanceState === 'running') {
+                if (serverState === 'solved' || st.solved) return 'solved';
+                if (serverState === 'starting') return 'starting';
+                if (restartPending && serverState === 'active') return 'locked';
+                if (serverState === 'active') return 'running';
+                if (st.checking) return 'checking';
+                return 'running';
+            }
             if (serverState === 'solved' || st.solved) return 'solved';
+
             const isDigital = !puzzle.isAnalog;
             if (serverState === 'starting') return 'starting';
-            if (serverState === 'active') return isDigital ? 'starting' : 'running';
-            if (isDigital && st.active && serverState !== 'running' && serverState !== 'solved') return 'starting';
+            if (restartPending && serverState === 'active') return 'locked';
+            if (serverState === 'active') return 'running';
+            if (isDigital && st.active && serverState !== 'running' && serverState !== 'solved') return 'running';
             if (st.checking) return 'checking';
             if (serverState === 'running' || st.running || st.active) return 'running';
+            if (puzzle.queueState === 'queueing') return 'queueing';
             if (!puzzle.isAnalog && st.online === false) return 'offline';
             return 'locked';
+        }
+
+        function getPuzzleMetaForDataRow(puzzleId, branchId) {
+            const numericPuzzleId = Number(puzzleId);
+            const numericBranchId = Number(branchId);
+            if (Number.isFinite(numericBranchId)) {
+                const branch = (branchFlow || []).find(b => b && b.id === numericBranchId);
+                const branchPuzzle = (branch?.puzzles || []).find(p => p && p.id === numericPuzzleId);
+                if (branchPuzzle) return branchPuzzle;
+            }
+            return (puzzleFlow || []).find(p => p && p.id === numericPuzzleId) || null;
+        }
+
+        function getDataRowOrderKey(puzzle, out, isExternal) {
+            const branchKey = Number.isFinite(Number(out?.branchId)) ? Number(out.branchId) : 'none';
+            return [
+                Number(puzzle?.id) || 0,
+                branchKey,
+                isExternal ? 'external' : 'transfer',
+                out?.key || '',
+                out?.inputKey || '',
+                out?.source || '',
+                out?.sourceKey || '',
+                out?.target || ''
+            ].join('|');
         }
 
         function heartbeatText(status) {
@@ -1277,7 +1556,14 @@
             return status.online ? 'Online' : 'Unknown';
         }
 
+        function buildSolveInFlightKey(puzzleId, branchId) {
+            const p = Number.isFinite(Number(puzzleId)) ? Number(puzzleId) : 0;
+            const b = Number.isFinite(Number(branchId)) ? Number(branchId) : 0;
+            return `${p}:${b}`;
+        }
+
         function renderFlow() {
+            const now = Date.now();
             const hasBranches = Array.isArray(branchFlow) && branchFlow.length > 0;
             const branches = hasBranches ? branchFlow : [{ id: 1, puzzles: puzzleFlow }];
             const hasPuzzles = branches.some(b => Array.isArray(b.puzzles) && b.puzzles.length);
@@ -1298,7 +1584,10 @@
                 });
                 const depths = Object.keys(rowsByDepth).map(Number).sort((a,b)=>a-b);
                 const titleText = multipleBranches ? `Branch ${index + 1}` : '';
-                const header = `<div class="branch-header"><div class="branch-title">${titleText}</div><div class="branch-timer" data-branch-id="${branch.id}">--:--</div></div>`;
+                const branchSolved = isBranchSolved(branch);
+                const branchStatusText = branchSolved ? 'SOLVED' : 'RUNNING';
+                const branchStatusClass = branchSolved ? 'solved' : 'running';
+                const header = `<div class="branch-header"><div class="branch-title">${titleText}</div><div class="branch-header-right"><div class="branch-status ${branchStatusClass}" data-branch-id="${branch.id}">${branchStatusText}</div><div class="branch-timer" data-branch-id="${branch.id}">--:--</div></div></div>`;
                 html += `<div class="branch-column">${header}<div class="branch-body">`;
                 depths.forEach(depth => {
                     html += `<div class="stage"><div class="stage-title">Stage ${depth+1}</div><div class="stage-row">`;
@@ -1318,26 +1607,36 @@
                         const giveHintAttrs = giveHintDisabled ? 'disabled title="Hint system not configured"' : '';
                         const extBadge = externalConfigured ? `<span class="chip chip-ext${checking ? ' checking' : ''}">Player Input aktiv</span>` : '';
                         const typeChip = `<span class="chip type-chip">${analog?'Analog':'Digital'}</span>`;
+                        const scriptActive = Number(st.scriptingActiveUntil || 0) > now || Number(puzzleScriptFlashUntil[String(p.id)] || 0) > now;
+                        const scriptBadge = p.hasScripting ? `<span class="puzzle-script-indicator${scriptActive ? ' active' : ''}" title="Puzzle Skripting aktiv">{}</span>` : '';
                         const statusChip = analog ? '' : `<span class="chip status-chip"><span class="dot ${online?'online':'offline'}"></span><span>${deviceLabel}</span></span>`;
                         const statusList = [statusChip, extBadge].filter(Boolean);
                         const statusClass = statusList.length > 1 ? 'multi' : 'single';
                         const statusContent = statusList.length ? statusList.join('') : `<span class="chip placeholder-chip"></span>`;
                         const statusLine = `<div class="info-line status-line ${statusClass}">${statusContent}</div>`;
-                        const solveClass = (solved || queueBlocked) ? 'card-action solve-btn solved disabled' : 'card-action solve-btn';
-                        const solveAttrs = solved ? 'disabled title="Bereits geloest"' : (queueBlocked ? 'disabled title="Queue path not active"' : '');
+                        const solvePending = solveInFlight.has(buildSolveInFlightKey(p.id, branch.id));
+                        const solveDisabled = solved || queueBlocked || solvePending;
+                        const solveClass = solveDisabled ? 'card-action solve-btn solved disabled' : 'card-action solve-btn';
+                        const solveAttrs = solved
+                            ? 'disabled title="Bereits geloest"'
+                            : (queueBlocked
+                                ? 'disabled title="Queue path not active"'
+                                : (solvePending ? 'disabled title="Solving..."' : ''));
+                        const solveLabel = solvePending ? 'Solving...' : 'Solve';
                         html += `
                             <div class="puzzle-card ${cardStateClass}${queueBlocked ? ' queue-blocked' : ''}" data-id="${p.id}">
                                 <div class="puzzle-header">
                                     <div class="puzzle-title">
                                         <div class="puzzle-name" title="${p.name || p.title || 'Puzzle'}">${p.name || p.title || 'Puzzle'}</div>
                                         ${typeChip}
+                                        ${scriptBadge}
                                     </div>
                                     ${statusBadge(state)}
                                 </div>
                                 ${statusLine}
                                 <div class="card-footer">
                                     <button class="${giveHintClass}" data-action="give-hint" data-id="${p.id}" data-name="${p.name || p.title || 'Puzzle'}" ${giveHintAttrs}>Give Hint</button>
-                                      <button class="${solveClass}" data-action="solve" data-id="${p.id}" data-branch-id="${branch.id}" ${solveAttrs}>Solve</button>
+                                      <button class="${solveClass}" data-action="solve" data-id="${p.id}" data-branch-id="${branch.id}" ${solveAttrs}>${solveLabel}</button>
                                 </div>
                             </div>`;
                     });
@@ -1353,7 +1652,8 @@
             if (branchFooterContainer) {
                 if (multipleBranches) {
                     branchFooterContainer.innerHTML = `<div class="branch-footer-grid">${branches.map(branch => {
-                        return `<div class="branch-footer"><button class="branch-restart-btn" data-branch-id="${branch.id}">Restart Branch</button></div>`;
+                        const pending = restartBranchInFlight.has(branch.id);
+                        return `<div class="branch-footer"><button class="branch-restart-btn" data-branch-id="${branch.id}" ${pending ? 'disabled' : ''}>${pending ? 'Restarting...' : 'Restart Branch'}</button></div>`;
                     }).join('')}</div>`;
                 } else {
                     branchFooterContainer.innerHTML = '';
@@ -1395,16 +1695,23 @@
     }
 
         async function loadPuzzleFlow(showSpinner = false) {
+            if (flowLoadInFlight) {
+                flowReloadQueued = true;
+                return;
+            }
+            flowLoadInFlight = true;
             if (showSpinner) {
                 flowContainer.innerHTML = '<div class="loading">Loading flow...</div>';
             }
             try {
-                const res = await fetch('/api/runtime/puzzle-flow');
-                const data = await res.json();
+                const [flowRes, roomStatusRes] = await Promise.all([
+                    fetch('/api/runtime/puzzle-flow'),
+                    fetch('/api/runtime/room/status', { cache: 'no-store' })
+                ]);
+                const data = await flowRes.json();
                 try {
-                    const statusRes = await fetch('/api/runtime/room/status', { cache: 'no-store' });
-                    if (statusRes.ok) {
-                        const status = await statusRes.json();
+                    if (roomStatusRes.ok) {
+                        const status = await roomStatusRes.json();
                         const nextRunning = !!status?.running;
                         const nextStart = Number.isFinite(status?.gameStartTime) ? status.gameStartTime : null;
                         if (!nextRunning) {
@@ -1418,6 +1725,7 @@
                         roomStatus = status?.roomStatus || roomStatus;
                         updateRoomTimer();
                         updateRoomStatusUI(roomStatus);
+                        updateRoomScriptingIndicator(status);
                         if (!roomRunning) {
                             window.location.replace('index.html');
                             return;
@@ -1427,14 +1735,12 @@
                 puzzleFlow = data.puzzles || [];
                 branchFlow = Array.isArray(data.branches) ? data.branches : [];
                 branchStartTimes = {};
-                Object.keys(branchStartTimesCache).forEach(key => delete branchStartTimesCache[key]);
-                Object.keys(branchSolvedAt).forEach(key => delete branchSolvedAt[key]);
-                Object.keys(branchSolvedState).forEach(key => delete branchSolvedState[key]);
                 branchFlow.forEach(branch => {
                     if (branch && branch.startTime) {
                         branchStartTimes[branch.id] = branch.startTime;
                     }
                 });
+                syncBranchRuntimeCaches();
                 if (roomRunning) {
                     const singleBranchStart = getSingleBranchStartTime();
                     if (singleBranchStart) {
@@ -1452,14 +1758,24 @@
                     autoRestartDelay = data.autoRestartDelay;
                 }
                 applyAutoRestartUI();
-                await updatePuzzleStatuses();
+                await Promise.all([
+                    updatePuzzleStatuses(),
+                    updateDataSnapshot()
+                ]);
                 renderFlow();
-                await updateDataSnapshot();
                 renderDataList();
             } catch (err) {
                 console.error(err);
                 if (!puzzleFlow.length && !branchFlow.length) {
                     flowContainer.innerHTML = '<div class="loading">Failed to load flow.</div>';
+                }
+            } finally {
+                flowLoadInFlight = false;
+                if (flowReloadQueued) {
+                    flowReloadQueued = false;
+                    setTimeout(() => {
+                        loadPuzzleFlow(false);
+                    }, 0);
                 }
             }
         }
@@ -1468,6 +1784,21 @@
             try {
                 const res = await fetch('/api/runtime/status');
                 puzzleStatuses = await res.json();
+                const now = Date.now();
+                Object.entries(puzzleStatuses || {}).forEach(([id, st]) => {
+                    const key = String(id);
+                    const seq = Number(st?.scriptingSeq || 0);
+                    if (puzzleScriptSeqInitialized) {
+                        const prevSeq = Number(puzzleScriptLastSeq[key] || 0);
+                        if (seq > prevSeq) {
+                            puzzleScriptFlashUntil[key] = now + 2000;
+                        }
+                    }
+                    puzzleScriptLastSeq[key] = seq;
+                });
+                if (!puzzleScriptSeqInitialized) {
+                    puzzleScriptSeqInitialized = true;
+                }
                 const branches = branchFlow || [];
                 let refresh = false;
                 branches.forEach(branch => {
@@ -1494,20 +1825,22 @@
                 const nextBranches = Array.isArray(data.branches) ? data.branches : [];
                 branchFlow = nextBranches;
                 branchStartTimes = {};
-                Object.keys(branchStartTimesCache).forEach(key => delete branchStartTimesCache[key]);
-                Object.keys(branchSolvedAt).forEach(key => delete branchSolvedAt[key]);
-                Object.keys(branchSolvedState).forEach(key => delete branchSolvedState[key]);
                 nextBranches.forEach(branch => {
                     if (branch && branch.startTime) {
                         branchStartTimes[branch.id] = branch.startTime;
                     }
                 });
+                syncBranchRuntimeCaches();
             } catch (err) {
                 console.error('branch time refresh failed', err);
             }
         }
 
           async function markPuzzleSolved(id, branchId) {
+              const key = buildSolveInFlightKey(id, branchId);
+              if (solveInFlight.has(key)) return;
+              solveInFlight.add(key);
+              renderFlow();
               try {
                   const response = await fetch('/api/runtime/puzzle/solve', {
                       method: 'POST',
@@ -1528,10 +1861,20 @@
                 renderFlow();
             } catch (err) {
                 alert('Error marking puzzle solved: ' + err.message);
+            } finally {
+                solveInFlight.delete(key);
+                renderFlow();
             }
         }
 
         async function restartRoom() {
+            if (restartRoomInFlight) return;
+            restartRoomInFlight = true;
+            const restartBtn = document.getElementById('restart-btn');
+            if (restartBtn) {
+                restartBtn.disabled = true;
+                restartBtn.textContent = 'Restarting...';
+            }
             try {
                 const restart = await fetch('/api/runtime/restart', {
                     method:'POST',
@@ -1543,15 +1886,23 @@
                 roomStatus = 'Restarting';
                 roomSolvedAt = null;
                 updateRoomStatusUI(roomStatus);
-                await loadPuzzleFlow();
-                await updateDataSnapshot();
-                renderDataList();
+                loadPuzzleFlow();
+                pollRoomStatus();
             } catch (err) {
                 alert('Restart failed: ' + err.message);
+            } finally {
+                restartRoomInFlight = false;
+                if (restartBtn) {
+                    restartBtn.disabled = false;
+                    restartBtn.textContent = 'Restart Room';
+                }
             }
         }
 
         async function restartBranch(branchId) {
+            if (restartBranchInFlight.has(branchId)) return;
+            restartBranchInFlight.add(branchId);
+            renderFlow();
             try {
                 const res = await fetch('/api/runtime/branch/restart', {
                     method: 'POST',
@@ -1565,11 +1916,13 @@
                 delete branchSolvedAt[branchId];
                 delete branchSolvedState[branchId];
                 delete branchStartTimesCache[branchId];
-                await loadPuzzleFlow();
-                await updateDataSnapshot();
-                renderDataList();
+                loadPuzzleFlow();
+                pollRoomStatus();
             } catch (err) {
                 alert('Branch restart failed: ' + err.message);
+            } finally {
+                restartBranchInFlight.delete(branchId);
+                renderFlow();
             }
         }
 
@@ -1589,6 +1942,65 @@
             return false;
         }
 
+        function waitForRoomResetEvent(timeoutMs = 2500) {
+            return new Promise((resolve) => {
+                let done = false;
+                const finish = (ok) => {
+                    if (done) return;
+                    done = true;
+                    roomResetWaiter = null;
+                    resolve(!!ok);
+                };
+                const timeout = setTimeout(() => finish(false), timeoutMs);
+                roomResetWaiter = () => {
+                    clearTimeout(timeout);
+                    finish(true);
+                };
+            });
+        }
+
+        function scheduleRealtimeRefresh() {
+            if (runtimeRealtimeRefreshTimer) return;
+            runtimeRealtimeRefreshTimer = setTimeout(() => {
+                runtimeRealtimeRefreshTimer = null;
+                loadPuzzleFlow(false);
+                pollRoomStatus();
+            }, 50);
+        }
+
+        function connectRuntimeEvents() {
+            if (!window.EventSource) return;
+            if (runtimeEventSource) {
+                try { runtimeEventSource.close(); } catch (e) {}
+            }
+            runtimeEventSource = new EventSource('/api/events');
+            runtimeEventSource.addEventListener('update', (evt) => {
+                try {
+                    const data = JSON.parse(evt.data || '{}');
+                    const type = String(data?.type || '');
+                    if (!type || type === 'connected') return;
+                    if (type === 'room-reset' && typeof roomResetWaiter === 'function') {
+                        roomResetWaiter();
+                    }
+                    if ([
+                        'room-started',
+                        'room-restart',
+                        'branch-restart',
+                        'room-reset',
+                        'puzzle-state',
+                        'hints',
+                        'room-config',
+                        'zigbee-message'
+                    ].includes(type)) {
+                        scheduleRealtimeRefresh();
+                    }
+                    if (['room-started', 'room-restart', 'branch-restart', 'room-reset'].includes(type)) {
+                        loadRuntimeLogs();
+                    }
+                } catch (e) {}
+            });
+        }
+
         async function updateDataSnapshot() {
             try {
                 const res = await fetch('/api/runtime/data');
@@ -1603,15 +2015,11 @@
         function renderDataList() {
             if (!dataList) return;
             if (!dataSnapshot.length) {
-                dataList.innerHTML = `<div class="data-row"><div class="key">No outputs configured</div><div class="meta"><span class="type">--</span><span class="ts"></span></div><div class="value">--</div></div>`;
+                dataList.innerHTML = `<div class="data-row"><div class="key">No variables transfered</div><div class="meta"><span class="type">--</span><span class="ts"></span></div><div class="value">--</div></div>`;
                 return;
             }
-            const orderMap = {};
-            puzzleFlow.forEach((p,idx)=>{ orderMap[p.name||p.title||p.id]=idx; });
-            const sorted = [...dataSnapshot].sort((a,b)=> (orderMap[a.name]||0)-(orderMap[b.name]||0));
-            let html = '';
-            let rows = 0;
-            sorted.forEach((p, idx) => {
+            const renderRows = [];
+            dataSnapshot.forEach((p, idx) => {
                 const outputs = (p.outputs && p.outputs.length) ? p.outputs : [];
                 outputs.forEach(out => {
                     const ts = out.updatedAt ? new Date(out.updatedAt).toLocaleTimeString() : '';
@@ -1621,34 +2029,47 @@
                     const value = showPlayerValue ? formatValue(out.data) : '--';
                     const fallbackTag = (!isExternal && out.fallback) ? ' <span class="fallback-tag">(Fallback)</span>' : '';
                     const typeKey = normalizeDataType(out.type);
-                    const puzzleMeta = puzzleFlow.find(pz => pz.id === p.id);
+                    const puzzleMeta = getPuzzleMetaForDataRow(p.id, out.branchId);
                     const derivedState = puzzleMeta ? deriveState(puzzleMeta) : (p.state || '');
-                    const stateClass = derivedState ? ` state-${derivedState}` : '';
-                    const name = p.name || ('Puzzle ' + (idx+1));
-                    const keyText = (!isExternal && out.key) ? ` (${out.key})` : '';
-                    const extCheckClass = out.externalCheckSolved ? ' solved' : out.externalCheckActive ? ' active' : '';
-                    const extCheckTag = out.externalCheck ? `<span class="ext-check-tag${extCheckClass}">Player Input</span>` : '';
-                    const sourceText = (!isExternal && out.source) ? `from ${out.source}${out.sourceKey ? ` (${out.sourceKey})` : ''}` : '';
-                    const targetText = (!isExternal && out.target) ? `-> ${out.target}${out.inputKey ? ` (${out.inputKey})` : ''}` : '';
-                    rows++;
-                    if (isExternal) {
-                        html += `
-                            <div class="data-row external${stateClass}">
-                                <div class="key"><span class="key-line">${name}</span></div>
-                                <div class="meta"><span class="type" data-type="${typeKey}">${typeKey}</span>${extCheckTag}<span class="ts">${ts}</span></div>
-                                <div class="value">${value || '--'}</div>
-                            </div>`;
+                    if (!isExternal && derivedState !== 'running') {
                         return;
                     }
-                    html += `
-                        <div class="data-row${stateClass}">
-                            <div class="key"><span class="key-line">${name}${keyText}</span>${sourceText ? `<span class="key-line">${sourceText}</span>` : ''}${targetText ? `<span class="key-line">${targetText}</span>` : ''}</div>
-                            <div class="meta"><span class="type" data-type="${typeKey}">${typeKey}</span>${extCheckTag}<span class="ts">${ts}</span></div>
-                            <div class="value">${value}${fallbackTag}</div>
-                        </div>`;
+                    const rowKey = getDataRowOrderKey(p, out, isExternal);
+                    if (!dataRowOrder.has(rowKey)) {
+                        dataRowOrder.set(rowKey, dataRowOrderNext++);
+                    }
+                    renderRows.push({
+                        order: dataRowOrder.get(rowKey),
+                        html: (() => {
+                            const stateClass = derivedState ? ` state-${derivedState}` : '';
+                            const name = p.name || ('Puzzle ' + (idx+1));
+                            const keyText = (!isExternal && out.key) ? ` (${out.key})` : '';
+                            const extCheckClass = out.externalCheckSolved ? ' solved' : out.externalCheckActive ? ' active' : '';
+                            const extCheckTag = out.externalCheck ? `<span class="ext-check-tag${extCheckClass}">Player Input</span>` : '';
+                            const sourceText = (!isExternal && out.source) ? `from ${out.source}${out.sourceKey ? ` (${out.sourceKey})` : ''}` : '';
+                            const targetText = (!isExternal && out.target) ? `-> ${out.target}${out.inputKey ? ` (${out.inputKey})` : ''}` : '';
+                            if (isExternal) {
+                                return `
+                                    <div class="data-row external${stateClass}">
+                                        <div class="key"><span class="key-line">${name}</span></div>
+                                        <div class="meta"><span class="type" data-type="${typeKey}">${typeKey}</span>${extCheckTag}<span class="ts">${ts}</span></div>
+                                        <div class="value">${value || '--'}</div>
+                                    </div>`;
+                            }
+                            return `
+                                <div class="data-row${stateClass}">
+                                    <div class="key"><span class="key-line">${name}${keyText}</span>${sourceText ? `<span class="key-line">${sourceText}</span>` : ''}${targetText ? `<span class="key-line">${targetText}</span>` : ''}</div>
+                                    <div class="meta"><span class="type" data-type="${typeKey}">${typeKey}</span>${extCheckTag}<span class="ts">${ts}</span></div>
+                                    <div class="value">${value}${fallbackTag}</div>
+                                </div>`;
+                        })()
+                    });
                 });
             });
-            dataList.innerHTML = rows ? html : `<div class="data-row"><div class="key">No outputs configured</div><div class="meta"><span class="type">--</span><span class="ts"></span></div><div class="value">--</div></div>`;
+            renderRows.sort((a, b) => a.order - b.order);
+            dataList.innerHTML = renderRows.length
+                ? renderRows.map(r => r.html).join('')
+                : `<div class="data-row"><div class="key">No variables transfered</div><div class="meta"><span class="type">--</span><span class="ts"></span></div><div class="value">--</div></div>`;
         }
 
         function renderRuntimeLogs() {
@@ -1670,6 +2091,10 @@
                     typeClass === 'success' ? 'log-success' :
                     typeClass === 'warn' || typeClass === 'warning' ? 'log-warn' :
                     typeClass === 'error' ? 'log-error' :
+                    typeClass === 'mqtt' ? (entry?.meta?.direction === 'outbound' ? 'log-mqtt-out' : 'log-mqtt-in') :
+                    typeClass === 'dmx' ? 'log-dmx' :
+                    typeClass === 'zigbee' ? 'log-zigbee' :
+                    typeClass === 'scripting' ? 'log-scripting' :
                     typeClass === 'system' ? 'log-system' : ''
                 ].filter(Boolean).join(' ');
                 const time = escapeHtml(entry.timestamp || '--:--:--');
@@ -1738,10 +2163,25 @@
             autoRestartDelayInput.addEventListener('change', persistAutoRestartSettings);
             document.getElementById('restart-btn').addEventListener('click', restartRoom);
             document.getElementById('exit-btn').addEventListener('click', async ()=>{
-                try { sessionStorage.setItem('skip-room-redirect', String(Date.now())); } catch(e){}
-                try { await fetch('/api/runtime/reset', { method:'POST', headers:{'Content-Type':'application/json'}, cache: 'no-store' }); } catch(e){}
-                await waitForRoomStop();
-                window.location.href='index.html';
+                if (exitRoomInFlight) return;
+                exitRoomInFlight = true;
+                const exitBtn = document.getElementById('exit-btn');
+                if (exitBtn) exitBtn.disabled = true;
+                try {
+                    try { sessionStorage.setItem('skip-room-redirect', String(Date.now())); } catch(e){}
+                    const resetEventPromise = waitForRoomResetEvent(2500);
+                    try { await fetch('/api/runtime/reset', { method:'POST', headers:{'Content-Type':'application/json'}, cache: 'no-store' }); } catch(e){}
+                    const gotResetEvent = await resetEventPromise;
+                    if (!gotResetEvent) {
+                        await waitForRoomStop();
+                    }
+                    window.location.href='index.html';
+                } finally {
+                    if (!document.hidden) {
+                        exitRoomInFlight = false;
+                        if (exitBtn) exitBtn.disabled = false;
+                    }
+                }
             });
         if (settingsOpenBtn && settingsModal) {
             settingsOpenBtn.addEventListener('click', openSettingsModal);
@@ -1751,6 +2191,7 @@
             victoryBtn?.addEventListener('click', ()=> victoryInput.click());
             victoryInput?.addEventListener('change', ()=> uploadVictoryScreen(victoryInput.files[0]));
             mediaServerToggle?.addEventListener('change', persistMediaServerSetting);
+            dmxServiceToggle?.addEventListener('change', persistDmxServiceSetting);
         }
         hintModalCancel.addEventListener('click', closeHintModal);
         hintModal.addEventListener('click', (e)=>{ if (e.target === hintModal) e.stopPropagation(); });
@@ -1770,15 +2211,16 @@
         bindRuntimeLogFilters();
 
         // poll statuses and data (includes updated puzzle flow for hint availability)
-        setInterval(async ()=>{
-            await loadPuzzleFlow(false);
-        }, 2000);
+        setInterval(()=>{
+            loadPuzzleFlow(false);
+        }, 3000);
         setInterval(pollRoomStatus, 2000);
         setInterval(updateRoomTimer, 1000);
         setInterval(loadRuntimeLogs, 3000);
 
         loadPuzzleFlow(true);
         pollRoomStatus();
+        connectRuntimeEvents();
         loadSystemSettingsFromServer();
         loadRuntimeLogs();
         window.addEventListener('resize', syncTypeChipWidths);

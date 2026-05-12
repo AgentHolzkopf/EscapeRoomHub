@@ -1,7 +1,7 @@
 const { LiteGraph, LGraph } = require('litegraph.js');
 const http = require('http');
 const EventEmitter = require('events');
-const { execFileSync, spawnSync } = require('child_process');
+const { spawn } = require('child_process');
 const fs = require('fs');
 const fsp = require('fs/promises');
 const path = require('path');
@@ -32,12 +32,37 @@ let autoRestartConfig = { enabled: false, delaySec: 5 };
 let autoRestartTimers = new Map();
 const restartRequestedAt = {};
 const RESTART_IGNORE_RUNNING_MS = 2000;
+const RESTART_IGNORE_SOLVED_UNTIL_FRESH_MS = 15000;
+const RESTART_ALLOW_UNSOLVE_MS = 30000;
+const restartFreshStateSeen = {};
 let hintTimers = {}; // { puzzleId: [timeoutId, ...] }
 let hintProgress = {}; // { puzzleId: nextIndex }
 let hintRuntimeQueues = {}; // { puzzleId: [ { text, delayFromStart, delayAfterPrev, dueAt } ] }
 let activeHintsByScreen = {}; // { screenPath: [ { puzzleId, puzzleName, index, text, auto, at } ] }
 let pendingMediaFallbackTimers = {}; // { puzzleId: { key: timeoutId } }
-let systemSettings = { mqttPort: mqttClient.getCurrentPort(), screenSaverImage: null, victoryScreen: null, mediaServerEnabled: false, autostartEnabled: false };
+let systemSettings = { mqttPort: mqttClient.getCurrentPort(), screenSaverImage: null, victoryScreen: null, mediaServerEnabled: false, autostartEnabled: false, zigbeeBridgeEnabled: false, dmxServiceEnabled: false };
+let dmxAdapterCache = { at: 0, info: null };
+let zigbeeAdapterCache = { at: 0, info: null };
+let soundOutputCache = { at: 0, info: null };
+let zigbeeDevices = {}; // { deviceId: { id, friendlyName, ieeeAddress, vendor, model, type, description, online, lastSeen, lastTopic, lastPayload } }
+let zigbeeFriendlyIndex = {}; // { normalizedFriendlyName: deviceId }
+let zigbeeBridgeRuntime = { state: "unknown", lastSeen: 0, discoveryUntil: 0 };
+let zigbeeHiddenDeviceIds = new Set();
+let zigbeeMessageLogs = [];
+let zigbeeMessageTriggers = { nextTriggerId: 1, triggers: [] };
+let puzzleScriptingVariables = {};
+let puzzleScriptingActiveUntil = {};
+let puzzleScriptingSeq = {};
+let roomScriptingVariables = {};
+let roomScriptingActiveUntil = 0;
+let roomScriptingSeq = 0;
+let roomScriptingSensorInstances = {}; // { deviceId: { field: value } }
+let roomScriptingLastRoomState = null; // "running" | "solved" | null
+let roomScriptingLastBranchStates = {}; // { branchId: "running" | "solved" }
+let puzzleScriptingSensorInstances = {}; // { puzzleId: { deviceId: { field: value } } }
+let scriptingForeverTimers = new Set();
+let puzzleForeverRunners = new Map();
+let roomForeverRunners = new Map();
 let suppressDeviceStateUntil = 0;
 const ONLINE_THRESHOLD_MS = 5000;
 const VALID_PUZZLE_STATES = ['locked', 'active', 'starting', 'running', 'solved', 'error', 'uploading', 'downloading'];
@@ -51,14 +76,61 @@ const SETTINGS_KEYS = {
     screenSaverImage: 'screen_saver_image',
     victoryScreen: 'victory_screen',
     mediaServerEnabled: 'media_server_enabled',
-    autostartEnabled: 'autostart_on_startup'
+    autostartEnabled: 'autostart_on_startup',
+    zigbeeBridgeEnabled: 'zigbee_bridge_enabled',
+    dmxServiceEnabled: 'dmx_service_enabled',
+    zigbeeDeviceCache: 'zigbee_device_cache'
 };
 const AUTOSTART_SERVICE_NAME = 'md2-hub.service';
 const AUTOSTART_SERVICE_PATH = '/etc/systemd/system/md2-hub.service';
 const AUTOSTART_WORKDIR = '/home/admin/md2-hub/Server';
 const AUTOSTART_SCRIPT = '/home/admin/md2-hub/Server/server.js';
+const ZIGBEE_BRIDGE_SERVICE_NAME = 'zigbee2mqtt.service';
+const DMX_SERVICE_NAME = 'olad.service';
 const UPLOAD_DIR = path.join(__dirname, '../../public/uploads');
 const MEDIA_DIR = path.join(__dirname, '../../MediaStorage');
+const SOUNDS_DIR = path.join(__dirname, '../../SoundStorage');
+const DMX_ADAPTER_CACHE_MS = 10000;
+const DMX_KEYWORDS = ['dmx', 'enttec', 'dmxking', 'ultradmx', 'opendmx', 'eurolite', 'daslight', 'sunlite', 'mydmx'];
+const ZIGBEE_ADAPTER_CACHE_MS = 3000;
+const SOUND_OUTPUT_CACHE_MS = 5000;
+const ZIGBEE_KEYWORDS = ['zigbee', 'conbee', 'cc2652', 'zbdongle', 'sonoff', 'deconz', 'ezsp', 'ember', 'skyconnect'];
+const SERIAL_HINT_KEYWORDS = ['ftdi', 'vid_0403', 'cp210', 'silicon labs', 'ch340', 'ch341', 'prolific', 'usb serial', 'uart'];
+const DMX_MAX_CHANNEL = 512;
+const DMX_MIN_VALUE = 0;
+const DMX_MAX_VALUE = 255;
+const DMX_OLA_COMMAND_CACHE_MS = 300000;
+const DMX_DEFAULT_UNIVERSE = Number.isFinite(parseInt(process.env.DMX_UNIVERSE, 10))
+    ? parseInt(process.env.DMX_UNIVERSE, 10)
+    : 0;
+const DMX_OLA_COMMANDS = ['ola_set_dmx', 'ola_streaming_client'];
+const DMX_FADE_STEP_MS = 50;
+const SERIAL_UDEV_CACHE_MS = 300000;
+const ZIGBEE_TOPIC_PREFIX = "zigbee2mqtt/";
+const ZIGBEE_BRIDGE_DEVICES_TOPIC = "zigbee2mqtt/bridge/devices";
+const ZIGBEE_BRIDGE_STATE_TOPIC = "zigbee2mqtt/bridge/state";
+const ZIGBEE_BRIDGE_EVENT_TOPIC = "zigbee2mqtt/bridge/event";
+const ZIGBEE_BRIDGE_RESPONSE_PREFIX = "zigbee2mqtt/bridge/response/";
+const ZIGBEE_LOG_LIMIT = 250;
+const ZIGBEE_CACHE_PERSIST_DELAY_MS = 700;
+let dmxOlaCommandCache = { at: 0, command: null };
+let dmxUniverseBuffer = new Array(DMX_MAX_CHANNEL).fill(0);
+let dmxSendErrorGateAt = 0;
+let dmxCueTokenCounter = 0;
+let dmxPlaybackTimers = new Map();
+let dmxCueOrderCounter = 0;
+let dmxChannelLayers = Array.from({ length: DMX_MAX_CHANNEL }, () => []);
+let dmxCueChannelMap = new Map();
+let activeSoundCueProcesses = new Set();
+let soundCuePendingRequest = null;
+let soundCueWorkerRunning = false;
+let dmxSendInFlight = false;
+let dmxQueuedSendJob = null;
+let dmxOlaCommandProbeInFlight = false;
+let linuxSerialMetaCache = { at: 0, byPath: {} };
+let linuxSerialMetaProbeInFlight = false;
+let zigbeeCachePersistTimer = null;
+let zigbeeRealtimeEmitTimer = null;
 const offlineErrorState = {};
 const pendingOutputErrors = {};
 const eventBus = new EventEmitter();
@@ -66,6 +138,14 @@ eventBus.setMaxListeners(0);
 
 function emitUpdate(type, payload = {}) {
     eventBus.emit('update', { type, at: Date.now(), ...payload });
+}
+
+function scheduleZigbeeRealtimeUpdate(payload = {}) {
+    if (zigbeeRealtimeEmitTimer) return;
+    zigbeeRealtimeEmitTimer = setTimeout(() => {
+        zigbeeRealtimeEmitTimer = null;
+        emitUpdate('zigbee-message', payload || {});
+    }, 120);
 }
 
 const isValidPuzzleState = (state) => VALID_PUZZLE_STATES.includes(state);
@@ -88,6 +168,3047 @@ function parseBoolSetting(value, fallback = false) {
     if (["1", "true", "yes", "on"].includes(normalized)) return true;
     if (["0", "false", "no", "off"].includes(normalized)) return false;
     return fallback;
+}
+
+function scoreDmxCandidateText(text) {
+    const base = (text || '').toString().toLowerCase();
+    let score = 0;
+    DMX_KEYWORDS.forEach(keyword => {
+        if (base.includes(keyword)) score += 100;
+    });
+    SERIAL_HINT_KEYWORDS.forEach(keyword => {
+        if (base.includes(keyword)) score += 12;
+    });
+    return score;
+}
+
+function scoreZigbeeCandidateText(text) {
+    const base = (text || '').toString().toLowerCase();
+    let score = 0;
+    ZIGBEE_KEYWORDS.forEach(keyword => {
+        if (base.includes(keyword)) score += 100;
+    });
+    SERIAL_HINT_KEYWORDS.forEach(keyword => {
+        if (base.includes(keyword)) score += 12;
+    });
+    return score;
+}
+
+function runCommandCaptureAsync(cmd, args = [], timeoutMs = 1500) {
+    return new Promise((resolve) => {
+        let child = null;
+        let stdout = '';
+        let stderr = '';
+        let timedOut = false;
+        try {
+            child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+        } catch (err) {
+            resolve({ ok: false, status: -1, stdout: '', stderr: err?.message || 'spawn failed' });
+            return;
+        }
+        const timeoutId = setTimeout(() => {
+            timedOut = true;
+            try { child.kill('SIGKILL'); } catch (e) {}
+        }, Math.max(100, Number(timeoutMs) || 1500));
+        if (child.stdout) {
+            child.stdout.on('data', (chunk) => {
+                try { stdout += chunk.toString(); } catch (e) {}
+            });
+        }
+        if (child.stderr) {
+            child.stderr.on('data', (chunk) => {
+                try { stderr += chunk.toString(); } catch (e) {}
+            });
+        }
+        child.on('error', (err) => {
+            clearTimeout(timeoutId);
+            resolve({ ok: false, status: -1, stdout, stderr: err?.message || stderr || 'spawn error' });
+        });
+        child.on('close', (code) => {
+            clearTimeout(timeoutId);
+            resolve({
+                ok: !timedOut && code === 0,
+                status: timedOut ? -1 : code,
+                stdout: (stdout || '').toString(),
+                stderr: timedOut ? (stderr || 'timeout') : (stderr || '').toString()
+            });
+        });
+    });
+}
+
+function parseUdevProperties(stdout) {
+    const props = {};
+    String(stdout || '').split(/\r?\n/).forEach(line => {
+        const idx = line.indexOf('=');
+        if (idx <= 0) return;
+        const k = line.slice(0, idx).trim();
+        const v = line.slice(idx + 1).trim();
+        if (!k) return;
+        props[k] = v;
+    });
+    return props;
+}
+
+function buildSerialLabelFromUdev(devName, props = {}) {
+    const vendor = props.ID_VENDOR_FROM_DATABASE || props.ID_VENDOR || '';
+    const model = props.ID_MODEL_FROM_DATABASE || props.ID_MODEL || '';
+    const serial = props.ID_SERIAL_SHORT || '';
+    let label = [vendor, model].filter(Boolean).join(' ').trim() || devName;
+    if (serial) label = `${label} (${serial})`;
+    return label;
+}
+
+function scheduleLinuxSerialMetadataRefresh() {
+    if (process.platform !== 'linux') return;
+    const now = Date.now();
+    if (linuxSerialMetaProbeInFlight) return;
+    if ((now - Number(linuxSerialMetaCache.at || 0)) < SERIAL_UDEV_CACHE_MS && Object.keys(linuxSerialMetaCache.byPath || {}).length) {
+        return;
+    }
+    linuxSerialMetaProbeInFlight = true;
+    let devEntries = [];
+    try {
+        devEntries = fs.readdirSync('/dev').filter(name => /^tty(USB|ACM)\d+$/i.test(name));
+    } catch (e) {
+        devEntries = [];
+    }
+    void (async () => {
+        try {
+            const byPath = {};
+            await Promise.all(devEntries.map(async (name) => {
+                const devPath = `/dev/${name}`;
+                const res = await runCommandCaptureAsync('udevadm', ['info', '--query=property', `--name=${devPath}`], 1200);
+                if (!res.ok || !res.stdout) return;
+                const props = parseUdevProperties(res.stdout);
+                byPath[devPath] = {
+                    label: buildSerialLabelFromUdev(name, props),
+                    props
+                };
+            }));
+            linuxSerialMetaCache = { at: Date.now(), byPath };
+        } catch (e) {
+        } finally {
+            linuxSerialMetaProbeInFlight = false;
+        }
+    })();
+}
+
+function normalizeDmxAdapterInfo(raw) {
+    if (!raw || !raw.connected) {
+        return { connected: false, label: 'No adapter connected', port: null, source: null };
+    }
+    return {
+        connected: true,
+        label: raw.label || 'USB DMX adapter',
+        port: raw.port || null,
+        source: raw.source || null
+    };
+}
+
+function normalizeZigbeeAdapterInfo(raw) {
+    if (!raw || !raw.connected) {
+        return { connected: false, label: 'No adapter connected', port: null, source: null };
+    }
+    return {
+        connected: true,
+        label: raw.label || 'USB Zigbee adapter',
+        port: raw.port || null,
+        source: raw.source || null
+    };
+}
+
+function detectDmxAdapterLinux() {
+    scheduleLinuxSerialMetadataRefresh();
+    const candidates = [];
+    const seenPorts = new Set();
+    const addCandidate = (candidate) => {
+        if (!candidate) return;
+        const key = (candidate.port || candidate.label || '').toLowerCase();
+        if (key && seenPorts.has(key)) return;
+        if (key) seenPorts.add(key);
+        const text = `${candidate.label || ''} ${candidate.port || ''} ${candidate.source || ''}`;
+        candidates.push({ ...candidate, score: scoreDmxCandidateText(text) });
+    };
+
+    const byIdDir = '/dev/serial/by-id';
+    if (fs.existsSync(byIdDir)) {
+        try {
+            const entries = fs.readdirSync(byIdDir);
+            entries.forEach(name => {
+                const abs = path.join(byIdDir, name);
+                let realPath = abs;
+                try { realPath = fs.realpathSync(abs); } catch (e) {}
+                addCandidate({
+                    label: name.replace(/_/g, ' '),
+                    port: realPath,
+                    source: 'linux-by-id'
+                });
+            });
+            // Fast path: if by-id already contains a strong DMX match, skip
+            // slower udev scanning of every tty device.
+            const bestById = candidates
+                .filter(c => c.source === 'linux-by-id')
+                .sort((a, b) => b.score - a.score)[0];
+            if (bestById && bestById.score >= 100) {
+                return normalizeDmxAdapterInfo({
+                    connected: true,
+                    label: bestById.label,
+                    port: bestById.port,
+                    source: bestById.source
+                });
+            }
+        } catch (e) {}
+    }
+
+    const udevByPath = linuxSerialMetaCache.byPath || {};
+    try {
+        const devEntries = fs.readdirSync('/dev').filter(name => /^tty(USB|ACM)\d+$/i.test(name));
+        devEntries.forEach(name => {
+            const devPath = `/dev/${name}`;
+            const meta = udevByPath[devPath];
+            const label = meta?.label || name;
+            addCandidate({
+                label,
+                port: devPath,
+                source: 'linux-tty'
+            });
+        });
+    } catch (e) {}
+
+    if (!candidates.length) return normalizeDmxAdapterInfo(null);
+
+    candidates.sort((a, b) => b.score - a.score);
+    const strongest = candidates[0];
+    if (strongest.score >= 100) {
+        return normalizeDmxAdapterInfo({ connected: true, label: strongest.label, port: strongest.port, source: strongest.source });
+    }
+    const lowScoreCandidates = candidates.filter(c => c.score >= 12);
+    if (lowScoreCandidates.length === 1) {
+        const picked = lowScoreCandidates[0];
+        return normalizeDmxAdapterInfo({ connected: true, label: picked.label, port: picked.port, source: picked.source });
+    }
+    return normalizeDmxAdapterInfo(null);
+}
+
+function detectZigbeeAdapterLinux() {
+    scheduleLinuxSerialMetadataRefresh();
+    const candidates = [];
+    const seenPorts = new Set();
+    const addCandidate = (candidate) => {
+        if (!candidate) return;
+        const key = (candidate.port || candidate.label || '').toLowerCase();
+        if (key && seenPorts.has(key)) return;
+        if (key) seenPorts.add(key);
+        const text = `${candidate.label || ''} ${candidate.port || ''} ${candidate.source || ''}`;
+        candidates.push({ ...candidate, score: scoreZigbeeCandidateText(text) });
+    };
+
+    const byIdDir = '/dev/serial/by-id';
+    if (fs.existsSync(byIdDir)) {
+        try {
+            const entries = fs.readdirSync(byIdDir);
+            entries.forEach(name => {
+                const abs = path.join(byIdDir, name);
+                let realPath = abs;
+                try { realPath = fs.realpathSync(abs); } catch (e) {}
+                addCandidate({
+                    label: name.replace(/_/g, ' '),
+                    port: realPath,
+                    source: 'linux-by-id'
+                });
+            });
+            // Fast path: if by-id already contains a strong Zigbee match, skip
+            // slower udev scanning of every tty device.
+            const bestById = candidates
+                .filter(c => c.source === 'linux-by-id')
+                .sort((a, b) => b.score - a.score)[0];
+            if (bestById && bestById.score >= 100) {
+                return normalizeZigbeeAdapterInfo({
+                    connected: true,
+                    label: bestById.label,
+                    port: bestById.port,
+                    source: bestById.source
+                });
+            }
+        } catch (e) {}
+    }
+
+    const udevByPath = linuxSerialMetaCache.byPath || {};
+    try {
+        const devEntries = fs.readdirSync('/dev').filter(name => /^tty(USB|ACM)\d+$/i.test(name));
+        devEntries.forEach(name => {
+            const devPath = `/dev/${name}`;
+            const meta = udevByPath[devPath];
+            const label = meta?.label || name;
+            addCandidate({
+                label,
+                port: devPath,
+                source: 'linux-tty'
+            });
+        });
+    } catch (e) {}
+
+    if (!candidates.length) return normalizeZigbeeAdapterInfo(null);
+
+    candidates.sort((a, b) => b.score - a.score);
+    const strongest = candidates[0];
+    if (strongest.score >= 100) {
+        return normalizeZigbeeAdapterInfo({ connected: true, label: strongest.label, port: strongest.port, source: strongest.source });
+    }
+    const lowScoreCandidates = candidates.filter(c => c.score >= 12);
+    if (lowScoreCandidates.length === 1) {
+        const picked = lowScoreCandidates[0];
+        return normalizeZigbeeAdapterInfo({ connected: true, label: picked.label, port: picked.port, source: picked.source });
+    }
+    return normalizeZigbeeAdapterInfo(null);
+}
+
+function detectDmxAdapter() {
+    try {
+        if (process.platform === 'linux') return detectDmxAdapterLinux();
+        return normalizeDmxAdapterInfo(null);
+    } catch (e) {
+        return normalizeDmxAdapterInfo(null);
+    }
+}
+
+function detectZigbeeAdapter() {
+    try {
+        if (process.platform === 'linux') return detectZigbeeAdapterLinux();
+        return normalizeZigbeeAdapterInfo(null);
+    } catch (e) {
+        return normalizeZigbeeAdapterInfo(null);
+    }
+}
+
+function parseAlsaDefaultDeviceFromText(text) {
+    const raw = String(text || "");
+    const match = raw.match(/slave\.pcm\s+"([^"]+)"/i);
+    if (match && match[1]) return match[1].trim();
+    const cardMatch = raw.match(/card\s+([^\s]+)/i);
+    if (cardMatch && cardMatch[1]) return `hw:CARD=${String(cardMatch[1]).trim()}`;
+    return null;
+}
+
+function readConfiguredAlsaDefaultDeviceLinux() {
+    const paths = ['/etc/asound.conf', '/home/admin/.asoundrc'];
+    for (const p of paths) {
+        try {
+            if (!fs.existsSync(p)) continue;
+            const txt = fs.readFileSync(p, 'utf8');
+            const parsed = parseAlsaDefaultDeviceFromText(txt);
+            if (parsed) return { device: parsed, source: p };
+        } catch (e) {}
+    }
+    return { device: null, source: null };
+}
+
+function listAlsaCardsLinux() {
+    try {
+        const raw = fs.readFileSync('/proc/asound/cards', 'utf8');
+        const lines = raw.split(/\r?\n/);
+        const cards = [];
+        for (const line of lines) {
+            const m = line.match(/^\s*(\d+)\s+\[([^\]]+)\]\s*:\s*(.+)$/);
+            if (!m) continue;
+            cards.push({
+                index: Number.parseInt(m[1], 10),
+                id: String(m[2] || '').trim(),
+                description: String(m[3] || '').trim()
+            });
+        }
+        return cards;
+    } catch (e) {
+        return [];
+    }
+}
+
+function detectSoundOutputLinux() {
+    const configured = readConfiguredAlsaDefaultDeviceLinux();
+    const cards = listAlsaCardsLinux();
+    const hasUc02 = cards.some((c) => String(c.id || '').toUpperCase() === 'UC02');
+    if (configured.device) {
+        return {
+            available: true,
+            device: configured.device,
+            source: configured.source,
+            status: `Configured: ${configured.device}`,
+            cards
+        };
+    }
+    if (hasUc02) {
+        return {
+            available: true,
+            device: 'plughw:CARD=UC02,DEV=0',
+            source: 'detected',
+            status: 'Detected UC02 (using system default)',
+            cards
+        };
+    }
+    return {
+        available: cards.length > 0,
+        device: null,
+        source: null,
+        status: cards.length ? 'Using system default' : 'No ALSA cards detected',
+        cards
+    };
+}
+
+function getSoundOutputInfo() {
+    const now = Date.now();
+    if (soundOutputCache.info && (now - soundOutputCache.at) < SOUND_OUTPUT_CACHE_MS) {
+        return soundOutputCache.info;
+    }
+    const info = process.platform === 'linux'
+        ? detectSoundOutputLinux()
+        : { available: false, device: null, source: null, status: 'Unsupported', cards: [] };
+    soundOutputCache = { at: now, info };
+    return info;
+}
+
+function getDmxAdapterInfo() {
+    const now = Date.now();
+    if (dmxAdapterCache.info && (now - dmxAdapterCache.at) < DMX_ADAPTER_CACHE_MS) {
+        return dmxAdapterCache.info;
+    }
+    const info = detectDmxAdapter();
+    dmxAdapterCache = { at: now, info };
+    return info;
+}
+
+function getZigbeeAdapterInfo() {
+    const now = Date.now();
+    if (zigbeeAdapterCache.info && (now - zigbeeAdapterCache.at) < ZIGBEE_ADAPTER_CACHE_MS) {
+        return zigbeeAdapterCache.info;
+    }
+    const info = detectZigbeeAdapter();
+    zigbeeAdapterCache = { at: now, info };
+    return info;
+}
+
+function normalizeZigbeeKey(value) {
+    return String(value || "").trim().toLowerCase();
+}
+
+function normalizeZigbeeFriendlyName(value, fallback = "") {
+    const raw = String(value || fallback || "").trim();
+    if (!raw) return "";
+    return raw.replace(/\s+/g, "_");
+}
+
+function normalizeZigbeeSignalEntries(rawEntries, fallbackSeenAt = Date.now()) {
+    if (!Array.isArray(rawEntries)) return [];
+    const map = new Map();
+    rawEntries.forEach((entry) => {
+        const key = String(entry?.key || entry?.label || "").trim();
+        if (!key || key.startsWith("_")) return;
+        const label = String(entry?.label || key).trim() || key;
+        const value = String(entry?.value ?? "").trim();
+        const lastSeenRaw = Number(entry?.lastSeen);
+        const lastSeen = Number.isFinite(lastSeenRaw) && lastSeenRaw > 0 ? lastSeenRaw : fallbackSeenAt;
+        map.set(key, { key, label, value, lastSeen });
+    });
+    return Array.from(map.values()).sort((a, b) => a.label.localeCompare(b.label));
+}
+
+function extractZigbeeSignalEntriesFromPayload(payload, seenAt = Date.now()) {
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) return [];
+    const entries = [];
+    Object.keys(payload).forEach((rawKey) => {
+        const key = String(rawKey || "").trim();
+        if (!key || key.startsWith("_")) return;
+        const value = payload[key];
+        const valueType = typeof value;
+        if (value == null || valueType === "object" || valueType === "function" || valueType === "undefined") return;
+        let valueText = "";
+        if (valueType === "string") valueText = value;
+        else if (valueType === "number" || valueType === "boolean") valueText = String(value);
+        else return;
+        entries.push({
+            key,
+            label: key,
+            value: valueText.trim(),
+            lastSeen: seenAt
+        });
+    });
+    return entries.sort((a, b) => a.label.localeCompare(b.label));
+}
+
+function mergeZigbeeSignalEntries(existingEntries, incomingEntries, seenAt = Date.now()) {
+    const map = new Map();
+    normalizeZigbeeSignalEntries(existingEntries, seenAt).forEach((entry) => {
+        map.set(entry.key, { ...entry });
+    });
+    normalizeZigbeeSignalEntries(incomingEntries, seenAt).forEach((entry) => {
+        const current = map.get(entry.key);
+        map.set(entry.key, {
+            key: entry.key,
+            label: entry.label || current?.label || entry.key,
+            value: entry.value,
+            lastSeen: Number.isFinite(Number(entry.lastSeen)) ? Number(entry.lastSeen) : seenAt
+        });
+    });
+    return Array.from(map.values()).sort((a, b) => a.label.localeCompare(b.label));
+}
+
+function rebuildZigbeeFriendlyIndex() {
+    zigbeeFriendlyIndex = {};
+    Object.values(zigbeeDevices || {}).forEach((entry) => {
+        const normalizedFriendly = normalizeZigbeeKey(entry?.friendlyName);
+        if (normalizedFriendly) zigbeeFriendlyIndex[normalizedFriendly] = entry.id;
+    });
+}
+
+function serializeZigbeeDeviceCache() {
+    const devices = Object.values(zigbeeDevices || {}).map((entry) => ({
+        id: entry?.id || null,
+        friendlyName: entry?.friendlyName || null,
+        ieeeAddress: entry?.ieeeAddress || null,
+        vendor: entry?.vendor || null,
+        model: entry?.model || null,
+        type: entry?.type || "unknown",
+        description: entry?.description || null,
+        battery: entry?.battery ?? null,
+        online: entry?.online === true,
+        resetOnPuzzleReset: entry?.resetOnPuzzleReset === true,
+        lastSeen: Number(entry?.lastSeen) || 0,
+        lastTopic: entry?.lastTopic || null,
+        lastPayload: entry?.lastPayload ?? null,
+        messageEntries: normalizeZigbeeSignalEntries(entry?.messageEntries, Number(entry?.lastSeen) || Date.now())
+    }));
+    return {
+        devices,
+        hiddenDeviceIds: Array.from(zigbeeHiddenDeviceIds || [])
+    };
+}
+
+async function persistZigbeeDeviceCacheNow() {
+    const payload = serializeZigbeeDeviceCache();
+    try {
+        await db.run(
+            "INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)",
+            [SETTINGS_KEYS.zigbeeDeviceCache, JSON.stringify(payload)]
+        );
+    } catch (err) {}
+}
+
+function schedulePersistZigbeeDeviceCache() {
+    if (zigbeeCachePersistTimer) {
+        clearTimeout(zigbeeCachePersistTimer);
+    }
+    zigbeeCachePersistTimer = setTimeout(() => {
+        zigbeeCachePersistTimer = null;
+        persistZigbeeDeviceCacheNow().catch(() => {});
+    }, ZIGBEE_CACHE_PERSIST_DELAY_MS);
+}
+
+function restoreZigbeeDeviceCache(rawJson) {
+    if (!rawJson || typeof rawJson !== "string") return;
+    try {
+        const parsed = JSON.parse(rawJson);
+        const rows = Array.isArray(parsed?.devices) ? parsed.devices : [];
+        zigbeeDevices = {};
+        rows.forEach((row) => {
+            const id = String(row?.id || "").trim();
+            if (!id) return;
+            const now = Date.now();
+            zigbeeDevices[id] = {
+                id,
+                friendlyName: normalizeZigbeeFriendlyName(row?.friendlyName || id),
+                ieeeAddress: String(row?.ieeeAddress || "").trim() || null,
+                vendor: String(row?.vendor || "").trim() || null,
+                model: String(row?.model || "").trim() || null,
+                type: String(row?.type || "unknown").trim() || "unknown",
+                description: String(row?.description || "").trim() || null,
+                battery: Number.isFinite(Number(row?.battery)) ? Number(row.battery) : null,
+                online: row?.online === true,
+                resetOnPuzzleReset: row?.resetOnPuzzleReset === true,
+                lastSeen: Number.isFinite(Number(row?.lastSeen)) ? Number(row.lastSeen) : now,
+                lastTopic: String(row?.lastTopic || "").trim() || null,
+                lastPayload: row?.lastPayload ?? null,
+                messageEntries: normalizeZigbeeSignalEntries(row?.messageEntries, Number(row?.lastSeen) || now)
+            };
+        });
+        zigbeeHiddenDeviceIds = new Set(
+            (Array.isArray(parsed?.hiddenDeviceIds) ? parsed.hiddenDeviceIds : [])
+                .map((entry) => String(entry || "").trim())
+                .filter(Boolean)
+        );
+        rebuildZigbeeFriendlyIndex();
+    } catch (err) {}
+}
+
+function pushZigbeeMessageLog(topic, rawText) {
+    const text = String(rawText || "").replace(/\s+/g, " ").trim();
+    const short = text.length > 360 ? `${text.slice(0, 357)}...` : text;
+    zigbeeMessageLogs.unshift({
+        at: Date.now(),
+        topic: String(topic || ""),
+        text: short
+    });
+    if (zigbeeMessageLogs.length > ZIGBEE_LOG_LIMIT) {
+        zigbeeMessageLogs.length = ZIGBEE_LOG_LIMIT;
+    }
+}
+
+function pickZigbeeDeviceId(raw = {}, fallbackFriendly = "") {
+    const ieee = String(raw?.ieeeAddress || raw?.ieee_address || "").trim();
+    if (ieee) return ieee;
+    const fromRaw = String(raw?.id || raw?.deviceId || "").trim();
+    if (fromRaw) return fromRaw;
+    const friendly = normalizeZigbeeFriendlyName(raw?.friendlyName || raw?.friendly_name, fallbackFriendly);
+    if (friendly) return `name:${friendly}`;
+    return "";
+}
+
+function upsertZigbeeDevice(raw = {}, options = {}) {
+    const fallbackFriendly = normalizeZigbeeFriendlyName(options.fallbackFriendlyName || "");
+    const deviceId = pickZigbeeDeviceId(raw, fallbackFriendly);
+    if (!deviceId) return null;
+
+    const existing = zigbeeDevices[deviceId] || {};
+    const friendlyName = normalizeZigbeeFriendlyName(
+        raw?.friendlyName || raw?.friendly_name || existing.friendlyName || fallbackFriendly
+    );
+    const ieeeAddress = String(raw?.ieeeAddress || raw?.ieee_address || existing.ieeeAddress || "").trim() || null;
+    const vendor = String(raw?.vendor || raw?.manufacturer || raw?.definition?.vendor || existing.vendor || "").trim() || null;
+    const model = String(raw?.model || raw?.definition?.model || existing.model || "").trim() || null;
+    const type = String(raw?.type || existing.type || "unknown").trim() || "unknown";
+    const description = String(raw?.description || existing.description || "").trim() || null;
+    const batteryCandidate = raw?.battery ?? raw?.lastPayload?.battery;
+    const parsedBattery = Number(batteryCandidate);
+    const battery = Number.isFinite(parsedBattery)
+        ? Math.max(0, Math.min(100, Math.round(parsedBattery)))
+        : (Number.isFinite(Number(existing?.battery)) ? Number(existing.battery) : null);
+    const now = Date.now();
+    const onlineRaw = raw?.online;
+    const online = onlineRaw === undefined || onlineRaw === null
+        ? (existing.online !== undefined ? !!existing.online : true)
+        : !!onlineRaw;
+    const lastSeen = Number.isFinite(raw?.lastSeen) ? raw.lastSeen : now;
+    let messageEntries = normalizeZigbeeSignalEntries(existing?.messageEntries, lastSeen);
+    if (Array.isArray(raw?.messageEntries)) {
+        messageEntries = normalizeZigbeeSignalEntries(raw.messageEntries, lastSeen);
+    }
+    if (options.captureSignals === true) {
+        const captured = extractZigbeeSignalEntriesFromPayload(raw?.lastPayload, lastSeen);
+        if (captured.length) {
+            messageEntries = mergeZigbeeSignalEntries(messageEntries, captured, lastSeen);
+        }
+    }
+    if (options.resetSignals === true) {
+        messageEntries = [];
+    }
+
+    zigbeeDevices[deviceId] = {
+        id: deviceId,
+        friendlyName: friendlyName || existing.friendlyName || deviceId,
+        ieeeAddress,
+        vendor,
+        model,
+        type,
+        description,
+        battery,
+        online,
+        resetOnPuzzleReset: existing?.resetOnPuzzleReset === true,
+        lastSeen,
+        lastTopic: options.topic || existing.lastTopic || null,
+        lastPayload: raw?.lastPayload !== undefined ? raw.lastPayload : (existing.lastPayload || null),
+        messageEntries
+    };
+
+    if (options.unhide === true) {
+        zigbeeHiddenDeviceIds.delete(deviceId);
+    }
+
+    const normalizedFriendly = normalizeZigbeeKey(zigbeeDevices[deviceId].friendlyName);
+    if (normalizedFriendly) zigbeeFriendlyIndex[normalizedFriendly] = deviceId;
+    schedulePersistZigbeeDeviceCache();
+    return zigbeeDevices[deviceId];
+}
+
+function findZigbeeDeviceByFriendlyName(friendlyName) {
+    const key = normalizeZigbeeKey(friendlyName);
+    if (!key) return null;
+    const deviceId = zigbeeFriendlyIndex[key];
+    if (!deviceId) return null;
+    return zigbeeDevices[deviceId] || null;
+}
+
+function getZigbeeDevicesSnapshot() {
+    const now = Date.now();
+    const bridgeSeenRecently = zigbeeBridgeRuntime.lastSeen > 0 && (now - zigbeeBridgeRuntime.lastSeen) < 30000;
+    const adapter = getZigbeeAdapterInfo();
+    const devices = Object.values(zigbeeDevices)
+        .filter((entry) => !zigbeeHiddenDeviceIds.has(entry.id))
+        .map((entry) => {
+            const ageMs = entry.lastSeen ? Math.max(0, now - entry.lastSeen) : null;
+            const online = entry.online === true && ageMs !== null ? ageMs < 120000 : !!entry.online;
+            return {
+                ...entry,
+                online,
+                ageMs
+            };
+        })
+        .sort((a, b) => {
+            const aName = (a.friendlyName || a.id || "").toLowerCase();
+            const bName = (b.friendlyName || b.id || "").toLowerCase();
+            return aName.localeCompare(bName);
+        });
+    const discoveryRemainingMs = Math.max(0, (zigbeeBridgeRuntime.discoveryUntil || 0) - now);
+    return {
+        bridgeEnabled: !!systemSettings.zigbeeBridgeEnabled,
+        adapterConnected: !!adapter?.connected,
+        bridgeState: zigbeeBridgeRuntime.state || "unknown",
+        bridgeSeenRecently,
+        discoveryActive: discoveryRemainingMs > 0,
+        discoveryRemainingSec: Math.ceil(discoveryRemainingMs / 1000),
+        devices,
+        logs: zigbeeMessageLogs,
+        triggers: Array.isArray(zigbeeMessageTriggers?.triggers) ? zigbeeMessageTriggers.triggers : []
+    };
+}
+
+function normalizeZigbeeMessageTriggers() {
+    const cfg = graph?.config || (graph.config = {});
+    const source = cfg.zigbee && typeof cfg.zigbee === 'object' ? cfg.zigbee : {};
+    const rawTriggers = Array.isArray(source.triggers) ? source.triggers : [];
+    let maxId = 0;
+    const nextTriggers = rawTriggers
+        .map((entry, idx) => {
+            const parsedId = parseInt(entry?.id, 10);
+            const id = Number.isFinite(parsedId) && parsedId > 0 ? parsedId : (idx + 1);
+            maxId = Math.max(maxId, id);
+            const name = String(entry?.name || `Trigger_${id}`).trim() || `Trigger_${id}`;
+            const deviceId = String(entry?.deviceId || '').trim();
+            const messageKey = String(entry?.messageKey || '').trim();
+            if (!deviceId || !messageKey) return null;
+            return { id, name, deviceId, messageKey };
+        })
+        .filter(Boolean);
+    const nextRaw = parseInt(source.nextTriggerId, 10);
+    const nextTriggerId = Number.isFinite(nextRaw) && nextRaw > maxId ? nextRaw : (maxId + 1);
+    zigbeeMessageTriggers = { nextTriggerId, triggers: nextTriggers };
+    cfg.zigbee = {
+        ...(cfg.zigbee && typeof cfg.zigbee === 'object' ? cfg.zigbee : {}),
+        nextTriggerId,
+        triggers: nextTriggers
+    };
+    return zigbeeMessageTriggers;
+}
+
+function syncZigbeeTriggerConfigToGraph() {
+    const cfg = graph?.config || (graph.config = {});
+    cfg.zigbee = {
+        ...(cfg.zigbee && typeof cfg.zigbee === 'object' ? cfg.zigbee : {}),
+        nextTriggerId: zigbeeMessageTriggers.nextTriggerId,
+        triggers: Array.isArray(zigbeeMessageTriggers.triggers) ? zigbeeMessageTriggers.triggers : []
+    };
+}
+
+function upsertZigbeeMessageTrigger(payload = {}) {
+    normalizeZigbeeMessageTriggers();
+    const name = String(payload?.name || '').trim();
+    const deviceId = String(payload?.deviceId || '').trim();
+    const messageKey = String(payload?.messageKey || '').trim();
+    if (!name) return { success: false, error: 'Trigger name required' };
+    if (!deviceId) return { success: false, error: 'Device required' };
+    if (!messageKey) return { success: false, error: 'Message required' };
+
+    const idRaw = parseInt(payload?.id, 10);
+    if (Number.isFinite(idRaw) && idRaw > 0) {
+        const idx = zigbeeMessageTriggers.triggers.findIndex((entry) => entry.id === idRaw);
+        if (idx === -1) return { success: false, error: 'Trigger not found' };
+        zigbeeMessageTriggers.triggers[idx] = { id: idRaw, name, deviceId, messageKey };
+        syncZigbeeTriggerConfigToGraph();
+        return { success: true, trigger: zigbeeMessageTriggers.triggers[idx] };
+    }
+
+    const nextId = Number.isFinite(parseInt(zigbeeMessageTriggers.nextTriggerId, 10))
+        ? parseInt(zigbeeMessageTriggers.nextTriggerId, 10)
+        : 1;
+    const trigger = { id: nextId, name, deviceId, messageKey };
+    zigbeeMessageTriggers.triggers.push(trigger);
+    zigbeeMessageTriggers.nextTriggerId = nextId + 1;
+    syncZigbeeTriggerConfigToGraph();
+    return { success: true, trigger };
+}
+
+function deleteZigbeeMessageTrigger(triggerIdRaw) {
+    normalizeZigbeeMessageTriggers();
+    const triggerId = parseInt(triggerIdRaw, 10);
+    if (!Number.isFinite(triggerId)) return { success: false, error: 'triggerId required' };
+    const before = zigbeeMessageTriggers.triggers.length;
+    zigbeeMessageTriggers.triggers = zigbeeMessageTriggers.triggers.filter((entry) => entry.id !== triggerId);
+    if (zigbeeMessageTriggers.triggers.length === before) {
+        return { success: false, error: 'Trigger not found' };
+    }
+    syncZigbeeTriggerConfigToGraph();
+    return { success: true };
+}
+
+function publishZigbeeBridgeRequest(pathSuffix, payload = {}) {
+    const suffix = String(pathSuffix || "").replace(/^\/+/, "");
+    if (!suffix) return false;
+    const topic = `zigbee2mqtt/bridge/request/${suffix}`;
+    try {
+        mqttClient.publish(topic, JSON.stringify(payload || {}));
+        return true;
+    } catch (err) {
+        return false;
+    }
+}
+
+function requestZigbeeDevicesRefresh() {
+    publishZigbeeBridgeRequest("devices", {});
+}
+
+function startZigbeeDiscovery(durationSec = 60) {
+    const seconds = clampDmxInt(durationSec, 5, 600, 60);
+    const ok = publishZigbeeBridgeRequest("permit_join", { value: true, time: seconds });
+    if (ok) {
+        zigbeeBridgeRuntime.discoveryUntil = Date.now() + (seconds * 1000);
+        requestZigbeeDevicesRefresh();
+    }
+    return { success: ok, discoveryActive: ok, durationSec: seconds };
+}
+
+function stopZigbeeDiscovery() {
+    const ok = publishZigbeeBridgeRequest("permit_join", { value: false });
+    zigbeeBridgeRuntime.discoveryUntil = 0;
+    return { success: ok, discoveryActive: false };
+}
+
+function processZigbeeMqttMessage(topic, payload, rawText = "") {
+    if (!topic || !topic.startsWith(ZIGBEE_TOPIC_PREFIX)) return false;
+    pushZigbeeMessageLog(topic, rawText);
+    zigbeeBridgeRuntime.lastSeen = Date.now();
+    if (topic === ZIGBEE_BRIDGE_DEVICES_TOPIC && Array.isArray(payload)) {
+        logSystem(`Zigbee ${topic} (${payload.length} devices)`, "zigbee");
+    } else {
+        logSystem(`Zigbee ${topic}`, "zigbee", { topic, payload });
+    }
+
+    if (topic === ZIGBEE_BRIDGE_STATE_TOPIC) {
+        const stateText = typeof payload === "string"
+            ? payload
+            : String(payload?.state || rawText || "unknown");
+        zigbeeBridgeRuntime.state = stateText.trim() || "unknown";
+        scheduleZigbeeRealtimeUpdate({ topic, bridgeState: zigbeeBridgeRuntime.state });
+        return true;
+    }
+
+    if (topic === ZIGBEE_BRIDGE_DEVICES_TOPIC && Array.isArray(payload)) {
+        payload.forEach((entry) => {
+            if (!entry || typeof entry !== "object") return;
+            const mapped = {
+                id: entry.ieee_address || null,
+                friendlyName: entry.friendly_name || null,
+                ieeeAddress: entry.ieee_address || null,
+                vendor: entry.definition?.vendor || null,
+                model: entry.definition?.model || null,
+                type: entry.type || "unknown",
+                description: entry.description || null,
+                battery: entry.battery,
+                online: entry.interview_completed === false ? false : true,
+                lastPayload: entry
+            };
+            upsertZigbeeDevice(mapped, { topic });
+        });
+        return true;
+    }
+
+    if (topic.startsWith(ZIGBEE_BRIDGE_RESPONSE_PREFIX) && payload && typeof payload === "object") {
+        const responseType = topic.slice(ZIGBEE_BRIDGE_RESPONSE_PREFIX.length);
+        if (responseType === "devices" && Array.isArray(payload?.data)) {
+            payload.data.forEach((entry) => {
+                if (!entry || typeof entry !== "object") return;
+                const mapped = {
+                    id: entry.ieee_address || null,
+                    friendlyName: entry.friendly_name || null,
+                    ieeeAddress: entry.ieee_address || null,
+                    vendor: entry.definition?.vendor || null,
+                    model: entry.definition?.model || null,
+                    type: entry.type || "unknown",
+                    description: entry.description || null,
+                    battery: entry.battery,
+                    online: entry.interview_completed === false ? false : true,
+                    lastPayload: entry
+                };
+                upsertZigbeeDevice(mapped, { topic });
+            });
+        }
+        if (responseType === "permit_join") {
+            const rawValue = payload?.data?.value ?? payload?.data?.permit_join;
+            if (rawValue === false || rawValue === 0 || rawValue === "false" || rawValue === "0") {
+                zigbeeBridgeRuntime.discoveryUntil = 0;
+            }
+        }
+        return true;
+    }
+
+    if (topic === ZIGBEE_BRIDGE_EVENT_TOPIC && payload && typeof payload === "object") {
+        const data = payload?.data && typeof payload.data === "object" ? payload.data : null;
+        const friendly = data?.friendly_name || data?.friendlyName || payload?.friendly_name || payload?.friendlyName || "";
+        const ieee = data?.ieee_address || data?.ieeeAddress || payload?.ieee_address || payload?.ieeeAddress || "";
+        if (friendly || ieee) {
+            const updated = upsertZigbeeDevice({
+                id: ieee || null,
+                friendlyName: friendly || null,
+                ieeeAddress: ieee || null,
+                battery: data?.battery ?? payload?.battery,
+                lastPayload: payload
+            }, { topic, fallbackFriendlyName: friendly, unhide: true });
+            const deviceId = updated?.id || ieee || null;
+            if (deviceId) {
+                dispatchZigbeeSensorDataEvent(deviceId, payload, { topic, source: "bridge_event" });
+                scheduleZigbeeRealtimeUpdate({ topic, deviceId, friendlyName: friendly || updated?.friendlyName || '' });
+            }
+        }
+        return true;
+    }
+
+    const subPath = topic.slice(ZIGBEE_TOPIC_PREFIX.length);
+    const firstSlash = subPath.indexOf("/");
+    const friendly = firstSlash >= 0 ? subPath.slice(0, firstSlash) : subPath;
+    const subTopic = firstSlash >= 0 ? subPath.slice(firstSlash + 1) : "";
+    if (!friendly || friendly === "bridge") return true;
+    if (subTopic === "set") return true;
+
+    const existing = findZigbeeDeviceByFriendlyName(friendly);
+    // Ignore unknown topic-friendly names here; device inventory should come from bridge/devices.
+    // This avoids accidental duplicate entries while a rename is still propagating.
+    if (!existing) return true;
+    const nextOnline = subTopic === "availability"
+        ? String(payload?.state || rawText || "").toLowerCase() === "online"
+        : (existing?.online !== undefined ? existing.online : true);
+    const updated = upsertZigbeeDevice({
+        id: existing?.id || null,
+        friendlyName: friendly,
+        ieeeAddress: existing?.ieeeAddress || null,
+        vendor: existing?.vendor || null,
+        model: existing?.model || null,
+        type: existing?.type || "unknown",
+        description: existing?.description || null,
+        battery: payload?.battery ?? existing?.battery ?? null,
+        online: nextOnline,
+        lastPayload: payload
+    }, { topic, fallbackFriendlyName: friendly, unhide: true, captureSignals: subTopic !== "availability" });
+    if (subTopic !== "availability") {
+        const deviceId = updated?.id || existing?.id || null;
+        if (deviceId) {
+            dispatchZigbeeSensorDataEvent(deviceId, payload, { topic, source: "sensor_topic", subTopic });
+            scheduleZigbeeRealtimeUpdate({ topic, deviceId, friendlyName: updated?.friendlyName || friendly });
+        }
+    }
+    return true;
+}
+
+function clampDmxInt(value, min, max, fallback) {
+    const parsed = parseInt(value, 10);
+    if (!Number.isFinite(parsed)) return fallback;
+    return Math.max(min, Math.min(max, parsed));
+}
+
+function normalizeScriptingRules(node) {
+    if (!node || !node.properties) return [];
+    const rawRules = Array.isArray(node.properties.scriptingRules)
+        ? node.properties.scriptingRules
+        : (Array.isArray(node.properties.automationRules) ? node.properties.automationRules : []);
+    return rawRules.map((rule) => ({
+        triggerType: (() => {
+            const raw = String(rule?.triggerType || '').trim().toLowerCase();
+            return raw === 'on_activate' ? 'on_running' : raw;
+        })(),
+        id: Number.isFinite(Number(rule?.id)) ? Number(rule.id) : null,
+        triggerValue: String(rule?.triggerValue || ''),
+        triggerField: String(rule?.triggerField || ''),
+        triggerExpected: String(rule?.triggerExpected || ''),
+        conditionType: String(rule?.conditionType || 'none').trim().toLowerCase(),
+        conditionVar: String(rule?.conditionVar || ''),
+        conditionField: String(rule?.conditionField || ''),
+        conditionExpr: (rule?.conditionExpr && typeof rule.conditionExpr === 'object' && !Array.isArray(rule.conditionExpr))
+            ? rule.conditionExpr
+            : null,
+        conditionOp: String(rule?.conditionOp || 'eq').trim().toLowerCase(),
+        conditionValue: String(rule?.conditionValue || ''),
+        actionType: String(rule?.actionType || '').trim().toLowerCase(),
+        actionValue: String(rule?.actionValue || ''),
+        actionTargetPuzzle: String(rule?.actionTargetPuzzle || ''),
+        actionExpr: (rule?.actionExpr && typeof rule.actionExpr === 'object' && !Array.isArray(rule.actionExpr))
+            ? rule.actionExpr
+            : null,
+        actionSourceDevice: String(rule?.actionSourceDevice || ''),
+        actionSourceField: String(rule?.actionSourceField || ''),
+        loopMode: String(rule?.loopMode || '').trim().toLowerCase() === 'forever' ? 'forever' : '',
+        loopIntervalSec: Number.isFinite(Number(rule?.loopIntervalSec)) ? Math.max(0.2, Number(rule.loopIntervalSec)) : 1,
+        loopStack: Array.isArray(rule?.loopStack)
+            ? rule.loopStack.map((entry) => ({
+                type: String(entry?.type || '').trim().toLowerCase(),
+                key: String(entry?.key || ''),
+                iter: Number.isFinite(Number(entry?.iter)) ? Number(entry.iter) : null
+            }))
+            : [],
+        loopBreakKey: String(rule?.loopBreakKey || ''),
+        loopBreakType: String(rule?.loopBreakType || '').trim().toLowerCase()
+    }));
+}
+
+function hasScriptingBlocks(node) {
+    if (!node || !node.properties) return false;
+    const blockState = node.properties.scriptingBlocklyState;
+    const topBlocks = blockState?.blocks?.blocks;
+    if (Array.isArray(topBlocks) && topBlocks.length > 0) return true;
+    const rules = Array.isArray(node.properties.scriptingRules)
+        ? node.properties.scriptingRules
+        : (Array.isArray(node.properties.automationRules) ? node.properties.automationRules : []);
+    return rules.length > 0;
+}
+
+function normalizeRoomScriptingRules() {
+    const rawRules = Array.isArray(graph?.config?.roomScripting?.rules) ? graph.config.roomScripting.rules : [];
+    return rawRules.map((rule) => ({
+        id: Number.isFinite(Number(rule?.id)) ? Number(rule.id) : null,
+        triggerType: String(rule?.triggerType || '').trim().toLowerCase(),
+        triggerValue: String(rule?.triggerValue || ''),
+        triggerField: String(rule?.triggerField || ''),
+        triggerExpected: String(rule?.triggerExpected || ''),
+        conditionType: String(rule?.conditionType || 'none').trim().toLowerCase(),
+        conditionVar: String(rule?.conditionVar || ''),
+        conditionField: String(rule?.conditionField || ''),
+        conditionExpr: (rule?.conditionExpr && typeof rule.conditionExpr === 'object' && !Array.isArray(rule.conditionExpr))
+            ? rule.conditionExpr
+            : null,
+        conditionOp: String(rule?.conditionOp || 'eq').trim().toLowerCase(),
+        conditionValue: String(rule?.conditionValue || ''),
+        actionType: String(rule?.actionType || '').trim().toLowerCase(),
+        actionValue: String(rule?.actionValue || ''),
+        actionTargetPuzzle: String(rule?.actionTargetPuzzle || ''),
+        actionExpr: (rule?.actionExpr && typeof rule.actionExpr === 'object' && !Array.isArray(rule.actionExpr))
+            ? rule.actionExpr
+            : null,
+        actionSourceDevice: String(rule?.actionSourceDevice || ''),
+        actionSourceField: String(rule?.actionSourceField || ''),
+        loopMode: String(rule?.loopMode || '').trim().toLowerCase() === 'forever' ? 'forever' : '',
+        loopIntervalSec: Number.isFinite(Number(rule?.loopIntervalSec)) ? Math.max(0.2, Number(rule.loopIntervalSec)) : 1,
+        loopStack: Array.isArray(rule?.loopStack)
+            ? rule.loopStack.map((entry) => ({
+                type: String(entry?.type || '').trim().toLowerCase(),
+                key: String(entry?.key || ''),
+                iter: Number.isFinite(Number(entry?.iter)) ? Number(entry.iter) : null
+            }))
+            : [],
+        loopBreakKey: String(rule?.loopBreakKey || ''),
+        loopBreakType: String(rule?.loopBreakType || '').trim().toLowerCase()
+    }));
+}
+
+function hasRoomScriptingBlocks() {
+    const roomScripting = graph?.config?.roomScripting;
+    const topBlocks = roomScripting?.blocklyState?.blocks?.blocks;
+    if (Array.isArray(topBlocks) && topBlocks.length > 0) return true;
+    const rules = Array.isArray(roomScripting?.rules) ? roomScripting.rules : [];
+    return rules.length > 0;
+}
+
+function getPuzzleVariableMap(puzzleId) {
+    const key = parseInt(puzzleId, 10);
+    if (!Number.isFinite(key)) return {};
+    if (!puzzleScriptingVariables[key] || typeof puzzleScriptingVariables[key] !== 'object') {
+        puzzleScriptingVariables[key] = {};
+    }
+    return puzzleScriptingVariables[key];
+}
+
+function parseScriptingComparable(value) {
+    const raw = String(value ?? '').trim();
+    if (!raw) return '';
+    const asNum = Number(raw);
+    if (Number.isFinite(asNum)) return asNum;
+    return raw;
+}
+
+function compareScriptingValues(leftRaw, op, rightRaw) {
+    const left = parseScriptingComparable(leftRaw);
+    const right = parseScriptingComparable(rightRaw);
+    if (op === 'eq') return String(left) === String(right);
+    if (op === 'neq') return String(left) !== String(right);
+    if (typeof left === 'number' && typeof right === 'number') {
+        if (op === 'gt') return left > right;
+        if (op === 'gte') return left >= right;
+        if (op === 'lt') return left < right;
+        if (op === 'lte') return left <= right;
+    }
+    return false;
+}
+
+function extractSensorDataMap(payload) {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return {};
+    const out = {};
+    Object.keys(payload).forEach((key) => {
+        const safeKey = String(key || '').trim();
+        if (!safeKey || safeKey.startsWith('_')) return;
+        const value = payload[safeKey];
+        const type = typeof value;
+        if (value == null) return;
+        if (type === 'string' || type === 'number' || type === 'boolean') {
+            out[safeKey] = value;
+        }
+    });
+    return out;
+}
+
+function getSensorFieldValue(eventPayload, sourceDeviceId, sourceField) {
+    const field = String(sourceField || '').trim();
+    if (!field) return '-';
+    const eventDevice = String(eventPayload?.sensorDeviceId || '').trim();
+    const wantedDevice = String(sourceDeviceId || '').trim();
+    if (eventPayload && eventPayload.sensorData && (!wantedDevice || wantedDevice === eventDevice)) {
+        if (Object.prototype.hasOwnProperty.call(eventPayload.sensorData, field)) {
+            return eventPayload.sensorData[field];
+        }
+    }
+
+    const scope = String(eventPayload?.scriptScope || '').trim().toLowerCase();
+    const deviceKey = wantedDevice || eventDevice;
+    if (scope === 'puzzle') {
+        const numericPuzzleId = parseInt(eventPayload?.currentPuzzleId, 10);
+        if (Number.isFinite(numericPuzzleId)) {
+            const byPuzzle = puzzleScriptingSensorInstances[numericPuzzleId];
+            const byDevice = byPuzzle && deviceKey ? byPuzzle[deviceKey] : null;
+            if (byDevice && Object.prototype.hasOwnProperty.call(byDevice, field)) {
+                return byDevice[field];
+            }
+        }
+    } else {
+        const byDevice = deviceKey ? roomScriptingSensorInstances[deviceKey] : null;
+        if (byDevice && Object.prototype.hasOwnProperty.call(byDevice, field)) {
+            return byDevice[field];
+        }
+    }
+    return '-';
+}
+
+function updateRoomScriptSensorInstance(deviceId, sensorData = {}) {
+    const id = String(deviceId || '').trim();
+    if (!id) return;
+    const data = sensorData && typeof sensorData === 'object' && !Array.isArray(sensorData) ? sensorData : {};
+    if (!roomScriptingSensorInstances[id]) roomScriptingSensorInstances[id] = {};
+    Object.keys(data).forEach((key) => {
+        roomScriptingSensorInstances[id][key] = data[key];
+    });
+}
+
+function updatePuzzleScriptSensorInstance(puzzleId, deviceId, sensorData = {}) {
+    const numericPuzzleId = parseInt(puzzleId, 10);
+    const id = String(deviceId || '').trim();
+    if (!Number.isFinite(numericPuzzleId) || !id) return;
+    const data = sensorData && typeof sensorData === 'object' && !Array.isArray(sensorData) ? sensorData : {};
+    if (!puzzleScriptingSensorInstances[numericPuzzleId]) puzzleScriptingSensorInstances[numericPuzzleId] = {};
+    if (!puzzleScriptingSensorInstances[numericPuzzleId][id]) puzzleScriptingSensorInstances[numericPuzzleId][id] = {};
+    Object.keys(data).forEach((key) => {
+        puzzleScriptingSensorInstances[numericPuzzleId][id][key] = data[key];
+    });
+}
+
+function resetPuzzleScriptSensorInstanceByPolicy(puzzleId) {
+    const numericPuzzleId = parseInt(puzzleId, 10);
+    if (!Number.isFinite(numericPuzzleId)) return;
+    const byPuzzle = puzzleScriptingSensorInstances[numericPuzzleId];
+    if (!byPuzzle || typeof byPuzzle !== 'object') return;
+    Object.keys(byPuzzle).forEach((deviceId) => {
+        const device = zigbeeDevices[deviceId];
+        if (device?.resetOnPuzzleReset === true) {
+            delete byPuzzle[deviceId];
+            if (roomScriptingSensorInstances[deviceId]) {
+                delete roomScriptingSensorInstances[deviceId];
+            }
+        }
+    });
+    if (!Object.keys(byPuzzle).length) {
+        delete puzzleScriptingSensorInstances[numericPuzzleId];
+    }
+}
+
+function getLightingFixturesFromGraph() {
+    const lighting = graph?.config?.lighting;
+    if (!lighting || !Array.isArray(lighting.fixtures)) return [];
+    return lighting.fixtures;
+}
+
+function getLightingFixtureById(fixtureId) {
+    const numericId = parseInt(fixtureId, 10);
+    if (!Number.isFinite(numericId)) return null;
+    return getLightingFixturesFromGraph().find(fixture => parseInt(fixture?.id, 10) === numericId) || null;
+}
+
+function getLightingCueByRef(cueRef) {
+    const text = String(cueRef || '').trim();
+    if (!text) return null;
+    const [fixtureRaw, cueRaw] = text.split(':');
+    const fixtureId = parseInt(fixtureRaw, 10);
+    const cueId = parseInt(cueRaw, 10);
+    if (!Number.isFinite(fixtureId) || !Number.isFinite(cueId)) return null;
+    const fixture = getLightingFixtureById(fixtureId);
+    if (!fixture || !Array.isArray(fixture.cues)) return null;
+    const cue = fixture.cues.find(entry => parseInt(entry?.id, 10) === cueId);
+    if (!cue) return null;
+    return { fixture, cue };
+}
+
+function isLightingGroupFixture(fixture) {
+    return !!fixture && fixture.presetId === 'group';
+}
+
+function normalizeGroupCueAssignments(cue) {
+    const raw = Array.isArray(cue?.groupAssignments) ? cue.groupAssignments : [];
+    const seen = new Set();
+    const normalized = [];
+    raw.forEach((entry) => {
+        const fixtureId = parseInt(entry?.fixtureId, 10);
+        const cueId = parseInt(entry?.cueId, 10);
+        if (!Number.isFinite(fixtureId) || !Number.isFinite(cueId)) return;
+        const key = `${fixtureId}:${cueId}`;
+        if (seen.has(key)) return;
+        seen.add(key);
+        normalized.push({ fixtureId, cueId });
+    });
+    return normalized;
+}
+
+function buildGroupCueResolvedEntries(groupCue) {
+    const entries = [];
+    const assignments = normalizeGroupCueAssignments(groupCue);
+    assignments.forEach((assignment) => {
+        const sourceFixture = getLightingFixtureById(assignment.fixtureId);
+        if (!sourceFixture || !Array.isArray(sourceFixture.cues)) return;
+        const sourceCue = sourceFixture.cues.find((entry) => parseInt(entry?.id, 10) === assignment.cueId);
+        if (!sourceCue) return;
+        entries.push({ fixture: sourceFixture, cue: sourceCue });
+    });
+    return entries;
+}
+
+function mergeGroupCueChannels(entries) {
+    const byChannel = new Map();
+    entries.forEach(({ cue }) => {
+        if (!Array.isArray(cue?.channels)) return;
+        cue.channels.forEach((entry) => {
+            const channel = clampDmxInt(entry?.channel, 1, DMX_MAX_CHANNEL, -1);
+            if (channel < 1) return;
+            const value = clampDmxInt(entry?.value, DMX_MIN_VALUE, DMX_MAX_VALUE, 0);
+            byChannel.set(channel, value);
+        });
+    });
+    return Array.from(byChannel.entries())
+        .sort((a, b) => a[0] - b[0])
+        .map(([channel, value]) => ({ channel, value }));
+}
+
+function mergeGroupCueEffects(entries, fallbackCue) {
+    const fallback = normalizeCueEffects(fallbackCue);
+    if (!entries.length) return fallback;
+    const merged = entries.reduce((acc, entry) => {
+        const fx = normalizeCueEffects(entry?.cue);
+        return {
+            delayMs: Math.max(acc.delayMs, fx.delayMs),
+            fadeInMs: Math.max(acc.fadeInMs, fx.fadeInMs),
+            fadeOutMs: Math.max(acc.fadeOutMs, fx.fadeOutMs),
+            durationMs: Math.max(acc.durationMs, fx.durationMs)
+        };
+    }, { delayMs: 0, fadeInMs: 0, fadeOutMs: 0, durationMs: 0 });
+    if (merged.delayMs === 0 && merged.fadeInMs === 0 && merged.fadeOutMs === 0 && merged.durationMs === 0) {
+        return fallback;
+    }
+    return merged;
+}
+
+function findOlaDmxCommand() {
+    if (process.platform !== 'linux') return null;
+    const now = Date.now();
+    if ((now - dmxOlaCommandCache.at) < DMX_OLA_COMMAND_CACHE_MS) {
+        return dmxOlaCommandCache.command;
+    }
+    scheduleOlaDmxCommandProbe();
+    return dmxOlaCommandCache.command;
+}
+
+function scheduleOlaDmxCommandProbe() {
+    if (process.platform !== 'linux') return;
+    const now = Date.now();
+    if (dmxOlaCommandProbeInFlight) return;
+    if ((now - dmxOlaCommandCache.at) < DMX_OLA_COMMAND_CACHE_MS) return;
+    dmxOlaCommandProbeInFlight = true;
+    void (async () => {
+        let found = null;
+        try {
+            for (const cmd of DMX_OLA_COMMANDS) {
+                const probe = await runCommandCaptureAsync('which', [cmd], 700);
+                if (probe.ok && String(probe.stdout || '').trim()) {
+                    found = cmd;
+                    break;
+                }
+            }
+        } catch (e) {
+        } finally {
+            dmxOlaCommandCache = { at: Date.now(), command: found };
+            dmxOlaCommandProbeInFlight = false;
+        }
+    })();
+}
+
+function sendCurrentDmxUniverseToOla() {
+    if (process.platform !== 'linux') return { ok: false, error: 'unsupported-platform' };
+    const adapter = getDmxAdapterInfo();
+    if (!adapter?.connected) return { ok: false, error: 'no-adapter' };
+    const cmd = findOlaDmxCommand();
+    if (!cmd) return { ok: false, error: 'no-ola-cli' };
+
+    const universe = clampDmxInt(DMX_DEFAULT_UNIVERSE, 0, 9999, 0);
+    const dmx = dmxUniverseBuffer
+        .map(value => clampDmxInt(value, DMX_MIN_VALUE, DMX_MAX_VALUE, 0))
+        .join(',');
+    dmxQueuedSendJob = {
+        cmd,
+        args: ['-u', String(universe), '-d', dmx]
+    };
+    flushDmxSendQueue();
+    return { ok: true, queued: true };
+}
+
+function flushDmxSendQueue() {
+    if (dmxSendInFlight) return;
+    const job = dmxQueuedSendJob;
+    if (!job || !job.cmd || !Array.isArray(job.args)) return;
+    dmxQueuedSendJob = null;
+    dmxSendInFlight = true;
+
+    let child = null;
+    let timedOut = false;
+    let stderr = '';
+    try {
+        child = spawn(job.cmd, job.args, {
+            stdio: ['ignore', 'ignore', 'pipe']
+        });
+    } catch (err) {
+        dmxSendInFlight = false;
+        const now = Date.now();
+        if ((now - dmxSendErrorGateAt) > 1500) {
+            dmxSendErrorGateAt = now;
+            logSystem(`DMX send failed (${job.cmd}): ${err?.message || 'spawn failed'}`, 'warn');
+        }
+        if (dmxQueuedSendJob) setImmediate(flushDmxSendQueue);
+        return;
+    }
+
+    const timeoutId = setTimeout(() => {
+        timedOut = true;
+        try { child.kill('SIGKILL'); } catch (e) {}
+    }, 1500);
+
+    if (child.stderr) {
+        child.stderr.on('data', (chunk) => {
+            try { stderr += chunk.toString(); } catch (e) {}
+        });
+    }
+    child.on('error', (err) => {
+        if (!stderr) stderr = err?.message || '';
+    });
+    child.on('close', (code) => {
+        clearTimeout(timeoutId);
+        dmxSendInFlight = false;
+        const ok = !timedOut && code === 0;
+        if (!ok) {
+            const now = Date.now();
+            if ((now - dmxSendErrorGateAt) > 1500) {
+                dmxSendErrorGateAt = now;
+                const trimmed = String(stderr || '').trim();
+                const reason = timedOut ? 'timeout' : (trimmed || `exit=${code ?? 'unknown'}`);
+                logSystem(`DMX send failed (${job.cmd}): ${reason}`, 'warn');
+            }
+        }
+        if (dmxQueuedSendJob) {
+            setImmediate(flushDmxSendQueue);
+        }
+    });
+}
+
+function applyCueChannelsToDmxBuffer(cue) {
+    if (!cue || !Array.isArray(cue.channels)) return { changed: false };
+    let changed = false;
+    cue.channels.forEach((entry) => {
+        const channel = clampDmxInt(entry?.channel, 1, DMX_MAX_CHANNEL, -1);
+        if (channel < 1) return;
+        const value = clampDmxInt(entry?.value, DMX_MIN_VALUE, DMX_MAX_VALUE, 0);
+        const idx = channel - 1;
+        if (dmxUniverseBuffer[idx] !== value) {
+            dmxUniverseBuffer[idx] = value;
+            changed = true;
+        }
+    });
+    return { changed };
+}
+
+function normalizeCueEffects(cue) {
+    const durationRaw = cue?.effects?.durationMs !== undefined
+        ? cue.effects.durationMs
+        : cue?.effects?.holdMs;
+    return {
+        delayMs: clampDmxInt(cue?.effects?.delayMs, 0, 600000, 0),
+        fadeInMs: clampDmxInt(cue?.effects?.fadeInMs, 0, 600000, 0),
+        fadeOutMs: clampDmxInt(cue?.effects?.fadeOutMs, 0, 600000, 0),
+        durationMs: clampDmxInt(durationRaw, 0, 600000, 0)
+    };
+}
+
+function getCueChannelTargets(cue) {
+    const channelMap = new Map();
+    if (!cue || !Array.isArray(cue.channels)) return [];
+    cue.channels.forEach((entry) => {
+        const channel = clampDmxInt(entry?.channel, 1, DMX_MAX_CHANNEL, -1);
+        if (channel < 1) return;
+        const value = clampDmxInt(entry?.value, DMX_MIN_VALUE, DMX_MAX_VALUE, 0);
+        channelMap.set(channel, value);
+    });
+    return Array.from(channelMap.entries())
+        .sort((a, b) => a[0] - b[0])
+        .map(([channel, value]) => ({ channel, value }));
+}
+
+function clearDmxPlaybackTimers() {
+    if (!(dmxPlaybackTimers instanceof Map)) {
+        dmxPlaybackTimers = new Map();
+        return;
+    }
+    dmxPlaybackTimers.forEach((_, timerId) => clearTimeout(timerId));
+    dmxPlaybackTimers.clear();
+}
+
+function registerCueTokenChannels(token, channels) {
+    const safeToken = clampDmxInt(token, 1, Number.MAX_SAFE_INTEGER, 0);
+    if (!safeToken) return;
+    const set = new Set();
+    (Array.isArray(channels) ? channels : []).forEach((channel) => {
+        const safeChannel = clampDmxInt(channel, 1, DMX_MAX_CHANNEL, -1);
+        if (safeChannel >= 1) set.add(safeChannel);
+    });
+    dmxCueChannelMap.set(safeToken, set);
+}
+
+function unregisterCueToken(token) {
+    const safeToken = clampDmxInt(token, 1, Number.MAX_SAFE_INTEGER, 0);
+    if (!safeToken) return;
+    dmxCueChannelMap.delete(safeToken);
+    for (let idx = 0; idx < dmxChannelLayers.length; idx += 1) {
+        const layers = dmxChannelLayers[idx];
+        if (!Array.isArray(layers) || !layers.length) continue;
+        dmxChannelLayers[idx] = layers.filter((entry) => entry?.token !== safeToken);
+    }
+}
+
+function interruptDmxCueLayersForChannels(channels) {
+    const safeChannels = (Array.isArray(channels) ? channels : [])
+        .map((channel) => clampDmxInt(channel, 1, DMX_MAX_CHANNEL, -1))
+        .filter((channel) => channel >= 1);
+    if (!safeChannels.length) return;
+
+    const interruptedTokens = new Set();
+    const safeChannelSet = new Set(safeChannels);
+    if (dmxCueChannelMap instanceof Map) {
+        dmxCueChannelMap.forEach((tokenChannels, token) => {
+            if (!(tokenChannels instanceof Set) || !tokenChannels.size) return;
+            for (const channel of tokenChannels.values()) {
+                if (safeChannelSet.has(channel)) {
+                    interruptedTokens.add(token);
+                    break;
+                }
+            }
+        });
+    }
+    safeChannels.forEach((channel) => {
+        const layers = dmxChannelLayers[channel - 1];
+        if (!Array.isArray(layers) || !layers.length) return;
+        layers.forEach((entry) => {
+            const token = clampDmxInt(entry?.token, 1, Number.MAX_SAFE_INTEGER, 0);
+            if (token) interruptedTokens.add(token);
+        });
+    });
+    if (!interruptedTokens.size) return;
+
+    if (!(dmxPlaybackTimers instanceof Map)) {
+        dmxPlaybackTimers = new Map();
+    }
+    dmxPlaybackTimers.forEach((meta, timerId) => {
+        const token = clampDmxInt(meta?.token, 1, Number.MAX_SAFE_INTEGER, 0);
+        if (!token || !interruptedTokens.has(token)) return;
+        clearTimeout(timerId);
+        dmxPlaybackTimers.delete(timerId);
+    });
+
+    interruptedTokens.forEach((token) => unregisterCueToken(token));
+
+    const fallbackFrame = buildLayerFallbackFrame(safeChannels);
+    sendFrameFromChannelValues(fallbackFrame);
+}
+
+function buildZeroMapForChannels(channels) {
+    const zeroMap = new Map();
+    if (!channels) return zeroMap;
+    channels.forEach((channel) => {
+        const safeChannel = clampDmxInt(channel, 1, DMX_MAX_CHANNEL, -1);
+        if (safeChannel < 1) return;
+        zeroMap.set(safeChannel, 0);
+    });
+    return zeroMap;
+}
+
+function setCueChannelValuesOnBuffer(valuesByChannel) {
+    let changed = false;
+    valuesByChannel.forEach((value, channel) => {
+        const safeChannel = clampDmxInt(channel, 1, DMX_MAX_CHANNEL, -1);
+        if (safeChannel < 1) return;
+        const safeValue = clampDmxInt(value, DMX_MIN_VALUE, DMX_MAX_VALUE, 0);
+        const idx = safeChannel - 1;
+        if (dmxUniverseBuffer[idx] !== safeValue) {
+            dmxUniverseBuffer[idx] = safeValue;
+            changed = true;
+        }
+    });
+    return changed;
+}
+
+function dmxChannelMapToObject(valuesByChannel) {
+    const out = {};
+    if (!valuesByChannel || typeof valuesByChannel.forEach !== 'function') return out;
+    valuesByChannel.forEach((value, channel) => {
+        const safeChannel = clampDmxInt(channel, 1, DMX_MAX_CHANNEL, -1);
+        if (safeChannel < 1) return;
+        out[String(safeChannel)] = clampDmxInt(value, DMX_MIN_VALUE, DMX_MAX_VALUE, 0);
+    });
+    const ordered = {};
+    Object.keys(out).sort((a, b) => Number(a) - Number(b)).forEach((key) => {
+        ordered[key] = out[key];
+    });
+    return ordered;
+}
+
+function sendFrameFromChannelValues(valuesByChannel) {
+    const changed = setCueChannelValuesOnBuffer(valuesByChannel);
+    if (!changed) return { ok: true, noop: true };
+    const result = sendCurrentDmxUniverseToOla();
+    if (result?.ok) {
+        logSystem('DMX frame sent', 'dmx', {
+            direction: 'outbound',
+            payload: dmxChannelMapToObject(valuesByChannel)
+        });
+    }
+    return result;
+}
+
+function getTopLayerForChannel(channel) {
+    const safeChannel = clampDmxInt(channel, 1, DMX_MAX_CHANNEL, -1);
+    if (safeChannel < 1) return null;
+    const layers = dmxChannelLayers[safeChannel - 1];
+    if (!Array.isArray(layers) || !layers.length) return null;
+    return layers[layers.length - 1] || null;
+}
+
+function getTopLayerForChannelExcludingToken(channel, token) {
+    const safeChannel = clampDmxInt(channel, 1, DMX_MAX_CHANNEL, -1);
+    const safeToken = clampDmxInt(token, 1, Number.MAX_SAFE_INTEGER, 0);
+    if (safeChannel < 1 || !safeToken) return null;
+    const layers = dmxChannelLayers[safeChannel - 1];
+    if (!Array.isArray(layers) || !layers.length) return null;
+    for (let i = layers.length - 1; i >= 0; i -= 1) {
+        const entry = layers[i];
+        if (!entry || entry.token === safeToken) continue;
+        return entry;
+    }
+    return null;
+}
+
+function registerCueLayerValues(token, targetMap) {
+    const safeToken = clampDmxInt(token, 1, Number.MAX_SAFE_INTEGER, 0);
+    if (!safeToken || !(targetMap instanceof Map)) return;
+    const order = ++dmxCueOrderCounter;
+    targetMap.forEach((value, channel) => {
+        const safeChannel = clampDmxInt(channel, 1, DMX_MAX_CHANNEL, -1);
+        if (safeChannel < 1) return;
+        const layers = dmxChannelLayers[safeChannel - 1];
+        const filtered = Array.isArray(layers) ? layers.filter((entry) => entry?.token !== safeToken) : [];
+        filtered.push({
+            token: safeToken,
+            order,
+            value: clampDmxInt(value, DMX_MIN_VALUE, DMX_MAX_VALUE, 0)
+        });
+        filtered.sort((a, b) => (a.order || 0) - (b.order || 0));
+        dmxChannelLayers[safeChannel - 1] = filtered;
+    });
+}
+
+function sendLayeredFrameFromChannelValues(valuesByChannel, token) {
+    const safeToken = clampDmxInt(token, 1, Number.MAX_SAFE_INTEGER, 0);
+    const filtered = new Map();
+    valuesByChannel.forEach((value, channel) => {
+        const top = getTopLayerForChannel(channel);
+        if (!top || top.token !== safeToken) return;
+        filtered.set(channel, value);
+    });
+    if (!filtered.size) return { ok: true, noop: true };
+    return sendFrameFromChannelValues(filtered);
+}
+
+function removeCueLayerTokenFromChannels(token, channels) {
+    const safeToken = clampDmxInt(token, 1, Number.MAX_SAFE_INTEGER, 0);
+    if (!safeToken || !Array.isArray(channels)) return;
+    channels.forEach((channel) => {
+        const safeChannel = clampDmxInt(channel, 1, DMX_MAX_CHANNEL, -1);
+        if (safeChannel < 1) return;
+        const layers = dmxChannelLayers[safeChannel - 1];
+        if (!Array.isArray(layers) || !layers.length) return;
+        dmxChannelLayers[safeChannel - 1] = layers.filter((entry) => entry?.token !== safeToken);
+    });
+}
+
+function buildLayerFallbackFrame(channels) {
+    const frame = new Map();
+    if (!Array.isArray(channels)) return frame;
+    channels.forEach((channel) => {
+        const safeChannel = clampDmxInt(channel, 1, DMX_MAX_CHANNEL, -1);
+        if (safeChannel < 1) return;
+        const top = getTopLayerForChannel(safeChannel);
+        const value = top ? clampDmxInt(top.value, DMX_MIN_VALUE, DMX_MAX_VALUE, 0) : 0;
+        frame.set(safeChannel, value);
+    });
+    return frame;
+}
+
+function buildLayerFallbackFrameExcludingToken(channels, token) {
+    const frame = new Map();
+    if (!Array.isArray(channels)) return frame;
+    channels.forEach((channel) => {
+        const safeChannel = clampDmxInt(channel, 1, DMX_MAX_CHANNEL, -1);
+        if (safeChannel < 1) return;
+        const top = getTopLayerForChannelExcludingToken(safeChannel, token);
+        const value = top ? clampDmxInt(top.value, DMX_MIN_VALUE, DMX_MAX_VALUE, 0) : 0;
+        frame.set(safeChannel, value);
+    });
+    return frame;
+}
+
+function runDmxCueWithEffects(cue, effects) {
+    const targets = getCueChannelTargets(cue);
+    if (!targets.length) return { success: false, error: 'cue-empty' };
+    if (process.platform !== 'linux') return { success: false, error: 'unsupported-platform' };
+    const adapter = getDmxAdapterInfo();
+    if (!adapter?.connected) return { success: false, error: 'no-adapter' };
+    const olaCmd = findOlaDmxCommand();
+    if (!olaCmd) return { success: false, error: 'no-ola-cli' };
+
+    const targetMap = new Map();
+    targets.forEach((entry) => {
+        targetMap.set(entry.channel, entry.value);
+    });
+    const targetChannels = targets.map(entry => entry.channel);
+    interruptDmxCueLayersForChannels(targetChannels);
+    const token = ++dmxCueTokenCounter;
+    registerCueTokenChannels(token, targetChannels);
+
+    const schedule = (delayMs, fn) => {
+        const safeDelay = Math.max(0, clampDmxInt(delayMs, 0, 600000, 0));
+        const timerId = setTimeout(() => {
+            dmxPlaybackTimers.delete(timerId);
+            fn();
+        }, safeDelay);
+        dmxPlaybackTimers.set(timerId, { token });
+    };
+
+    const renderLerpFrame = (fromMap, toMap, ratio) => {
+        const safeRatio = Math.max(0, Math.min(1, ratio));
+        const frame = new Map();
+        toMap.forEach((toValue, channel) => {
+            const fromValue = fromMap.has(channel) ? fromMap.get(channel) : toValue;
+            const value = Math.round(fromValue + ((toValue - fromValue) * safeRatio));
+            frame.set(channel, clampDmxInt(value, DMX_MIN_VALUE, DMX_MAX_VALUE, 0));
+        });
+        return sendLayeredFrameFromChannelValues(frame, token);
+    };
+
+    const delayMs = clampDmxInt(effects?.delayMs, 0, 600000, 0);
+    const fadeInMs = effects.fadeInMs;
+    const durationMs = effects.durationMs;
+    const fadeOutMs = effects.fadeOutMs;
+    const infiniteDuration = durationMs === 0;
+    let ownersClaimed = false;
+    const ensureChannelOwnership = () => {
+        if (ownersClaimed) return;
+        ownersClaimed = true;
+        registerCueLayerValues(token, targetMap);
+    };
+
+    const currentStartMap = new Map();
+    targetMap.forEach((_, channel) => {
+        const idx = channel - 1;
+        currentStartMap.set(channel, clampDmxInt(dmxUniverseBuffer[idx], DMX_MIN_VALUE, DMX_MAX_VALUE, 0));
+    });
+
+    if (fadeInMs > 0) {
+        const stepCount = Math.max(1, Math.ceil(fadeInMs / DMX_FADE_STEP_MS));
+        for (let step = 1; step <= stepCount; step += 1) {
+            const ratio = step / stepCount;
+            const at = delayMs + Math.round((fadeInMs * step) / stepCount);
+            schedule(at, () => {
+                ensureChannelOwnership();
+                renderLerpFrame(currentStartMap, targetMap, ratio);
+            });
+        }
+    } else {
+        const sendAt = delayMs;
+        if (sendAt > 0) {
+            schedule(sendAt, () => {
+                ensureChannelOwnership();
+                sendLayeredFrameFromChannelValues(targetMap, token);
+            });
+        } else {
+            ensureChannelOwnership();
+            const sendTarget = sendLayeredFrameFromChannelValues(targetMap, token);
+            if (!sendTarget.ok) return { success: false, error: sendTarget.error || 'send-failed' };
+        }
+    }
+
+    if (infiniteDuration) {
+        return {
+            success: true,
+            started: true,
+            infinite: true,
+            durationMs: null,
+            delayMs,
+            channelCount: targets.length
+        };
+    }
+
+    const fadeInDoneAt = delayMs + fadeInMs;
+    const fadeOutStartAt = fadeInDoneAt + durationMs;
+
+    if (fadeOutMs > 0) {
+        const fadeOutTargetMap = buildLayerFallbackFrameExcludingToken(targetChannels, token);
+        const stepCountOut = Math.max(1, Math.ceil(fadeOutMs / DMX_FADE_STEP_MS));
+        for (let step = 1; step <= stepCountOut; step += 1) {
+            const ratio = step / stepCountOut;
+            const at = fadeOutStartAt + Math.round((fadeOutMs * step) / stepCountOut);
+            schedule(at, () => {
+                renderLerpFrame(targetMap, fadeOutTargetMap, ratio);
+            });
+        }
+        schedule(fadeOutStartAt + fadeOutMs + 5, () => {
+            unregisterCueToken(token);
+            const fallbackFrame = buildLayerFallbackFrame(targetChannels);
+            sendFrameFromChannelValues(fallbackFrame);
+        });
+    } else {
+        schedule(fadeOutStartAt, () => {
+            unregisterCueToken(token);
+            const fallbackFrame = buildLayerFallbackFrame(targetChannels);
+            sendFrameFromChannelValues(fallbackFrame);
+        });
+    }
+
+    return {
+        success: true,
+        started: true,
+        durationMs: delayMs + fadeInMs + durationMs + fadeOutMs,
+        delayMs,
+        channelCount: targets.length
+    };
+}
+
+function resetDmxUniverseBuffer({ send = false } = {}) {
+    clearDmxPlaybackTimers();
+    dmxCueTokenCounter += 1;
+    dmxCueOrderCounter = 0;
+    dmxCueChannelMap = new Map();
+    dmxChannelLayers = Array.from({ length: DMX_MAX_CHANNEL }, () => []);
+    if (!Array.isArray(dmxUniverseBuffer) || dmxUniverseBuffer.length !== DMX_MAX_CHANNEL) {
+        dmxUniverseBuffer = new Array(DMX_MAX_CHANNEL).fill(0);
+    } else {
+        dmxUniverseBuffer.fill(0);
+    }
+    if (send) {
+        sendCurrentDmxUniverseToOla();
+    }
+}
+
+function runDmxCueAction(cueRef, context = {}) {
+    const resolved = getLightingCueByRef(cueRef);
+    if (!resolved) {
+        logSystem(`Scripting play_cue skipped: unknown cue "${cueRef}"`, 'warn');
+        return { success: false, error: 'cue-not-found' };
+    }
+    const { fixture, cue } = resolved;
+    if (isLightingGroupFixture(fixture)) {
+        const entries = buildGroupCueResolvedEntries(cue);
+        if (!entries.length) {
+            logSystem(`Scripting play_cue skipped: empty group cue "${cueRef}"`, 'warn');
+            return { success: false, error: 'group-cue-empty' };
+        }
+        let okCount = 0;
+        const failures = [];
+        entries.forEach((entry) => {
+            const sourceFixture = entry.fixture;
+            const sourceCue = entry.cue;
+            const sourceEffects = normalizeCueEffects(sourceCue);
+            const played = runDmxCueWithEffects(sourceCue, sourceEffects);
+            const assignmentMeta = {
+                direction: 'outbound',
+                action: 'playCue',
+                triggerType: context.triggerType || 'event',
+                fixtureId: parseInt(sourceFixture?.id, 10),
+                fixtureName: sourceFixture?.name || null,
+                cueId: parseInt(sourceCue?.id, 10),
+                cueName: sourceCue?.name || null,
+                parentFixtureId: parseInt(fixture?.id, 10),
+                parentFixtureName: fixture?.name || null,
+                parentCueId: parseInt(cue?.id, 10),
+                parentCueName: cue?.name || null
+            };
+            const cueLabel = `${sourceFixture?.name || `Lamp ${sourceFixture?.id}`}/${sourceCue?.name || `Cue ${sourceCue?.id}`}`;
+            const sceneLabel = `${fixture?.name || fixture?.id}`;
+            if (!played.success) {
+                failures.push(played.error || 'unknown-error');
+                logSystem(
+                    `DMX Cue failed: ${cueLabel} (Scene ${sceneLabel}: ${played.error || 'unknown-error'})`,
+                    'dmx',
+                    { ...assignmentMeta, status: 'failed', error: played.error || 'unknown-error' }
+                );
+                return;
+            }
+            okCount += 1;
+            const channelPayload = {};
+            (Array.isArray(sourceCue?.channels) ? sourceCue.channels : []).forEach((chEntry) => {
+                const ch = clampDmxInt(chEntry?.channel, 1, DMX_MAX_CHANNEL, null);
+                if (!Number.isFinite(ch)) return;
+                channelPayload[String(ch)] = clampDmxInt(chEntry?.value, DMX_MIN_VALUE, DMX_MAX_VALUE, 0);
+            });
+            const delayMs = clampDmxInt(played?.delayMs, 0, 600000, 0);
+            if (delayMs > 0) {
+                logSystem(
+                    `DMX Cue scheduled: ${cueLabel} (Scene ${sceneLabel}; +${delayMs}ms; ${context.triggerType || 'event'})`,
+                    'dmx',
+                    { ...assignmentMeta, status: 'scheduled', delayMs, payload: channelPayload }
+                );
+            } else {
+                logSystem(
+                    `DMX Cue played: ${cueLabel} (Scene ${sceneLabel}; ${context.triggerType || 'event'})`,
+                    'dmx',
+                    { ...assignmentMeta, status: 'played', payload: channelPayload }
+                );
+            }
+        });
+        if (!okCount) return { success: false, error: failures[0] || 'group-cue-failed' };
+        return { success: true, group: true, assignmentCount: okCount, failedCount: failures.length };
+    }
+    const effectiveCue = cue;
+    const effects = normalizeCueEffects(cue);
+    const baseMeta = {
+        direction: 'outbound',
+        action: 'playCue',
+        triggerType: context.triggerType || 'event',
+        fixtureId: parseInt(fixture?.id, 10),
+        fixtureName: fixture?.name || null,
+        cueId: parseInt(cue?.id, 10),
+        cueName: cue?.name || null
+    };
+    const played = runDmxCueWithEffects(effectiveCue, effects);
+    if (!played.success) {
+        logSystem(
+            `DMX Cue failed: ${fixture?.name || `Lamp ${fixture?.id}`}/${cue?.name || `Cue ${cue?.id}`} (${played.error || 'unknown-error'})`,
+            'dmx',
+            {
+                ...baseMeta,
+                status: 'failed',
+                error: played.error || 'unknown-error'
+            }
+        );
+        if (played.error === 'no-adapter') {
+            const fixtureLabel = isLightingGroupFixture(fixture)
+                ? `Scene ${fixture?.name || fixture?.id || ''}`.trim()
+                : `Lamp ${fixture?.name || fixture?.id || ''}`.trim();
+            const cueLabel = cue?.name ? ` / ${cue.name}` : '';
+            logSystem(
+                `No DMX adapter connected: ${fixtureLabel}${cueLabel} could not be played (${context.triggerType || 'event'}).`,
+                'error'
+            );
+        }
+        return played;
+    }
+    const channelPayload = {};
+    (Array.isArray(effectiveCue?.channels) ? effectiveCue.channels : []).forEach((entry) => {
+        const ch = clampDmxInt(entry?.channel, 1, DMX_MAX_CHANNEL, null);
+        if (!Number.isFinite(ch)) return;
+        channelPayload[String(ch)] = clampDmxInt(entry?.value, DMX_MIN_VALUE, DMX_MAX_VALUE, 0);
+    });
+    const delayMs = clampDmxInt(played?.delayMs, 0, 600000, 0);
+    const cueLabel = `${fixture?.name || `Lamp ${fixture?.id}`}/${cue?.name || `Cue ${cue?.id}`}`;
+    if (delayMs > 0) {
+        logSystem(
+            `DMX Cue scheduled: ${cueLabel} (+${delayMs}ms; ${context.triggerType || 'event'})`,
+            'dmx',
+            {
+                ...baseMeta,
+                status: 'scheduled',
+                delayMs,
+                payload: channelPayload
+            }
+        );
+    } else {
+        logSystem(
+            `DMX Cue played: ${cueLabel} (${context.triggerType || 'event'})`,
+            'dmx',
+            {
+                ...baseMeta,
+                status: 'played',
+                payload: channelPayload
+            }
+        );
+    }
+    return {
+        success: true,
+        fixtureId: parseInt(fixture?.id, 10),
+        cueId: parseInt(cue?.id, 10),
+        ...played
+    };
+}
+
+function sanitizeSoundCueName(name) {
+    const raw = String(name || '').trim();
+    if (!raw) return '';
+    const baseName = path.basename(raw);
+    const parsed = path.parse(baseName);
+    const safeBase = parsed.name.replace(/[^a-z0-9-_]/gi, '').slice(0, 80);
+    const safeExt = parsed.ext.replace(/[^a-z0-9.]/gi, '').slice(0, 12);
+    if (!safeBase) return '';
+    return `${safeBase}${safeExt}`;
+}
+
+function resolveSoundCueFilePath(soundName) {
+    const safeName = sanitizeSoundCueName(soundName);
+    if (!safeName) return null;
+    try {
+        if (!fs.existsSync(SOUNDS_DIR)) return null;
+        const directPath = path.join(SOUNDS_DIR, safeName);
+        if (fs.existsSync(directPath) && fs.statSync(directPath).isFile()) return directPath;
+        const files = fs.readdirSync(SOUNDS_DIR);
+        const match = files.find((entry) => String(entry || '').toLowerCase() === safeName.toLowerCase());
+        if (!match) return null;
+        const matchPath = path.join(SOUNDS_DIR, match);
+        if (fs.existsSync(matchPath) && fs.statSync(matchPath).isFile()) return matchPath;
+        return null;
+    } catch (e) {
+        return null;
+    }
+}
+
+function clampSoundVolumePercent(value) {
+    const parsed = parseInt(value, 10);
+    if (!Number.isFinite(parsed)) return 100;
+    return Math.max(0, Math.min(100, parsed));
+}
+
+function trySpawnSoundCuePlayer(cmd, args, startupMs = 220) {
+    return new Promise((resolve) => {
+        let child = null;
+        let settled = false;
+        try {
+            child = spawn(cmd, args, { stdio: ['ignore', 'ignore', 'ignore'] });
+            activeSoundCueProcesses.add(child);
+        } catch (err) {
+            resolve({ ok: false, error: err?.message || 'spawn failed' });
+            return;
+        }
+        child.on('close', () => {
+            activeSoundCueProcesses.delete(child);
+        });
+        child.on('error', () => {
+            activeSoundCueProcesses.delete(child);
+        });
+        const promoteTimer = setTimeout(() => {
+            if (settled) return;
+            settled = true;
+            resolve({ ok: true, player: cmd });
+        }, Math.max(100, Number(startupMs) || 220));
+        child.on('error', (err) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(promoteTimer);
+            resolve({ ok: false, error: err?.message || 'spawn error' });
+        });
+        child.on('close', (code) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(promoteTimer);
+            if (code === 0) {
+                resolve({ ok: true, player: cmd });
+            } else {
+                resolve({ ok: false, error: `exit ${code}` });
+            }
+        });
+    });
+}
+
+function stopAllSoundCuePlayback() {
+    if (!(activeSoundCueProcesses instanceof Set)) {
+        activeSoundCueProcesses = new Set();
+        return;
+    }
+    activeSoundCueProcesses.forEach((child) => {
+        try { child.kill('SIGTERM'); } catch (e) {}
+        setTimeout(() => {
+            try { child.kill('SIGKILL'); } catch (e) {}
+        }, 250);
+    });
+    activeSoundCueProcesses.clear();
+}
+
+function waitMs(ms) {
+    return new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(ms) || 0)));
+}
+
+async function processSoundCueQueue() {
+    if (soundCueWorkerRunning) return;
+    soundCueWorkerRunning = true;
+    try {
+        while (soundCuePendingRequest) {
+            const request = soundCuePendingRequest;
+            soundCuePendingRequest = null;
+            stopAllSoundCuePlayback();
+            // Give ALSA/pulseaudio a brief moment to release the previous process.
+            await waitMs(70);
+            const result = await playSoundCueOnPi(request.filePath, request.volume || 100);
+            if (result?.success) {
+                logSystem(
+                    `Sound Cue played: ${request.rawName} (${request.triggerType})`,
+                    'system',
+                    { direction: 'outbound', action: 'playSoundCue', triggerType: request.triggerType, sound: request.rawName, player: result.player }
+                );
+            } else {
+                logSystem(`Sound Cue failed: ${request.rawName} (${result?.error || 'unknown-error'})`, 'error');
+            }
+        }
+    } finally {
+        soundCueWorkerRunning = false;
+    }
+}
+
+async function playSoundCueOnPi(filePath, volumePercent = 100) {
+    const vol = clampSoundVolumePercent(volumePercent);
+    const paplayVolume = Math.round((vol / 100) * 65536);
+    const mpg123Scale = Math.max(0, Math.min(32768, Math.round((vol / 100) * 32768)));
+    const candidates = [
+        { cmd: 'ffplay', args: ['-nodisp', '-autoexit', '-loglevel', 'quiet', '-volume', String(vol), filePath] },
+        { cmd: 'paplay', args: [`--volume=${paplayVolume}`, filePath] },
+        { cmd: 'mpv', args: ['--no-video', '--really-quiet', `--volume=${vol}`, filePath] },
+        { cmd: 'mpg123', args: ['-q', '-f', String(mpg123Scale), filePath] },
+        { cmd: 'aplay', args: [filePath] }
+    ];
+    let lastError = 'no player available';
+    for (const candidate of candidates) {
+        const result = await trySpawnSoundCuePlayer(candidate.cmd, candidate.args);
+        if (result?.ok) return { success: true, player: candidate.cmd };
+        lastError = result?.error || lastError;
+    }
+    return { success: false, error: lastError };
+}
+
+function runSoundCueAction(soundName, context = {}) {
+    const rawName = String(soundName || '').trim();
+    if (!rawName) {
+        logSystem('Scripting play_sound skipped: missing sound name', 'warn');
+        return { success: false, error: 'sound-missing' };
+    }
+    const filePath = resolveSoundCueFilePath(rawName);
+    if (!filePath) {
+        logSystem(`Scripting play_sound skipped: unknown sound "${rawName}"`, 'warn');
+        return { success: false, error: 'sound-not-found' };
+    }
+    const triggerType = String(context?.triggerType || 'event');
+    soundCuePendingRequest = { rawName, filePath, triggerType, volume: 100 };
+    processSoundCueQueue().catch((err) => {
+        logSystem(`Sound Cue worker failed: ${err?.message || 'unknown-error'}`, 'error');
+    });
+    return { success: true, pending: true };
+}
+
+function runSendCustomAction(node, customText) {
+    if (!node) return { success: false, error: 'puzzle-missing' };
+    const deviceId = getDeviceIdForPuzzle(node);
+    const value = String(customText || '');
+    const topic = deviceId ? `puzzle/${deviceId}/command` : '';
+    if (!canSendToDevice(node, deviceId)) {
+        logSystem(
+            `MQTT sendCustom blocked for ${deviceId || 'unknown-device'} (offline/missing)`,
+            "warn",
+            { topic, payload: { action: "sendCustom", value }, direction: "outbound", command: "sendCustom", blocked: true }
+        );
+        return { success: false, error: 'device-offline-or-missing' };
+    }
+    publishCommand(deviceId, { action: 'sendCustom', value });
+    return { success: true };
+}
+
+function evaluateScriptingCondition(rule, customValue) {
+    const condition = String(rule?.conditionType || 'none').toLowerCase();
+    if (condition === 'none') return true;
+    const expected = String(rule?.conditionValue || '');
+    const actual = String(customValue || '');
+    if (condition === 'custom_equals') return actual === expected;
+    if (condition === 'custom_contains') return expected ? actual.includes(expected) : false;
+    return true;
+}
+
+function evaluateVariableCondition(rule, variableMap) {
+    const condition = String(rule?.conditionType || 'none').toLowerCase();
+    if (condition !== 'var_compare') return true;
+    const varName = String(rule?.conditionVar || '').trim();
+    if (!varName) return false;
+    const op = String(rule?.conditionOp || 'eq').toLowerCase();
+    const left = Object.prototype.hasOwnProperty.call(variableMap || {}, varName) ? variableMap[varName] : '';
+    const right = String(rule?.conditionValue || '');
+    return compareScriptingValues(left, op, right);
+}
+
+function evaluateSensorCondition(rule, eventPayload = {}) {
+    const condition = String(rule?.conditionType || 'none').toLowerCase();
+    if (condition !== 'sensor_compare') return true;
+    const field = String(rule?.conditionField || '').trim();
+    if (!field) return false;
+    const op = String(rule?.conditionOp || 'eq').toLowerCase();
+    const sensorData = (eventPayload && typeof eventPayload.sensorData === 'object' && !Array.isArray(eventPayload.sensorData))
+        ? eventPayload.sensorData
+        : {};
+    const left = Object.prototype.hasOwnProperty.call(sensorData, field) ? sensorData[field] : '';
+    const right = String(rule?.conditionValue || '');
+    return compareScriptingValues(left, op, right);
+}
+
+function coerceExprNumber(value) {
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value === 'boolean') return value ? 1 : 0;
+    const parsed = Number(String(value ?? '').trim());
+    return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function coerceExprBoolean(value) {
+    if (typeof value === 'boolean') return value;
+    if (typeof value === 'number') return Number.isFinite(value) && value !== 0;
+    const raw = String(value ?? '').trim().toLowerCase();
+    if (!raw) return false;
+    if (raw === 'false' || raw === '0' || raw === 'no' || raw === 'off' || raw === 'null' || raw === 'undefined') return false;
+    return true;
+}
+
+function evaluateDataExpressionNode(expr, eventPayload = {}) {
+    if (!expr || typeof expr !== 'object' || Array.isArray(expr)) return null;
+    const type = String(expr.type || '').trim().toLowerCase();
+    const sensorData = (eventPayload && typeof eventPayload.sensorData === 'object' && !Array.isArray(eventPayload.sensorData))
+        ? eventPayload.sensorData
+        : {};
+    if (type === 'field') {
+        const source = String(expr.source || '').trim().toLowerCase();
+        if (source === 'custom') {
+            return String(eventPayload?.customValue ?? '');
+        }
+        if (source === 'player_input') {
+            const field = String(expr.field || 'submitted').trim().toLowerCase();
+            if (field === 'expected') return String(eventPayload?.expectedValue ?? '');
+            if (field === 'active') {
+                const currentPuzzleId = parseInt(eventPayload?.currentPuzzleId, 10);
+                const runtime = Number.isFinite(currentPuzzleId) ? getExternalCheckRuntime(currentPuzzleId) : null;
+                return runtime?.active ? 'true' : 'false';
+            }
+            return String(eventPayload?.submittedValue ?? '');
+        }
+        if (source === 'state') {
+            const explicitTarget = String(expr.puzzle || expr.field || '').trim().toLowerCase();
+            if (explicitTarget === 'room') {
+                return getRoomStateKey();
+            }
+            if (explicitTarget.startsWith('branch')) {
+                const branchRaw = explicitTarget.includes(':')
+                    ? explicitTarget.split(':').slice(1).join(':')
+                    : explicitTarget.replace('branch', '').trim();
+                const branchId = parseInt(branchRaw, 10);
+                if (Number.isFinite(branchId)) {
+                    return getBranchStateKey(branchId);
+                }
+            }
+            const explicitId = parseInt(explicitTarget, 10);
+            const fallbackId = parseInt(eventPayload?.currentPuzzleId, 10);
+            const targetId = Number.isFinite(explicitId) ? explicitId : (Number.isFinite(fallbackId) ? fallbackId : null);
+            if (!Number.isFinite(targetId)) return '';
+            return getPuzzleStateKey(targetId);
+        }
+        const field = String(expr.field || '').trim();
+        if (!field) return '';
+        const selectedDevice = String(expr.device || '').trim();
+        return getSensorFieldValue(eventPayload, selectedDevice, field);
+    }
+    if (type === 'number') {
+        const parsed = Number(expr.value);
+        return Number.isFinite(parsed) ? parsed : 0;
+    }
+    if (type === 'text') {
+        return String(expr.value || '');
+    }
+    if (type === 'compare') {
+        const op = String(expr.op || 'eq').trim().toLowerCase();
+        const left = evaluateDataExpressionNode(expr.left, eventPayload);
+        const right = evaluateDataExpressionNode(expr.right, eventPayload);
+        return compareScriptingValues(left, op, right);
+    }
+    if (type === 'logic') {
+        const op = String(expr.op || 'and').trim().toLowerCase();
+        const left = coerceExprBoolean(evaluateDataExpressionNode(expr.left, eventPayload));
+        const right = coerceExprBoolean(evaluateDataExpressionNode(expr.right, eventPayload));
+        return op === 'or' ? (left || right) : (left && right);
+    }
+    if (type === 'not') {
+        return !coerceExprBoolean(evaluateDataExpressionNode(expr.value, eventPayload));
+    }
+    if (type === 'math') {
+        const op = String(expr.op || 'add').trim().toLowerCase();
+        const left = coerceExprNumber(evaluateDataExpressionNode(expr.left, eventPayload));
+        const right = coerceExprNumber(evaluateDataExpressionNode(expr.right, eventPayload));
+        if (op === 'sub') return left - right;
+        if (op === 'mul') return left * right;
+        if (op === 'div') return right === 0 ? 0 : (left / right);
+        return left + right;
+    }
+    return null;
+}
+
+function evaluateExpressionCondition(rule, eventPayload = {}) {
+    const condition = String(rule?.conditionType || 'none').toLowerCase();
+    if (condition !== 'expr') return true;
+    const expr = (rule?.conditionExpr && typeof rule.conditionExpr === 'object' && !Array.isArray(rule.conditionExpr))
+        ? rule.conditionExpr
+        : null;
+    if (!expr) return false;
+    return coerceExprBoolean(evaluateDataExpressionNode(expr, eventPayload));
+}
+
+function resolveSendCustomPayload(rule, eventPayload = {}) {
+    const expr = (rule?.actionExpr && typeof rule.actionExpr === 'object' && !Array.isArray(rule.actionExpr))
+        ? rule.actionExpr
+        : null;
+    if (!expr) return String(rule?.actionValue || '');
+    const evaluated = evaluateDataExpressionNode(expr, eventPayload);
+    if (evaluated == null) return '';
+    return String(evaluated);
+}
+
+function resolveSystemPrintPayload(rule, eventPayload = {}) {
+    const expr = (rule?.actionExpr && typeof rule.actionExpr === 'object' && !Array.isArray(rule.actionExpr))
+        ? rule.actionExpr
+        : null;
+    if (!expr) return String(rule?.actionValue || '');
+    const evaluated = evaluateDataExpressionNode(expr, eventPayload);
+    if (evaluated == null) return '';
+    return String(evaluated);
+}
+
+function resolveScriptingStateTarget(stateRaw) {
+    const value = String(stateRaw || '').trim().toLowerCase();
+    if (value === 'activate') return 'active';
+    return normalizePuzzleState(value || 'locked');
+}
+
+function resolveRuleTargetPuzzleId(rule) {
+    const numericId = parseInt(rule?.actionTargetPuzzle, 10);
+    if (!Number.isFinite(numericId)) return null;
+    return getPuzzleNodeById(numericId) ? numericId : null;
+}
+
+function setBranchSolvedFromRoomScripting(branchId) {
+    const numericBranchId = parseInt(branchId, 10);
+    if (!Number.isFinite(numericBranchId)) return false;
+    const flowData = buildBranchFlowData();
+    const branch = (flowData.branches || []).find((entry) => entry.id === numericBranchId);
+    if (!branch) return false;
+
+    const puzzleIds = (branch.puzzles || [])
+        .map((puzzle) => parseInt(puzzle?.id, 10))
+        .filter((id) => Number.isFinite(id))
+        .filter((id) => isBranchPuzzleRequired(numericBranchId, id));
+
+    puzzleIds.forEach((puzzleId) => {
+        try {
+            module.exports.markPuzzleSolved(puzzleId, { branchId: numericBranchId });
+        } catch (e) {
+            // Ignore single puzzle failures and continue.
+        }
+    });
+    markBranchSolved(numericBranchId);
+    checkAutoRestartCondition();
+    return true;
+}
+
+function applyRoomScriptingBranchState(rule) {
+    const targetRaw = String(rule?.actionTargetPuzzle || '').trim().toLowerCase();
+    const desiredState = String(rule?.actionValue || '').trim().toLowerCase();
+    if (!targetRaw || !desiredState) return { success: false };
+
+    if (targetRaw === 'room') {
+        if (desiredState === 'running') {
+            return beginRoomRestart({});
+        }
+        if (desiredState === 'solved') {
+            const flowData = buildBranchFlowData();
+            (flowData.branches || []).forEach((branch) => {
+                setBranchSolvedFromRoomScripting(branch?.id);
+            });
+            return { success: true };
+        }
+        return { success: false };
+    }
+
+    const branchId = parseInt(targetRaw, 10);
+    if (!Number.isFinite(branchId)) return { success: false };
+    if (desiredState === 'running') {
+        return module.exports.restartBranch({ branchId });
+    }
+    if (desiredState === 'solved') {
+        const success = setBranchSolvedFromRoomScripting(branchId);
+        return { success };
+    }
+    return { success: false };
+}
+
+function getScriptingRuleId(rule, fallbackIndex = 0) {
+    const parsed = Number(rule?.id);
+    return Number.isFinite(parsed) ? parsed : (fallbackIndex + 1);
+}
+
+function logScripting(message, meta = null) {
+    logSystem(message, 'scripting', meta);
+}
+
+function logScriptingRuntimeError(scope, context, error) {
+    const errMsg = error?.message ? String(error.message) : String(error || 'Unknown error');
+    const where = String(context || 'runtime');
+    logSystem(`[${scope}] ${where} failed: ${errMsg}`, 'error');
+}
+
+function markPuzzleScriptingActive(puzzleId, durationMs = 2000) {
+    const numericId = Number(puzzleId);
+    if (!Number.isFinite(numericId)) return;
+    const until = Date.now() + Math.max(0, Number(durationMs) || 0);
+    puzzleScriptingActiveUntil[numericId] = until;
+    puzzleScriptingSeq[numericId] = Number(puzzleScriptingSeq[numericId] || 0) + 1;
+    emitUpdate('puzzle-scripting-active', { puzzleId: numericId, until, seq: puzzleScriptingSeq[numericId] });
+}
+
+function markRoomScriptingActive(durationMs = 2000) {
+    const until = Date.now() + Math.max(0, Number(durationMs) || 0);
+    roomScriptingActiveUntil = until;
+    roomScriptingSeq = Number(roomScriptingSeq || 0) + 1;
+    emitUpdate('room-scripting-active', { until, seq: roomScriptingSeq });
+}
+
+function clearScriptingForeverTimers() {
+    if (!scriptingForeverTimers || typeof scriptingForeverTimers.forEach !== 'function') {
+        scriptingForeverTimers = new Set();
+        return;
+    }
+    scriptingForeverTimers.forEach((timer) => {
+        try { clearInterval(timer); } catch (e) {}
+    });
+    scriptingForeverTimers.clear();
+    puzzleForeverRunners.forEach((runner) => { if (runner) runner.stopped = true; });
+    roomForeverRunners.forEach((runner) => { if (runner) runner.stopped = true; });
+    puzzleForeverRunners.clear();
+    roomForeverRunners.clear();
+}
+
+function waitTracked(ms) {
+    const delay = Math.max(0, Math.round(Number(ms) || 0));
+    return new Promise((resolve) => {
+        if (delay <= 0) {
+            resolve();
+            return;
+        }
+        const timer = setTimeout(() => {
+            scriptingForeverTimers.delete(timer);
+            resolve();
+        }, delay);
+        scriptingForeverTimers.add(timer);
+    });
+}
+
+function runPuzzleScriptingEvent(node, triggerType, eventPayload = {}) {
+    if (!isRunning) return [];
+    if (!node || node.type !== 'escape/Puzzle') return [];
+    const normalizedTrigger = String(triggerType || '').trim().toLowerCase();
+    if (!normalizedTrigger) return [];
+
+    const customValue = String(eventPayload?.customValue || '');
+    const sensorDeviceId = String(eventPayload?.sensorDeviceId || '');
+    const sensorData = (eventPayload && typeof eventPayload.sensorData === 'object' && !Array.isArray(eventPayload.sensorData))
+        ? eventPayload.sensorData
+        : {};
+    const runtimePayload = Object.assign({}, eventPayload, { currentPuzzleId: node?.id, scriptScope: 'puzzle' });
+    const puzzleVarMap = getPuzzleVariableMap(node.id);
+    const rules = normalizeScriptingRules(node)
+        .filter(rule => rule.triggerType === normalizedTrigger)
+        .filter(rule => normalizedTrigger !== 'on_sensor_data' || !rule.triggerValue || String(rule.triggerValue) === sensorDeviceId)
+        .filter((rule) => {
+            if (normalizedTrigger !== 'on_sensor_match') return true;
+            const ruleDevice = String(rule.triggerValue || '').trim();
+            if (ruleDevice && ruleDevice !== sensorDeviceId) return false;
+            const ruleField = String(rule.triggerField || '').trim();
+            if (!ruleField) return false;
+            const actual = Object.prototype.hasOwnProperty.call(sensorData, ruleField) ? sensorData[ruleField] : '';
+            const expected = String(rule.triggerExpected || '');
+            return compareScriptingValues(actual, 'eq', expected);
+        });
+    if (!rules.length) return [];
+    const puzzleName = getPuzzleName(node, node?.id);
+    const scriptScope = `Puzzle Script "${puzzleName}"`;
+    const touchPuzzleScripting = () => markPuzzleScriptingActive(node.id, 2000);
+    touchPuzzleScripting();
+    logScripting(`[Puzzle Script] "${puzzleName}" trigger "${normalizedTrigger}" matched ${rules.length} rule(s).`);
+
+    const results = [];
+    let delayMs = 0;
+    const foreverGroups = new Map();
+    const brokenLoopKeys = new Set();
+    const brokenForeverLoopKeys = new Set();
+    const getRuleLoopStack = (rule) => (Array.isArray(rule?.loopStack) ? rule.loopStack : []);
+    const isRuleSuppressed = (rule) => {
+        const stack = getRuleLoopStack(rule);
+        for (let i = 0; i < stack.length; i += 1) {
+            const key = String(stack[i]?.key || '');
+            if (key && brokenLoopKeys.has(key)) return true;
+        }
+        return false;
+    };
+    const getInnermostLoop = (rule) => {
+        const stack = getRuleLoopStack(rule);
+        if (!stack.length) return null;
+        const entry = stack[stack.length - 1] || {};
+        const key = String(entry?.key || '');
+        const type = String(entry?.type || '').trim().toLowerCase();
+        if (!key || !type) return null;
+        return { key, type };
+    };
+    const markLoopBroken = (rule) => {
+        const fallback = getInnermostLoop(rule);
+        const key = String(rule?.loopBreakKey || fallback?.key || '');
+        const type = String(rule?.loopBreakType || fallback?.type || '').trim().toLowerCase();
+        if (!key) return null;
+        brokenLoopKeys.add(key);
+        if (type === 'forever') {
+            brokenForeverLoopKeys.add(key);
+        }
+        return { key, type };
+    };
+    const schedule = (fn, label = '') => {
+        if (delayMs <= 0) {
+            touchPuzzleScripting();
+            if (label) logScripting(label);
+            return fn();
+        }
+        if (label) logScripting(`${label} (scheduled +${delayMs}ms)`);
+        setTimeout(() => {
+            if (!isRunning) return;
+            touchPuzzleScripting();
+            try { fn(); } catch (e) { logScriptingRuntimeError(scriptScope, 'scheduled action', e); }
+        }, delayMs);
+        return { success: true, scheduled: true, delayMs };
+    };
+    const getForeverOwnerKey = (rule) => {
+        const stack = getRuleLoopStack(rule);
+        const owner = [...stack].reverse().find((entry) => String(entry?.type || '').trim().toLowerCase() === 'forever');
+        return String(owner?.key || '');
+    };
+    const registerForeverEntry = (rule, entry) => {
+        const key = getForeverOwnerKey(rule) || String(rule?.loopBreakKey || '');
+        if (!key) return;
+        if (!foreverGroups.has(key)) {
+            const intervalSec = Number(rule?.loopIntervalSec);
+            foreverGroups.set(key, {
+                cycleDelayMs: Number.isFinite(intervalSec) ? Math.max(200, Math.round(intervalSec * 1000)) : 1000,
+                entries: []
+            });
+        }
+        foreverGroups.get(key).entries.push({ rule, ...entry });
+    };
+    const evaluateRuleNow = (rule) => {
+        try {
+            if (isRuleSuppressed(rule)) return false;
+            if (!evaluateScriptingCondition(rule, customValue)) return false;
+            if (!evaluateVariableCondition(rule, puzzleVarMap)) return false;
+            if (!evaluateSensorCondition(rule, runtimePayload)) return false;
+            if (!evaluateExpressionCondition(rule, runtimePayload)) return false;
+            return true;
+        } catch (e) {
+            logScriptingRuntimeError(scriptScope, 'evaluate rule condition', e);
+            return false;
+        }
+    };
+    rules.forEach((rule, index) => {
+        const ruleId = getScriptingRuleId(rule, index);
+        const rulePrefix = `[Puzzle Script] "${puzzleName}" rule #${ruleId}`;
+        const isForeverRule = String(rule?.loopMode || '').trim().toLowerCase() === 'forever';
+        if (!isForeverRule && !evaluateRuleNow(rule)) return;
+        if (rule.actionType === 'wait') {
+            const seconds = Number(rule.actionValue);
+            if (isForeverRule) {
+                registerForeverEntry(rule, { kind: 'wait', seconds: Number.isFinite(seconds) ? seconds : 0, rulePrefix });
+                return;
+            }
+            if (Number.isFinite(seconds) && seconds > 0) {
+                delayMs += Math.round(seconds * 1000);
+                logScripting(`${rulePrefix} wait ${seconds}s.`);
+            }
+            return;
+        }
+        if (rule.actionType === 'break') {
+            const execute = () => {
+                if (!evaluateRuleNow(rule)) return;
+                const broken = markLoopBroken(rule);
+                if (!broken) return;
+                logScripting(`${rulePrefix} break loop "${broken.type}:${broken.key}".`);
+                return { success: true };
+            };
+            if (isForeverRule) {
+                registerForeverEntry(rule, { kind: 'break', execute, rulePrefix });
+            } else {
+                const scheduled = schedule(execute, `${rulePrefix} break.`);
+                if (scheduled) results.push(scheduled);
+            }
+            return;
+        }
+        if (rule.actionType === 'set_var_from_sensor') {
+            const varName = String(rule.actionValue || '').trim();
+            if (!varName) return;
+            const execute = () => {
+                if (!evaluateRuleNow(rule)) return;
+                const value = getSensorFieldValue(runtimePayload, rule.actionSourceDevice, rule.actionSourceField);
+                puzzleVarMap[varName] = value;
+                logScripting(`${rulePrefix} set variable "${varName}" = ${JSON.stringify(value)}`);
+            };
+            if (isForeverRule) {
+                registerForeverEntry(rule, { kind: 'action', execute, rulePrefix });
+            } else {
+                const scheduled = schedule(execute, `${rulePrefix} set variable "${varName}" from sensor.`);
+                if (scheduled) results.push(scheduled);
+            }
+            return;
+        }
+        if (rule.actionType === 'get_state') {
+            const varName = String(rule.actionValue || '').trim();
+            if (!varName) return;
+            const execute = () => {
+                if (!evaluateRuleNow(rule)) return;
+                puzzleVarMap[varName] = getPuzzleStateKey(node.id);
+                logScripting(`${rulePrefix} read state -> "${varName}" = ${puzzleVarMap[varName]}`);
+                return { success: true };
+            };
+            if (isForeverRule) {
+                registerForeverEntry(rule, { kind: 'action', execute, rulePrefix });
+            } else {
+                const scheduled = schedule(execute, `${rulePrefix} get puzzle state.`);
+                if (scheduled) results.push(scheduled);
+            }
+            return;
+        }
+        if (rule.actionType === 'set_state') {
+            const targetState = resolveScriptingStateTarget(rule.actionValue);
+            const execute = () => {
+                if (!evaluateRuleNow(rule)) return;
+                applyPuzzleState(node.id, targetState);
+                logScripting(`${rulePrefix} set puzzle state to "${targetState}".`);
+                return { success: true };
+            };
+            if (isForeverRule) {
+                registerForeverEntry(rule, { kind: 'action', execute, rulePrefix });
+            } else {
+                const scheduled = schedule(execute, `${rulePrefix} set puzzle state.`);
+                if (scheduled) results.push(scheduled);
+            }
+            return;
+        }
+        if (rule.actionType === 'play_cue') {
+            if (rule.actionValue.trim()) {
+                const execute = () => {
+                    if (!evaluateRuleNow(rule)) return;
+                    return runDmxCueAction(rule.actionValue, { triggerType: normalizedTrigger });
+                };
+                if (isForeverRule) {
+                    registerForeverEntry(rule, { kind: 'action', execute, rulePrefix });
+                } else {
+                    const scheduled = schedule(
+                        execute,
+                        `${rulePrefix} play cue "${rule.actionValue}".`
+                    );
+                    if (scheduled) results.push(scheduled);
+                }
+            }
+            return;
+        }
+        if (rule.actionType === 'play_sound') {
+            if (String(rule.actionValue || '').trim()) {
+                const execute = () => {
+                    if (!evaluateRuleNow(rule)) return;
+                    return runSoundCueAction(rule.actionValue, { triggerType: normalizedTrigger });
+                };
+                if (isForeverRule) {
+                    registerForeverEntry(rule, { kind: 'action', execute, rulePrefix });
+                } else {
+                    const scheduled = schedule(
+                        execute,
+                        `${rulePrefix} play sound "${rule.actionValue}".`
+                    );
+                    if (scheduled) results.push(scheduled);
+                }
+            }
+            return;
+        }
+        if (rule.actionType === 'send_custom') {
+            const execute = () => {
+                if (!evaluateRuleNow(rule)) return;
+                const payload = resolveSendCustomPayload(rule, runtimePayload);
+                logScripting(`${rulePrefix} send custom "${payload}".`);
+                return runSendCustomAction(node, payload);
+            };
+            if (isForeverRule) {
+                registerForeverEntry(rule, { kind: 'action', execute, rulePrefix });
+            } else {
+                const scheduled = schedule(execute, `${rulePrefix} send custom.`);
+                if (scheduled) results.push(scheduled);
+            }
+            return;
+        }
+        if (rule.actionType === 'print_system') {
+            const execute = () => {
+                if (!evaluateRuleNow(rule)) return;
+                const payload = resolveSystemPrintPayload(rule, runtimePayload);
+                logSystem(`Puzzle Message: ${payload}`, 'system');
+                return { success: true };
+            };
+            if (isForeverRule) {
+                registerForeverEntry(rule, { kind: 'action', execute, rulePrefix });
+            } else {
+                const scheduled = schedule(execute, '');
+                if (scheduled) results.push(scheduled);
+            }
+            return;
+        }
+        if (rule.actionType === 'give_hint') {
+            const execute = () => {
+                if (!evaluateRuleNow(rule)) return;
+                const rawValue = String(rule.actionValue || '').trim();
+                if (rawValue.startsWith('hint:')) {
+                    const hintIndex = parseInt(rawValue.slice(5), 10);
+                    const result = triggerHintByIndexForPuzzle(node.id, hintIndex, {
+                        showAssignment: node.properties?.showHintAssignment !== false
+                    });
+                    if (!result?.success) {
+                        logSystem(`Give Hint failed (${puzzleName}): ${result?.error || 'Unknown error'}`, 'error');
+                    }
+                    return result;
+                }
+                const payload = resolveSendCustomPayload(rule, runtimePayload).trim();
+                if (!payload) return { success: false, error: 'Hint text required' };
+                const result = triggerCustomHint(node.id, payload, {
+                    showAssignment: node.properties?.showHintAssignment !== false
+                });
+                if (!result?.success) {
+                    logSystem(`Give Hint failed (${puzzleName}): ${result?.error || 'Unknown error'}`, 'error');
+                }
+                return result;
+            };
+            if (isForeverRule) {
+                registerForeverEntry(rule, { kind: 'action', execute, rulePrefix });
+            } else {
+                const scheduled = schedule(execute, `${rulePrefix} give hint.`);
+                if (scheduled) results.push(scheduled);
+            }
+            return;
+        }
+        if (rule.actionType === 'send_custom_var') {
+            const execute = () => {
+                if (!evaluateRuleNow(rule)) return;
+                const varName = String(rule.actionValue || '').trim();
+                const value = Object.prototype.hasOwnProperty.call(puzzleVarMap, varName) ? puzzleVarMap[varName] : '';
+                logScripting(`${rulePrefix} send custom variable "${varName}" = ${JSON.stringify(value)}`);
+                return runSendCustomAction(node, String(value ?? ''));
+            };
+            if (isForeverRule) {
+                registerForeverEntry(rule, { kind: 'action', execute, rulePrefix });
+            } else {
+                const scheduled = schedule(execute, `${rulePrefix} send custom variable.`);
+                if (scheduled) results.push(scheduled);
+            }
+        }
+    });
+    foreverGroups.forEach((group, loopKey) => {
+        const runnerKey = `puzzle:${node.id}:${normalizedTrigger}:${loopKey}`;
+        if (!group?.entries?.length || puzzleForeverRunners.has(runnerKey)) return;
+        const runner = { stopped: false };
+        puzzleForeverRunners.set(runnerKey, runner);
+        const hasWait = group.entries.some((entry) => entry.kind === 'wait');
+        const cycleDelayMs = Number.isFinite(Number(group.cycleDelayMs)) ? Math.max(200, Number(group.cycleDelayMs)) : 1000;
+        void (async () => {
+            try {
+                while (isRunning && !runner.stopped) {
+                    for (const entry of group.entries) {
+                        if (!isRunning || runner.stopped) break;
+                        if (brokenForeverLoopKeys.has(loopKey)) {
+                            runner.stopped = true;
+                            break;
+                        }
+                        const rule = entry.rule;
+                        if (!evaluateRuleNow(rule)) continue;
+                        if (entry.kind === 'wait') {
+                            const sec = Number(entry.seconds);
+                            if (Number.isFinite(sec) && sec > 0) {
+                                touchPuzzleScripting();
+                                logScripting(`${entry.rulePrefix} wait ${sec}s.`);
+                                await waitTracked(sec * 1000);
+                            }
+                            continue;
+                        }
+                        if (entry.kind === 'break') {
+                            touchPuzzleScripting();
+                            const broken = markLoopBroken(rule);
+                            if (broken) logScripting(`${entry.rulePrefix} break loop "${broken.type}:${broken.key}".`);
+                            runner.stopped = true;
+                            break;
+                        }
+                        touchPuzzleScripting();
+                        try { entry.execute(); } catch (e) { logScriptingRuntimeError(scriptScope, 'forever action', e); }
+                    }
+                    if (!hasWait && !runner.stopped && isRunning) {
+                        await waitTracked(cycleDelayMs);
+                    }
+                }
+            } finally {
+                puzzleForeverRunners.delete(runnerKey);
+            }
+        })();
+    });
+    return results;
+}
+
+function runRoomScriptingEvent(triggerType, eventPayload = {}) {
+    if (!isRunning) return [];
+    const runtimePayload = Object.assign({}, eventPayload, { scriptScope: 'room' });
+    const normalizedTrigger = String(triggerType || '').trim().toLowerCase();
+    if (!normalizedTrigger) return [];
+    const sensorDeviceId = String(eventPayload?.sensorDeviceId || '');
+    const sensorData = (eventPayload && typeof eventPayload.sensorData === 'object' && !Array.isArray(eventPayload.sensorData))
+        ? eventPayload.sensorData
+        : {};
+    const branchId = Number.isFinite(Number(eventPayload?.branchId)) ? String(Number(eventPayload.branchId)) : '';
+    const eventState = String(eventPayload?.state || '').trim().toLowerCase();
+    const rules = normalizeRoomScriptingRules()
+        .filter((rule) => rule.triggerType === normalizedTrigger)
+        .filter((rule) => (normalizedTrigger !== 'branch_reset' && normalizedTrigger !== 'branch_state_change')
+            || !String(rule.triggerValue || '').trim()
+            || String(rule.triggerValue).trim() === branchId)
+        .filter((rule) => {
+            if (normalizedTrigger !== 'any_puzzle_state'
+                && normalizedTrigger !== 'room_state_change'
+                && normalizedTrigger !== 'branch_state_change') {
+                return true;
+            }
+            const expectedState = normalizedTrigger === 'branch_state_change'
+                ? String(rule.triggerField || '').trim().toLowerCase()
+                : String(rule.triggerValue || '').trim().toLowerCase();
+            return !expectedState || expectedState === eventState;
+        })
+        .filter((rule) => normalizedTrigger !== 'sensor_data' || !rule.triggerValue || String(rule.triggerValue) === sensorDeviceId)
+        .filter((rule) => {
+            if (normalizedTrigger !== 'sensor_match') return true;
+            const ruleDevice = String(rule.triggerValue || '').trim();
+            if (ruleDevice && ruleDevice !== sensorDeviceId) return false;
+            const ruleField = String(rule.triggerField || '').trim();
+            if (!ruleField) return false;
+            const actual = Object.prototype.hasOwnProperty.call(sensorData, ruleField) ? sensorData[ruleField] : '';
+            const expected = String(rule.triggerExpected || '');
+            return compareScriptingValues(actual, 'eq', expected);
+        });
+    if (!rules.length) return [];
+    const touchRoomScripting = () => markRoomScriptingActive(2000);
+    const scriptScope = 'Room Script';
+    touchRoomScripting();
+    logScripting(`[Room Script] trigger "${normalizedTrigger}" matched ${rules.length} rule(s).`);
+    const results = [];
+    let delayMs = 0;
+    const foreverGroups = new Map();
+    const brokenLoopKeys = new Set();
+    const brokenForeverLoopKeys = new Set();
+    const getRuleLoopStack = (rule) => (Array.isArray(rule?.loopStack) ? rule.loopStack : []);
+    const isRuleSuppressed = (rule) => {
+        const stack = getRuleLoopStack(rule);
+        for (let i = 0; i < stack.length; i += 1) {
+            const key = String(stack[i]?.key || '');
+            if (key && brokenLoopKeys.has(key)) return true;
+        }
+        return false;
+    };
+    const getInnermostLoop = (rule) => {
+        const stack = getRuleLoopStack(rule);
+        if (!stack.length) return null;
+        const entry = stack[stack.length - 1] || {};
+        const key = String(entry?.key || '');
+        const type = String(entry?.type || '').trim().toLowerCase();
+        if (!key || !type) return null;
+        return { key, type };
+    };
+    const markLoopBroken = (rule) => {
+        const fallback = getInnermostLoop(rule);
+        const key = String(rule?.loopBreakKey || fallback?.key || '');
+        const type = String(rule?.loopBreakType || fallback?.type || '').trim().toLowerCase();
+        if (!key) return null;
+        brokenLoopKeys.add(key);
+        if (type === 'forever') {
+            brokenForeverLoopKeys.add(key);
+        }
+        return { key, type };
+    };
+    const schedule = (fn, label = '') => {
+        if (delayMs <= 0) {
+            touchRoomScripting();
+            if (label) logScripting(label);
+            return fn();
+        }
+        if (label) logScripting(`${label} (scheduled +${delayMs}ms)`);
+        setTimeout(() => {
+            if (!isRunning) return;
+            touchRoomScripting();
+            try { fn(); } catch (e) { logScriptingRuntimeError(scriptScope, 'scheduled action', e); }
+        }, delayMs);
+        return { success: true, scheduled: true, delayMs };
+    };
+    const getForeverOwnerKey = (rule) => {
+        const stack = getRuleLoopStack(rule);
+        const owner = [...stack].reverse().find((entry) => String(entry?.type || '').trim().toLowerCase() === 'forever');
+        return String(owner?.key || '');
+    };
+    const registerForeverEntry = (rule, entry) => {
+        const key = getForeverOwnerKey(rule) || String(rule?.loopBreakKey || '');
+        if (!key) return;
+        if (!foreverGroups.has(key)) {
+            const intervalSec = Number(rule?.loopIntervalSec);
+            foreverGroups.set(key, {
+                cycleDelayMs: Number.isFinite(intervalSec) ? Math.max(200, Math.round(intervalSec * 1000)) : 1000,
+                entries: []
+            });
+        }
+        foreverGroups.get(key).entries.push({ rule, ...entry });
+    };
+    const evaluateRuleNow = (rule) => {
+        try {
+            if (isRuleSuppressed(rule)) return false;
+            if (!evaluateVariableCondition(rule, roomScriptingVariables)) return false;
+            if (!evaluateSensorCondition(rule, runtimePayload)) return false;
+            if (!evaluateExpressionCondition(rule, runtimePayload)) return false;
+            return true;
+        } catch (e) {
+            logScriptingRuntimeError(scriptScope, 'evaluate rule condition', e);
+            return false;
+        }
+    };
+    rules.forEach((rule, index) => {
+        const ruleId = getScriptingRuleId(rule, index);
+        const rulePrefix = `[Room Script] rule #${ruleId}`;
+        const isForeverRule = String(rule?.loopMode || '').trim().toLowerCase() === 'forever';
+        if (!isForeverRule && !evaluateRuleNow(rule)) return;
+        if (rule.actionType === 'wait') {
+            const seconds = Number(rule.actionValue);
+            if (isForeverRule) {
+                registerForeverEntry(rule, { kind: 'wait', seconds: Number.isFinite(seconds) ? seconds : 0, rulePrefix });
+                return;
+            }
+            if (Number.isFinite(seconds) && seconds > 0) {
+                delayMs += Math.round(seconds * 1000);
+                logScripting(`${rulePrefix} wait ${seconds}s.`);
+            }
+            return;
+        }
+        if (rule.actionType === 'break') {
+            const execute = () => {
+                if (!evaluateRuleNow(rule)) return;
+                const broken = markLoopBroken(rule);
+                if (!broken) return;
+                logScripting(`${rulePrefix} break loop "${broken.type}:${broken.key}".`);
+                return { success: true };
+            };
+            if (isForeverRule) {
+                registerForeverEntry(rule, { kind: 'break', execute, rulePrefix });
+            } else {
+                const scheduled = schedule(execute, `${rulePrefix} break.`);
+                if (scheduled) results.push(scheduled);
+            }
+            return;
+        }
+        if (rule.actionType === 'set_var_from_sensor') {
+            const varName = String(rule.actionValue || '').trim();
+            if (!varName) return;
+            const execute = () => {
+                if (!evaluateRuleNow(rule)) return;
+                const value = getSensorFieldValue(runtimePayload, rule.actionSourceDevice, rule.actionSourceField);
+                roomScriptingVariables[varName] = value;
+                logScripting(`${rulePrefix} set variable "${varName}" = ${JSON.stringify(value)}`);
+            };
+            if (isForeverRule) {
+                registerForeverEntry(rule, { kind: 'action', execute, rulePrefix });
+            } else {
+                const scheduled = schedule(execute, `${rulePrefix} set variable from sensor.`);
+                if (scheduled) results.push(scheduled);
+            }
+            return;
+        }
+        if (rule.actionType === 'set_branch_state') {
+            const target = String(rule.actionTargetPuzzle || 'room');
+            const value = String(rule.actionValue || 'running');
+            const execute = () => {
+                if (!evaluateRuleNow(rule)) return;
+                return applyRoomScriptingBranchState(rule);
+            };
+            if (isForeverRule) {
+                registerForeverEntry(rule, { kind: 'action', execute, rulePrefix });
+            } else {
+                const scheduled = schedule(
+                    execute,
+                    `${rulePrefix} set branch "${target}" to "${value}".`
+                );
+                if (scheduled) results.push(scheduled);
+            }
+            return;
+        }
+        if (rule.actionType === 'play_cue' && String(rule.actionValue || '').trim()) {
+            const execute = () => {
+                if (!evaluateRuleNow(rule)) return;
+                return runDmxCueAction(rule.actionValue, { triggerType: normalizedTrigger });
+            };
+            if (isForeverRule) {
+                registerForeverEntry(rule, { kind: 'action', execute, rulePrefix });
+            } else {
+                const scheduled = schedule(
+                    execute,
+                    `${rulePrefix} play cue "${rule.actionValue}".`
+                );
+                if (scheduled) results.push(scheduled);
+            }
+            return;
+        }
+        if (rule.actionType === 'play_sound' && String(rule.actionValue || '').trim()) {
+            const execute = () => {
+                if (!evaluateRuleNow(rule)) return;
+                return runSoundCueAction(rule.actionValue, { triggerType: normalizedTrigger });
+            };
+            if (isForeverRule) {
+                registerForeverEntry(rule, { kind: 'action', execute, rulePrefix });
+            } else {
+                const scheduled = schedule(
+                    execute,
+                    `${rulePrefix} play sound "${rule.actionValue}".`
+                );
+                if (scheduled) results.push(scheduled);
+            }
+            return;
+        }
+        if (rule.actionType === 'print_system') {
+            const execute = () => {
+                if (!evaluateRuleNow(rule)) return;
+                const payload = resolveSystemPrintPayload(rule, runtimePayload);
+                logSystem(`Room Message: ${payload}`, 'system');
+                return { success: true };
+            };
+            if (isForeverRule) {
+                registerForeverEntry(rule, { kind: 'action', execute, rulePrefix });
+            } else {
+                const scheduled = schedule(execute, '');
+                if (scheduled) results.push(scheduled);
+            }
+        }
+    });
+    foreverGroups.forEach((group, loopKey) => {
+        const runnerKey = `room:${normalizedTrigger}:${loopKey}`;
+        if (!group?.entries?.length || roomForeverRunners.has(runnerKey)) return;
+        const runner = { stopped: false };
+        roomForeverRunners.set(runnerKey, runner);
+        const hasWait = group.entries.some((entry) => entry.kind === 'wait');
+        const cycleDelayMs = Number.isFinite(Number(group.cycleDelayMs)) ? Math.max(200, Number(group.cycleDelayMs)) : 1000;
+        void (async () => {
+            try {
+                while (isRunning && !runner.stopped) {
+                    for (const entry of group.entries) {
+                        if (!isRunning || runner.stopped) break;
+                        if (brokenForeverLoopKeys.has(loopKey)) {
+                            runner.stopped = true;
+                            break;
+                        }
+                        const rule = entry.rule;
+                        if (!evaluateRuleNow(rule)) continue;
+                        if (entry.kind === 'wait') {
+                            const sec = Number(entry.seconds);
+                            if (Number.isFinite(sec) && sec > 0) {
+                                touchRoomScripting();
+                                logScripting(`${entry.rulePrefix} wait ${sec}s.`);
+                                await waitTracked(sec * 1000);
+                            }
+                            continue;
+                        }
+                        if (entry.kind === 'break') {
+                            touchRoomScripting();
+                            const broken = markLoopBroken(rule);
+                            if (broken) logScripting(`${entry.rulePrefix} break loop "${broken.type}:${broken.key}".`);
+                            runner.stopped = true;
+                            break;
+                        }
+                        touchRoomScripting();
+                        try { entry.execute(); } catch (e) { logScriptingRuntimeError(scriptScope, 'forever action', e); }
+                    }
+                    if (!hasWait && !runner.stopped && isRunning) {
+                        await waitTracked(cycleDelayMs);
+                    }
+                }
+            } finally {
+                roomForeverRunners.delete(runnerKey);
+            }
+        })();
+    });
+    return results;
+}
+
+function dispatchZigbeeSensorDataEvent(deviceId, payload, context = {}) {
+    if (!isRunning) return;
+    const safeDeviceId = String(deviceId || '').trim();
+    if (!safeDeviceId) return;
+    const sensorData = extractSensorDataMap(payload);
+    const eventPayload = {
+        sensorDeviceId: safeDeviceId,
+        sensorData,
+        topic: String(context?.topic || '')
+    };
+    updateRoomScriptSensorInstance(safeDeviceId, sensorData);
+    const puzzleNodes = getAllPuzzleNodes();
+    puzzleNodes.forEach((node) => {
+        const stateKey = getPuzzleStateKey(node?.id);
+        if (stateKey === 'running') {
+            updatePuzzleScriptSensorInstance(node?.id, safeDeviceId, sensorData);
+        }
+    });
+    puzzleNodes.forEach((node) => {
+        runPuzzleScriptingEvent(node, 'on_sensor_data', eventPayload);
+        runPuzzleScriptingEvent(node, 'on_sensor_match', eventPayload);
+    });
+    runRoomScriptingEvent('sensor_data', eventPayload);
+    runRoomScriptingEvent('sensor_match', eventPayload);
 }
 
 function sanitizeFileName(name, fallback = 'image') {
@@ -116,8 +3237,8 @@ function mimeToExtension(mime) {
 async function loadSystemSettings() {
     try {
         const rows = await db.all(
-            `SELECT key, value FROM config WHERE key IN (?, ?, ?, ?, ?)`,
-            [SETTINGS_KEYS.mqttPort, SETTINGS_KEYS.screenSaverImage, SETTINGS_KEYS.victoryScreen, SETTINGS_KEYS.mediaServerEnabled, SETTINGS_KEYS.autostartEnabled]
+            `SELECT key, value FROM config WHERE key IN (?, ?, ?, ?, ?, ?, ?, ?)`,
+            [SETTINGS_KEYS.mqttPort, SETTINGS_KEYS.screenSaverImage, SETTINGS_KEYS.victoryScreen, SETTINGS_KEYS.mediaServerEnabled, SETTINGS_KEYS.autostartEnabled, SETTINGS_KEYS.zigbeeBridgeEnabled, SETTINGS_KEYS.dmxServiceEnabled, SETTINGS_KEYS.zigbeeDeviceCache]
         );
         const map = {};
         rows.forEach(r => { map[r.key] = r.value; });
@@ -129,6 +3250,9 @@ async function loadSystemSettings() {
         systemSettings.victoryScreen = map[SETTINGS_KEYS.victoryScreen] || null;
         systemSettings.mediaServerEnabled = parseBoolSetting(map[SETTINGS_KEYS.mediaServerEnabled], false);
         systemSettings.autostartEnabled = parseBoolSetting(map[SETTINGS_KEYS.autostartEnabled], false);
+        systemSettings.zigbeeBridgeEnabled = parseBoolSetting(map[SETTINGS_KEYS.zigbeeBridgeEnabled], false);
+        systemSettings.dmxServiceEnabled = parseBoolSetting(map[SETTINGS_KEYS.dmxServiceEnabled], false);
+        restoreZigbeeDeviceCache(map[SETTINGS_KEYS.zigbeeDeviceCache] || "");
     } catch (err) {
         console.error('System settings load failed:', err);
     }
@@ -176,13 +3300,100 @@ async function setScreenSaverImage(imageName, dataUrl) {
     return { success: true, path: publicPath, mime };
 }
 
-function getSystemSettings() {
-    const autostartState = getAutostartState();
+async function getSystemSettings() {
+    const [autostartState, zigbeeBridgeState, dmxServiceState] = await Promise.all([
+        getAutostartState(),
+        getZigbeeBridgeState(),
+        getDmxServiceState()
+    ]);
     return {
         ...systemSettings,
         autostartEnabled: autostartState.enabled,
-        autostartStatus: autostartState.status
+        autostartStatus: autostartState.status,
+        zigbeeBridgeEnabled: zigbeeBridgeState.enabled,
+        zigbeeBridgeStatus: zigbeeBridgeState.status,
+        zigbeeBridgeAvailable: zigbeeBridgeState.available,
+        dmxServiceEnabled: dmxServiceState.enabled,
+        dmxServiceStatus: dmxServiceState.status,
+        dmxServiceAvailable: dmxServiceState.available,
+        dmxAdapter: getDmxAdapterInfo(),
+        zigbeeAdapter: getZigbeeAdapterInfo(),
+        soundOutput: getSoundOutputInfo()
     };
+}
+
+function getZigbeeDevices() {
+    return { success: true, ...getZigbeeDevicesSnapshot() };
+}
+
+function refreshZigbeeDevices() {
+    requestZigbeeDevicesRefresh();
+    return { success: true, ...getZigbeeDevicesSnapshot() };
+}
+
+function hideZigbeeDevice(deviceId) {
+    const id = String(deviceId || "").trim();
+    if (!id || !zigbeeDevices[id]) {
+        return { success: false, error: "Device not found" };
+    }
+    // Deleting from list should also clear learned signal fields for this device.
+    zigbeeDevices[id] = {
+        ...zigbeeDevices[id],
+        messageEntries: [],
+        lastPayload: null
+    };
+    Object.keys(puzzleScriptingSensorInstances).forEach((puzzleId) => {
+        if (puzzleScriptingSensorInstances[puzzleId] && Object.prototype.hasOwnProperty.call(puzzleScriptingSensorInstances[puzzleId], id)) {
+            delete puzzleScriptingSensorInstances[puzzleId][id];
+        }
+    });
+    if (roomScriptingSensorInstances[id]) delete roomScriptingSensorInstances[id];
+    zigbeeHiddenDeviceIds.add(id);
+    schedulePersistZigbeeDeviceCache();
+    return { success: true, deviceId: id };
+}
+
+async function renameZigbeeDevice(deviceId, nextNameRaw) {
+    const id = String(deviceId || "").trim();
+    const nextName = normalizeZigbeeFriendlyName(nextNameRaw || "");
+    if (!id) return { success: false, error: "deviceId required" };
+    if (!nextName) return { success: false, error: "newName required" };
+    const current = zigbeeDevices[id];
+    if (!current) return { success: false, error: "Device not found" };
+
+    const oldName = normalizeZigbeeFriendlyName(current.friendlyName || "");
+    if (!oldName) return { success: false, error: "Device has no friendly name" };
+    if (oldName.toLowerCase() === nextName.toLowerCase()) {
+        return { success: true, unchanged: true, device: current };
+    }
+    const ok = publishZigbeeBridgeRequest("device/rename", { from: oldName, to: nextName });
+    if (!ok) return { success: false, error: "Could not publish rename request" };
+
+    const normalizedOld = normalizeZigbeeKey(oldName);
+    zigbeeDevices[id] = {
+        ...current,
+        friendlyName: nextName,
+        lastSeen: Date.now()
+    };
+    // Keep old->id alias temporarily to absorb late MQTT messages still using the old friendly name.
+    if (normalizedOld) zigbeeFriendlyIndex[normalizedOld] = id;
+    zigbeeFriendlyIndex[normalizeZigbeeKey(nextName)] = id;
+    schedulePersistZigbeeDeviceCache();
+    logSystem(`Zigbee device renamed: ${oldName} -> ${nextName}`, "info");
+    return { success: true, device: zigbeeDevices[id] };
+}
+
+function setZigbeeDeviceResetOnPuzzleReset(deviceId, enabled) {
+    const id = String(deviceId || "").trim();
+    if (!id || !zigbeeDevices[id]) {
+        return { success: false, error: "Device not found" };
+    }
+    zigbeeDevices[id] = {
+        ...zigbeeDevices[id],
+        resetOnPuzzleReset: !!enabled
+    };
+    schedulePersistZigbeeDeviceCache();
+    return { success: true, device: zigbeeDevices[id] };
 }
 
 async function setMediaServerEnabled(enabled) {
@@ -228,42 +3439,133 @@ function isLinuxSystem() {
     return process.platform === 'linux';
 }
 
-function runSystemctl(args) {
-    return execFileSync('systemctl', args, { encoding: 'utf8' }).trim();
+function runSystemctlAsync(args) {
+    return new Promise((resolve, reject) => {
+        let stdout = '';
+        let stderr = '';
+        let child = null;
+        try {
+            child = spawn('systemctl', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+        } catch (err) {
+            reject(err);
+            return;
+        }
+        if (child.stdout) {
+            child.stdout.on('data', (chunk) => {
+                try { stdout += chunk.toString(); } catch (e) {}
+            });
+        }
+        if (child.stderr) {
+            child.stderr.on('data', (chunk) => {
+                try { stderr += chunk.toString(); } catch (e) {}
+            });
+        }
+        child.on('error', (err) => reject(err));
+        child.on('close', (code) => {
+            if (code === 0) {
+                resolve((stdout || '').trim());
+                return;
+            }
+            const msg = (stderr || stdout || `systemctl exited with code ${code}`).toString().trim();
+            reject(new Error(msg));
+        });
+    });
 }
 
-function querySystemctl(args) {
-    const res = spawnSync('systemctl', args, { encoding: 'utf8' });
-    if (res.error) {
-        return { ok: false, output: '', error: res.error.message || 'systemctl failed' };
-    }
-    return {
-        ok: res.status === 0,
-        output: (res.stdout || '').trim(),
-        error: (res.stderr || '').trim()
-    };
+function querySystemctlAsync(args) {
+    return new Promise((resolve) => {
+        let stdout = '';
+        let stderr = '';
+        let child = null;
+        try {
+            child = spawn('systemctl', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+        } catch (err) {
+            resolve({ ok: false, output: '', error: err?.message || 'systemctl failed' });
+            return;
+        }
+        if (child.stdout) {
+            child.stdout.on('data', (chunk) => {
+                try { stdout += chunk.toString(); } catch (e) {}
+            });
+        }
+        if (child.stderr) {
+            child.stderr.on('data', (chunk) => {
+                try { stderr += chunk.toString(); } catch (e) {}
+            });
+        }
+        child.on('error', (err) => {
+            resolve({ ok: false, output: '', error: err?.message || 'systemctl failed' });
+        });
+        child.on('close', (code) => {
+            resolve({
+                ok: code === 0,
+                output: (stdout || '').trim(),
+                error: (stderr || '').trim()
+            });
+        });
+    });
 }
 
-function ensureAutostartServiceFile() {
+async function ensureAutostartServiceFile() {
     if (fs.existsSync(AUTOSTART_SERVICE_PATH)) return { success: true };
     const content = buildAutostartServiceDefinition();
-    fs.writeFileSync(AUTOSTART_SERVICE_PATH, content, { encoding: 'utf8' });
+    await fsp.writeFile(AUTOSTART_SERVICE_PATH, content, { encoding: 'utf8' });
     return { success: true };
 }
 
-function getAutostartState() {
+async function getAutostartState() {
     if (!isLinuxSystem()) {
         return { enabled: systemSettings.autostartEnabled, status: 'Unsupported' };
     }
-    const enabledRes = querySystemctl(['is-enabled', AUTOSTART_SERVICE_NAME]);
+    const enabledRes = await querySystemctlAsync(['is-enabled', AUTOSTART_SERVICE_NAME]);
     const enabled = enabledRes.output === 'enabled';
-    const activeRes = querySystemctl(['is-active', AUTOSTART_SERVICE_NAME]);
+    const activeRes = await querySystemctlAsync(['is-active', AUTOSTART_SERVICE_NAME]);
     const active = activeRes.output === 'active';
     if (!enabledRes.output && !activeRes.output) {
         return { enabled: systemSettings.autostartEnabled, status: 'Unknown' };
     }
     const status = enabled ? (active ? 'Enabled (Running)' : 'Enabled') : 'Disabled';
     return { enabled, status };
+}
+
+async function getZigbeeBridgeState() {
+    if (!isLinuxSystem()) {
+        return { enabled: systemSettings.zigbeeBridgeEnabled, running: false, available: false, status: 'Unsupported' };
+    }
+    const loadRes = await querySystemctlAsync(['show', ZIGBEE_BRIDGE_SERVICE_NAME, '--property=LoadState', '--value']);
+    const loadState = (loadRes.output || '').trim();
+    if (loadState === 'not-found') {
+        return { enabled: false, running: false, available: false, status: 'Service not installed' };
+    }
+    const activeRes = await querySystemctlAsync(['is-active', ZIGBEE_BRIDGE_SERVICE_NAME]);
+    const running = activeRes.output === 'active';
+    const enabledRes = await querySystemctlAsync(['is-enabled', ZIGBEE_BRIDGE_SERVICE_NAME]);
+    const unitEnabled = enabledRes.output === 'enabled';
+    const enabled = unitEnabled;
+    const status = running
+        ? 'Running'
+        : (unitEnabled ? 'Enabled (Stopped)' : 'Stopped');
+    return { enabled, running, available: true, status };
+}
+
+async function getDmxServiceState() {
+    if (!isLinuxSystem()) {
+        return { enabled: systemSettings.dmxServiceEnabled, running: false, available: false, status: 'Unsupported' };
+    }
+    const loadRes = await querySystemctlAsync(['show', DMX_SERVICE_NAME, '--property=LoadState', '--value']);
+    const loadState = (loadRes.output || '').trim();
+    if (loadState === 'not-found') {
+        return { enabled: false, running: false, available: false, status: 'Service not installed' };
+    }
+    const activeRes = await querySystemctlAsync(['is-active', DMX_SERVICE_NAME]);
+    const running = activeRes.output === 'active';
+    const enabledRes = await querySystemctlAsync(['is-enabled', DMX_SERVICE_NAME]);
+    const unitEnabled = enabledRes.output === 'enabled';
+    const enabled = unitEnabled;
+    const status = running
+        ? 'Running'
+        : (unitEnabled ? 'Enabled (Stopped)' : 'Stopped');
+    return { enabled, running, available: true, status };
 }
 
 async function setAutostartEnabled(enabled) {
@@ -273,21 +3575,125 @@ async function setAutostartEnabled(enabled) {
     const next = !!enabled;
     try {
         if (next) {
-            ensureAutostartServiceFile();
-            runSystemctl(['daemon-reload']);
-            runSystemctl(['enable', AUTOSTART_SERVICE_NAME]);
+            await ensureAutostartServiceFile();
+            await runSystemctlAsync(['daemon-reload']);
+            await runSystemctlAsync(['enable', AUTOSTART_SERVICE_NAME]);
         } else {
-            runSystemctl(['disable', AUTOSTART_SERVICE_NAME]);
+            await runSystemctlAsync(['disable', AUTOSTART_SERVICE_NAME]);
         }
         systemSettings.autostartEnabled = next;
         await db.run(
             "INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)",
             [SETTINGS_KEYS.autostartEnabled, next ? "1" : "0"]
         );
-        const state = getAutostartState();
+        const state = await getAutostartState();
         return { success: true, enabled: state.enabled, status: state.status };
     } catch (err) {
         return { success: false, error: err.message || 'Autostart update failed.' };
+    }
+}
+
+async function setZigbeeBridgeEnabled(enabled) {
+    if (!isLinuxSystem()) {
+        return { success: false, error: 'Zigbee Bridge service only supported on Linux.' };
+    }
+    const next = !!enabled;
+    try {
+        const currentState = await getZigbeeBridgeState();
+        if (!currentState.available && next) {
+            return { success: false, error: 'zigbee2mqtt.service not found. Install Zigbee2MQTT first.' };
+        }
+        if (!currentState.available && !next) {
+            systemSettings.zigbeeBridgeEnabled = false;
+            await db.run(
+                "INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)",
+                [SETTINGS_KEYS.zigbeeBridgeEnabled, "0"]
+            );
+            return { success: true, enabled: false, status: 'Service not installed', available: false, running: false };
+        }
+        await runSystemctlAsync(['daemon-reload']);
+        if (next) {
+            await runSystemctlAsync(['enable', ZIGBEE_BRIDGE_SERVICE_NAME]);
+            await runSystemctlAsync(['start', ZIGBEE_BRIDGE_SERVICE_NAME]);
+        } else {
+            await runSystemctlAsync(['stop', ZIGBEE_BRIDGE_SERVICE_NAME]);
+            await runSystemctlAsync(['disable', ZIGBEE_BRIDGE_SERVICE_NAME]);
+        }
+        const state = await getZigbeeBridgeState();
+        systemSettings.zigbeeBridgeEnabled = state.enabled;
+        await db.run(
+            "INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)",
+            [SETTINGS_KEYS.zigbeeBridgeEnabled, state.enabled ? "1" : "0"]
+        );
+        return { success: true, enabled: state.enabled, status: state.status, available: state.available, running: state.running };
+    } catch (err) {
+        return { success: false, error: err.message || 'Zigbee Bridge update failed.' };
+    }
+}
+
+async function setDmxServiceEnabled(enabled) {
+    if (!isLinuxSystem()) {
+        return { success: false, error: 'DMX service only supported on Linux.' };
+    }
+    const next = !!enabled;
+    try {
+        const currentState = await getDmxServiceState();
+        if (!currentState.available && next) {
+            return { success: false, error: 'olad.service not found. Install OLA first.' };
+        }
+        if (!currentState.available && !next) {
+            systemSettings.dmxServiceEnabled = false;
+            await db.run(
+                "INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)",
+                [SETTINGS_KEYS.dmxServiceEnabled, "0"]
+            );
+            return { success: true, enabled: false, status: 'Service not installed', available: false, running: false };
+        }
+        await runSystemctlAsync(['daemon-reload']);
+        if (next) {
+            await runSystemctlAsync(['enable', DMX_SERVICE_NAME]);
+            await runSystemctlAsync(['start', DMX_SERVICE_NAME]);
+        } else {
+            await runSystemctlAsync(['stop', DMX_SERVICE_NAME]);
+            await runSystemctlAsync(['disable', DMX_SERVICE_NAME]);
+        }
+        const state = await getDmxServiceState();
+        systemSettings.dmxServiceEnabled = state.enabled;
+        await db.run(
+            "INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)",
+            [SETTINGS_KEYS.dmxServiceEnabled, state.enabled ? "1" : "0"]
+        );
+        return { success: true, enabled: state.enabled, status: state.status, available: state.available, running: state.running };
+    } catch (err) {
+        return { success: false, error: err.message || 'DMX service update failed.' };
+    }
+}
+
+async function reconcileManagedServiceStateOnStartup() {
+    if (!isLinuxSystem()) return;
+    try {
+        if (systemSettings.zigbeeBridgeEnabled) {
+            const state = await getZigbeeBridgeState();
+            if (state.available && !state.running) {
+                await runSystemctlAsync(['daemon-reload']);
+                await runSystemctlAsync(['enable', ZIGBEE_BRIDGE_SERVICE_NAME]);
+                await runSystemctlAsync(['start', ZIGBEE_BRIDGE_SERVICE_NAME]);
+            }
+        }
+    } catch (err) {
+        logSystem(`Zigbee Bridge startup reconcile failed: ${err?.message || err}`, 'warn');
+    }
+    try {
+        if (systemSettings.dmxServiceEnabled) {
+            const state = await getDmxServiceState();
+            if (state.available && !state.running) {
+                await runSystemctlAsync(['daemon-reload']);
+                await runSystemctlAsync(['enable', DMX_SERVICE_NAME]);
+                await runSystemctlAsync(['start', DMX_SERVICE_NAME]);
+            }
+        }
+    } catch (err) {
+        logSystem(`DMX Service startup reconcile failed: ${err?.message || err}`, 'warn');
     }
 }
 
@@ -377,7 +3783,10 @@ function getQueueNodesForTargetPuzzle(puzzleId) {
 }
 function getQueueState(queueNodeId) {
     if (!queueStates[queueNodeId]) {
-        queueStates[queueNodeId] = { entries: [], active: null, cooldownUntil: null };
+        queueStates[queueNodeId] = { entries: [], activeEntries: [], cooldownUntil: null };
+    }
+    if (!Array.isArray(queueStates[queueNodeId].activeEntries)) {
+        queueStates[queueNodeId].activeEntries = [];
     }
     return queueStates[queueNodeId];
 }
@@ -401,7 +3810,11 @@ function clearQueueSolvedForPuzzle(puzzleId) {
 }
 function markBranchSolved(branchId) {
     if (!Number.isFinite(branchId)) return;
-    branchSolvedState[branchId] = true;
+    const flowData = buildBranchFlowData();
+    const branch = (flowData.branches || []).find(b => b.id === branchId);
+    if (branch && isBranchSolved(branch)) {
+        branchSolvedState[branchId] = true;
+    }
 }
 
 function normalizeHints(node) {
@@ -634,7 +4047,16 @@ function triggerHintForPuzzle(puzzleId, { auto = false } = {}) {
     activeHintsByScreen[pathKey].push(entry);
     queue.shift();
     syncHintProgress(node);
+    logSystem(`Hint triggered: ${entry.puzzleName} (#${entry.index + 1}): ${entry.text}`, "info", {
+        puzzleId,
+        puzzleName: entry.puzzleName,
+        hintIndex: entry.index,
+        auto: !!entry.auto,
+        custom: false
+    });
     emitUpdate('hints', { puzzleId });
+    runPuzzleScriptingEvent(node, 'on_hint', { customValue: nextText });
+    runRoomScriptingEvent('hint_triggered', { puzzleId, customValue: nextText });
 
     return { success: true, hint: entry, screen: { id: screen.id, name: screen.name, path: screen.path } };
 }
@@ -663,8 +4085,30 @@ function triggerCustomHint(puzzleId, text, { showAssignment } = {}) {
     const pathKey = sanitizeScreenPath(screen.path || "", `screen-${screen.id}`);
     if (!activeHintsByScreen[pathKey]) activeHintsByScreen[pathKey] = [];
     activeHintsByScreen[pathKey].push(entry);
+    logSystem(`Hint triggered: ${entry.puzzleName} (#${entry.index + 1}): ${entry.text}`, "info", {
+        puzzleId,
+        puzzleName: entry.puzzleName,
+        hintIndex: entry.index,
+        auto: false,
+        custom: true
+    });
     emitUpdate('hints', { puzzleId });
+    runPuzzleScriptingEvent(node, 'on_hint', { customValue: cleaned });
+    runRoomScriptingEvent('hint_triggered', { puzzleId, customValue: cleaned });
     return { success: true, hint: entry, screen: { id: screen.id, name: screen.name, path: screen.path } };
+}
+
+function triggerHintByIndexForPuzzle(puzzleId, hintIndex, { showAssignment } = {}) {
+    const node = getPuzzleNodeById(puzzleId);
+    if (!node) return { success: false, error: "Puzzle not found" };
+    const hints = normalizeHints(node);
+    const idx = Number(hintIndex);
+    if (!Number.isFinite(idx) || idx < 0 || idx >= hints.length) {
+        return { success: false, error: "Hint index out of range" };
+    }
+    const text = String(hints[idx]?.text || "").trim();
+    if (!text) return { success: false, error: "Hint text missing" };
+    return triggerCustomHint(puzzleId, text, { showAssignment });
 }
 
 function scheduleHintTimers(node) {
@@ -864,11 +4308,39 @@ function getUpstreamPuzzleIds(targetId) {
     return Array.from(result);
 }
 
+function isBranchPuzzleRequired(branchId, puzzleId) {
+    if (!Number.isFinite(branchId) || !Number.isFinite(puzzleId)) return true;
+    const branchKey = String(branchId);
+    for (const branchChoices of Object.values(queueBranchChoices || {})) {
+        if (!branchChoices) continue;
+        const choice = branchChoices[branchKey];
+        if (!choice) continue;
+        const controlled = Array.isArray(choice.controlledPuzzleIds) ? choice.controlledPuzzleIds : [];
+        if (!controlled.includes(puzzleId)) continue;
+        const required = Array.isArray(choice.requiredPuzzleIds) ? choice.requiredPuzzleIds : [];
+        const requireAny = choice.requireAny === true;
+        if (requireAny) {
+            const solvedMap = queueSolvedState[branchId] || {};
+            const anySolved = required.some(id => !!solvedMap[id]);
+            if (anySolved) return false;
+        }
+        return required.includes(puzzleId);
+    }
+    return true;
+}
+
 function isBranchSolved(branch) {
     if (!branch || !Array.isArray(branch.puzzles) || !branch.puzzles.length) return false;
-    if (branchSolvedState[branch.id]) return true;
     const queueSolved = queueSolvedState[branch.id] || {};
-    return branch.puzzles.every(p => puzzleSolvedState[p.id] || queueSolved[p.id]);
+    return branch.puzzles.every(p => {
+        const pid = p.id;
+        if (!isBranchPuzzleRequired(branch.id, pid)) return true;
+        if (queueSolved[pid]) return true;
+        // Queue targets are branch-instance specific. Do not inherit global solved
+        // from a different branch instance.
+        if (isQueueTargetPuzzleId(pid)) return false;
+        return puzzleStateDetails[pid]?.state === 'solved';
+    });
 }
 
 function scheduleBranchAutoRestart(branch) {
@@ -890,8 +4362,26 @@ function checkAutoRestartCondition() {
         return;
     }
     const flowData = buildBranchFlowData();
-    (flowData.branches || []).forEach(branch => {
-        scheduleBranchAutoRestart(branch);
+    const branches = flowData.branches || [];
+    const validBranchIds = new Set(branches.map(b => b.id));
+
+    // Clear timers for removed branches.
+    autoRestartTimers.forEach((timerId, branchId) => {
+        if (validBranchIds.has(branchId)) return;
+        clearTimeout(timerId);
+        autoRestartTimers.delete(branchId);
+    });
+
+    branches.forEach(branch => {
+        if (isBranchSolved(branch)) {
+            scheduleBranchAutoRestart(branch);
+            return;
+        }
+        // Branch no longer solved: cancel pending timer.
+        if (autoRestartTimers.has(branch.id)) {
+            clearTimeout(autoRestartTimers.get(branch.id));
+            autoRestartTimers.delete(branch.id);
+        }
     });
 }
 
@@ -950,19 +4440,40 @@ function shouldIgnoreInboundState() {
 
 function shouldApplyDeviceState(puzzleId, incomingState) {
     if (!isRunning) return false;
+    const now = Date.now();
+    const sinceRestartRequest = restartRequestedAt[puzzleId];
     const rawState = (incomingState || "").toString().toLowerCase();
     if (rawState === 'restarting' || rawState === 'ready') return false;
     const state = normalizePuzzleState(incomingState);
-    const current = puzzleStateDetails[puzzleId]?.state || 'locked';
-    if (current === 'locked' && state !== 'locked') return false;
-    if (current === 'solved' && state !== 'solved') return false;
-    if ((current === 'active' || current === 'starting' || current === 'running') && state === 'locked') return false;
-    if (current === 'starting' && state === 'running') {
-        const since = restartRequestedAt[puzzleId];
-        if (since && (Date.now() - since) < RESTART_IGNORE_RUNNING_MS) {
+    if (sinceRestartRequest) {
+        const restartAge = now - sinceRestartRequest;
+        const freshSeen = !!restartFreshStateSeen[puzzleId];
+        // After restart, ignore incoming "solved" until we have seen a fresh non-solved
+        // status (or until timeout).
+        if (state === 'solved' && !freshSeen && restartAge < RESTART_IGNORE_SOLVED_UNTIL_FRESH_MS) {
             return false;
         }
+        if (state !== 'solved') {
+            restartFreshStateSeen[puzzleId] = true;
+        }
     }
+    const current = puzzleStateDetails[puzzleId]?.state || 'locked';
+    if (current === 'locked' && state !== 'locked') {
+        // After we sent a restart command, allow the first fresh runtime state
+        // from device (starting/running/...) to move out of locked.
+        if (!sinceRestartRequest) return false;
+    }
+    if (current === 'solved' && state !== 'solved') {
+        if (sinceRestartRequest && (now - sinceRestartRequest) < RESTART_ALLOW_UNSOLVE_MS) {
+            // Recovery path: allow a fresh post-restart running state to replace
+            // an accidentally accepted stale "solved".
+            if (state === 'running' || state === 'active' || state === 'starting') {
+                return true;
+            }
+        }
+        return false;
+    }
+    if ((current === 'active' || current === 'starting' || current === 'running') && state === 'locked') return false;
     return true;
 }
 
@@ -1479,10 +4990,10 @@ function sendQueuePayloadToTargets(queueNode, payload) {
         });
     });
 }
-function enqueueQueueEntry(queueNode, originNode) {
+function enqueueQueueEntry(queueNode, originNode, branchIdOverride = null) {
     if (!queueNode || !originNode) return;
     const branch = getBranchForPuzzle(originNode.id);
-    const branchId = branch?.id;
+    const branchId = Number.isFinite(branchIdOverride) ? branchIdOverride : branch?.id;
     if (!Number.isFinite(branchId)) return;
     const state = getQueueState(queueNode.id);
     const exists = state.entries.some(e => e.puzzleId === originNode.id && e.branchId === branchId);
@@ -1492,8 +5003,8 @@ function enqueueQueueEntry(queueNode, originNode) {
 }
 function isPuzzleFreeForQueue(puzzleId, branchId) {
     const current = puzzleStateDetails[puzzleId]?.state;
-    if (['running', 'starting', 'active', 'uploading', 'downloading', 'solved', 'error'].includes(current)) return false;
-    if (Number.isFinite(branchId) && branchSolvedState[branchId]) return false;
+    // "solved" counts as free for queue handover; only active/busy/error states block.
+    if (['running', 'starting', 'active', 'uploading', 'downloading', 'error'].includes(current)) return false;
     const lock = puzzleQueueLocks[puzzleId];
     if (lock && Number.isFinite(lock.branchId) && lock.branchId !== branchId) return false;
     return true;
@@ -1508,13 +5019,15 @@ function processQueueNode(queueNode) {
     if (state.cooldownUntil && state.cooldownUntil <= now) state.cooldownUntil = null;
     if (!state.entries.length) return;
     const entry = state.entries[0];
-    const requirements = new Map();
+    const activationRequirements = new Map();
+    const flowRequirements = new Map();
     const freeTargets = targetPuzzleIds.filter(targetId => {
-        const required = collectDownstreamPuzzleIds(targetId);
-        const requiredRaw = required.length ? required : [targetId];
-        const requiredList = requiredRaw.filter(id => id === targetId || puzzleStateDetails[id]?.state !== 'locked');
-        requirements.set(targetId, requiredList);
-        return requiredList.every(reqId => isPuzzleFreeForQueue(reqId, entry.branchId));
+        const downstream = collectDownstreamPuzzleIds(targetId);
+        const flowList = downstream.length ? downstream : [targetId];
+        const activationList = [targetId];
+        flowRequirements.set(targetId, flowList);
+        activationRequirements.set(targetId, activationList);
+        return activationList.every(reqId => isPuzzleFreeForQueue(reqId, entry.branchId));
     });
     if (!freeTargets.length) return;
     const activateAllFree = queueNode.properties?.queueActivateAllFree === true;
@@ -1522,32 +5035,46 @@ function processQueueNode(queueNode) {
     const activateIds = activateAllFree
         ? freeTargets
         : [freeTargets[Math.floor(Math.random() * freeTargets.length)]];
-    const requiredSet = new Set();
+    const activationRequiredSet = new Set();
+    const flowRequiredSet = new Set();
     activateIds.forEach(targetId => {
-        const required = requirements.get(targetId) || [targetId];
-        required.forEach(id => requiredSet.add(id));
+        const activationReq = activationRequirements.get(targetId) || [targetId];
+        activationReq.forEach(id => activationRequiredSet.add(id));
+        const flowReq = flowRequirements.get(targetId) || [targetId];
+        flowReq.forEach(id => flowRequiredSet.add(id));
     });
     state.entries.shift();
-    state.active = {
+    const activeEntry = {
         puzzleId: entry.puzzleId,
         branchId: entry.branchId,
         puzzleIds: activateIds.slice(),
-        requiredPuzzleIds: Array.from(requiredSet)
+        requiredPuzzleIds: Array.from(flowRequiredSet),
+        lockPuzzleIds: Array.from(flowRequiredSet),
+        requireAny: activateAllFree === true
     };
-    if (!activateAllFree) {
-        if (!queueBranchChoices[queueNode.id]) queueBranchChoices[queueNode.id] = {};
-        queueBranchChoices[queueNode.id][entry.branchId] = {
-            requiredPuzzleIds: Array.from(requiredSet),
-            controlledPuzzleIds: getQueueControlledPuzzleIds(queueNode)
-        };
-    } else if (queueBranchChoices[queueNode.id]) {
-        delete queueBranchChoices[queueNode.id][entry.branchId];
-        if (!Object.keys(queueBranchChoices[queueNode.id]).length) {
-            delete queueBranchChoices[queueNode.id];
-        }
+    state.activeEntries.push(activeEntry);
+    if (!queueBranchChoices[queueNode.id]) queueBranchChoices[queueNode.id] = {};
+    queueBranchChoices[queueNode.id][entry.branchId] = {
+        requiredPuzzleIds: Array.from(flowRequiredSet),
+        controlledPuzzleIds: getQueueControlledPuzzleIds(queueNode),
+        requireAny: activateAllFree === true
+    };
+    if (queueBranchChoices[queueNode.id] && !Object.keys(queueBranchChoices[queueNode.id]).length) {
+        delete queueBranchChoices[queueNode.id];
     }
     if (!queueSolvedState[entry.branchId]) queueSolvedState[entry.branchId] = {};
-    Array.from(requiredSet).forEach(targetPuzzleId => {
+    const activateSet = new Set(activateIds.map(id => parseInt(id, 10)).filter(id => Number.isFinite(id)));
+    // Reset stale states from previous branch runs on the same arm.
+    // Only direct queue targets are activated immediately; downstream stays flow-driven.
+    Array.from(flowRequiredSet).forEach(pid => {
+        const targetId = parseInt(pid, 10);
+        if (!Number.isFinite(targetId)) return;
+        if (activateSet.has(targetId)) return;
+        if (puzzleStateDetails[targetId]?.state !== 'locked') {
+            applyPuzzleState(targetId, 'locked');
+        }
+    });
+    Array.from(flowRequiredSet).forEach(targetPuzzleId => {
         puzzleQueueLocks[targetPuzzleId] = { queueNodeId: queueNode.id, branchId: entry.branchId };
         delete queueSolvedState[entry.branchId][targetPuzzleId];
     });
@@ -1590,9 +5117,7 @@ function clearQueueEntriesForBranch(branchId) {
         const state = queueStates[queueId];
         if (!state) return;
         state.entries = (state.entries || []).filter(entry => entry.branchId !== branchId);
-        if (state.active && state.active.branchId === branchId) {
-            state.active = null;
-        }
+        state.activeEntries = (state.activeEntries || []).filter(entry => entry.branchId !== branchId);
     });
     Object.keys(queueBranchChoices).forEach(queueId => {
         if (queueBranchChoices[queueId]) {
@@ -1788,10 +5313,13 @@ function normalizePuzzleState(state) {
 
 function publishCommand(deviceId, payload = {}) {
     if (!deviceId) return;
+    const topic = `puzzle/${deviceId}/command`;
     try {
-        mqttClient.publish(`puzzle/${deviceId}/command`, JSON.stringify(payload));
+        mqttClient.publish(topic, JSON.stringify(payload));
+        logSystem(`MQTT command to ${deviceId}`, "mqtt", { topic, payload, direction: "outbound" });
     } catch (e) {
         console.error("MQTT publish failed:", e.message);
+        logSystem(`MQTT command failed to ${deviceId}: ${e.message || e}`, "warn", { topic, payload, direction: "outbound" });
     }
 }
 
@@ -1822,6 +5350,7 @@ function applyPuzzleState(puzzleId, desiredState, note = null, options = { outbo
     const now = Date.now();
     const prevState = puzzleStateDetails[puzzleId]?.state || 'locked';
     const node = getPuzzleNodeById(puzzleId);
+    const externalWasActive = node ? isExternalCheckActive(node, prevState) : false;
     const deviceId = node ? getDeviceIdForPuzzle(node) : null;
     const isAnalog = !!node?.properties?.isAnalog;
     const normalizedDesired = (isAnalog && desired === 'active') ? 'running' : desired;
@@ -1831,7 +5360,16 @@ function applyPuzzleState(puzzleId, desiredState, note = null, options = { outbo
         && !['active', 'starting', 'running'].includes(prevState)
         && !isAnalog
         && canSendToDevice(node, deviceId);
-    const state = (['active', 'running'].includes(normalizedDesired) && canRestartDevice) ? 'starting' : normalizedDesired;
+    const waitingForRestartHeartbeat = !isAnalog
+        && !!restartRequestedAt[puzzleId]
+        && !restartFreshStateSeen[puzzleId];
+    // Digital puzzles that are (re)started by command should show "starting"
+    // until a fresh device heartbeat reports the next runtime state.
+    const state = canRestartDevice
+        ? 'starting'
+        : (waitingForRestartHeartbeat && prevState === 'starting' && ['active', 'running'].includes(normalizedDesired)
+            ? 'starting'
+            : normalizedDesired);
 
     puzzleStateDetails[puzzleId] = {
         state,
@@ -1839,8 +5377,36 @@ function applyPuzzleState(puzzleId, desiredState, note = null, options = { outbo
         updatedAt: now
     };
     emitUpdate('puzzle-state', { puzzleId, state });
+    const becameActive = ['active', 'starting', 'running'].includes(state) && !['active', 'starting', 'running'].includes(prevState);
+    const becameSolved = state === 'solved' && prevState !== 'solved';
+    const becameLocked = state === 'locked' && prevState !== 'locked';
+    const externalNowActive = node ? isExternalCheckActive(node, state) : false;
+    const externalActivated = !!node && !externalWasActive && externalNowActive;
+    if (node && becameActive) {
+        runPuzzleScriptingEvent(node, 'on_running');
+    }
+    if (externalActivated) {
+        Promise.resolve(resolveExternalCheckValue(node))
+            .then(({ value }) => {
+                runPuzzleScriptingEvent(node, 'on_external_input_activated', { expectedValue: value });
+            })
+            .catch(() => {
+                runPuzzleScriptingEvent(node, 'on_external_input_activated', { expectedValue: null });
+            });
+    }
+    if (node && becameSolved) {
+        runPuzzleScriptingEvent(node, 'on_solved');
+    }
+    if (node && becameLocked) {
+        runPuzzleScriptingEvent(node, 'on_reset');
+    }
+    if (prevState !== state) {
+        runRoomScriptingEvent('any_puzzle_state', { puzzleId, state });
+    }
 
     if (state === 'solved') {
+        const shouldActivateDownstreamNow = prevState !== 'solved';
+        const solvedBranchId = Number.isFinite(options?.branchId) ? options.branchId : null;
         const queueLock = puzzleQueueLocks[puzzleId] || null;
         if (!queueLock) {
             puzzleSolvedState[puzzleId] = true;
@@ -1850,34 +5416,47 @@ function applyPuzzleState(puzzleId, desiredState, note = null, options = { outbo
             queueSolvedState[queueLock.branchId][puzzleId] = true;
         }
         delete puzzleActivationState[puzzleId];
-        delete restartRequestedAt[puzzleId];
+        // Important: activate downstream flow while this solved state is still "current".
+        // Otherwise queue handover may immediately switch the same puzzle back to active,
+        // causing intermittent missed activation of the next layer.
+        if (shouldActivateDownstreamNow) {
+            activateReadyPuzzles();
+        }
         if (node) {
             const queueNodes = getLinkedQueueNodesForPuzzle(node);
             queueNodes.forEach(q => {
-                enqueueQueueEntry(q, node);
+                enqueueQueueEntry(q, node, Number.isFinite(solvedBranchId) ? solvedBranchId : queueLock?.branchId);
                 processQueueNode(q);
             });
             if (queueLock) {
                 const queueState = getQueueState(queueLock.queueNodeId);
+                let shouldMarkBranchSolved = false;
                 let shouldSchedule = true;
-                let shouldMarkBranchSolved = true;
-                if (queueState && queueState.active && queueState.active.branchId === queueLock.branchId) {
-                    const required = Array.isArray(queueState.active.requiredPuzzleIds)
-                        ? queueState.active.requiredPuzzleIds
+                const activeEntries = Array.isArray(queueState?.activeEntries) ? queueState.activeEntries : [];
+                const activeEntry = activeEntries.find(entry => entry && entry.branchId === queueLock.branchId
+                    && Array.isArray(entry.lockPuzzleIds) && entry.lockPuzzleIds.includes(puzzleId));
+                if (activeEntry) {
+                    const completionIds = Array.isArray(activeEntry.requiredPuzzleIds)
+                        ? activeEntry.requiredPuzzleIds
                         : [puzzleId];
+                    const lockIds = Array.isArray(activeEntry.lockPuzzleIds)
+                        ? activeEntry.lockPuzzleIds
+                        : completionIds;
+                    const requireAny = activeEntry.requireAny === true;
                     const solvedMap = queueSolvedState[queueLock.branchId] || {};
-                    const allSolved = required.every(id => solvedMap[id]);
-                    if (allSolved) {
-                        required.forEach(id => {
+                    const resolved = requireAny
+                        ? completionIds.some(id => !!solvedMap[id])
+                        : completionIds.every(id => !!solvedMap[id]);
+                    shouldMarkBranchSolved = resolved;
+                    const armFree = lockIds.every(id => isPuzzleFreeForQueue(id, queueLock.branchId));
+                    if (armFree) {
+                        lockIds.forEach(id => {
                             const lock = puzzleQueueLocks[id];
                             if (lock && lock.queueNodeId === queueLock.queueNodeId && lock.branchId === queueLock.branchId) {
                                 delete puzzleQueueLocks[id];
                             }
                         });
-                        queueState.active = null;
-                    } else {
-                        shouldSchedule = false;
-                        shouldMarkBranchSolved = false;
+                        queueState.activeEntries = activeEntries.filter(entry => entry !== activeEntry);
                     }
                 }
                 if (shouldMarkBranchSolved) {
@@ -1886,14 +5465,15 @@ function applyPuzzleState(puzzleId, desiredState, note = null, options = { outbo
                 const queueNode = graph.getNodeById ? graph.getNodeById(queueLock.queueNodeId) : null;
                 if (queueNode && shouldSchedule) scheduleQueueProcessing(queueNode);
             } else {
-                const endBranchIds = getLinkedEndBranchIdsForPuzzle(node);
-                endBranchIds.forEach(markBranchSolved);
+                if (Number.isFinite(solvedBranchId)) {
+                    markBranchSolved(solvedBranchId);
+                } else {
+                    const endBranchIds = getLinkedEndBranchIdsForPuzzle(node);
+                    endBranchIds.forEach(markBranchSolved);
+                }
             }
         }
         checkAutoRestartCondition();
-        if (prevState !== 'solved') {
-            activateReadyPuzzles();
-        }
     } else {
         delete puzzleSolvedState[puzzleId];
         if (state === 'active' || state === 'starting' || state === 'running') {
@@ -1901,8 +5481,46 @@ function applyPuzzleState(puzzleId, desiredState, note = null, options = { outbo
         } else {
             delete puzzleActivationState[puzzleId];
         }
-        if (state !== 'starting') {
-            delete restartRequestedAt[puzzleId];
+        if (state === 'locked') {
+            // If a queue-controlled puzzle is force-locked/reset, release current queue lock
+            // so the next waiting branch instance can be activated.
+            const queueLock = puzzleQueueLocks[puzzleId];
+            if (queueLock) {
+                const queueState = getQueueState(queueLock.queueNodeId);
+                const activeEntries = Array.isArray(queueState?.activeEntries) ? queueState.activeEntries : [];
+                const activeEntry = activeEntries.find(entry => entry && entry.branchId === queueLock.branchId
+                    && Array.isArray(entry.lockPuzzleIds) && entry.lockPuzzleIds.includes(puzzleId));
+                if (activeEntry) {
+                    const lockIds = Array.isArray(activeEntry.lockPuzzleIds)
+                        ? activeEntry.lockPuzzleIds
+                        : (Array.isArray(activeEntry.requiredPuzzleIds)
+                        ? activeEntry.requiredPuzzleIds
+                        : [puzzleId]);
+                    const armFree = lockIds.every(id => isPuzzleFreeForQueue(id, queueLock.branchId));
+                    if (armFree) {
+                        lockIds.forEach(id => {
+                            const lock = puzzleQueueLocks[id];
+                            if (lock && lock.queueNodeId === queueLock.queueNodeId && lock.branchId === queueLock.branchId) {
+                                delete puzzleQueueLocks[id];
+                            }
+                        });
+                        queueState.activeEntries = activeEntries.filter(entry => entry !== activeEntry);
+                    }
+                } else {
+                    delete puzzleQueueLocks[puzzleId];
+                }
+                const queueNode = graph.getNodeById ? graph.getNodeById(queueLock.queueNodeId) : null;
+                if (queueNode) scheduleQueueProcessing(queueNode);
+            }
+        }
+        if (state !== 'starting' && state !== 'solved') {
+            // Keep restart tracking alive when activation just issued a restart
+            // and we intentionally keep local state locked until fresh device state arrives.
+            const keepRestartTracking = canRestartDevice || (!!restartRequestedAt[puzzleId] && state === 'locked');
+            if (!keepRestartTracking) {
+                delete restartRequestedAt[puzzleId];
+                delete restartFreshStateSeen[puzzleId];
+            }
         }
     }
 
@@ -1914,6 +5532,7 @@ function applyPuzzleState(puzzleId, desiredState, note = null, options = { outbo
         if (canSendToDevice(node, deviceId)) {
             if (canRestartDevice) {
                 restartRequestedAt[puzzleId] = Date.now();
+                restartFreshStateSeen[puzzleId] = false;
                 publishCommand(deviceId, { action: "restart" });
             } else if (!['active', 'starting', 'running'].includes(state)) {
                 publishCommand(deviceId, { action: "setState", state });
@@ -1937,12 +5556,26 @@ function applyPuzzleState(puzzleId, desiredState, note = null, options = { outbo
     } else if (state !== 'solved' && prevState === 'solved') {
         clearPendingOutputErrors(puzzleId);
     }
+
+    // Always re-check all queues when a puzzle becomes free.
+    if ((state === 'solved' || state === 'locked') && prevState !== state) {
+        processAllQueues();
+    }
+    emitRoomAndBranchStateScriptingTransitions();
 }
 
 function resetAllPuzzleStates(defaultState = 'locked', options = {}) {
     const { outbound = true, resetDevices = true } = options;
+    clearScriptingForeverTimers();
     puzzleSolvedState = {};
     puzzleActivationState = {};
+    puzzleScriptingActiveUntil = {};
+    puzzleScriptingSeq = {};
+    roomScriptingActiveUntil = 0;
+    roomScriptingSeq = 0;
+    roomScriptingSensorInstances = {};
+    roomScriptingLastRoomState = null;
+    roomScriptingLastBranchStates = {};
     puzzleStateDetails = {};
     puzzleDataStore = {};
     puzzleInputFallbackStore = {};
@@ -1953,6 +5586,9 @@ function resetAllPuzzleStates(defaultState = 'locked', options = {}) {
     queueTimers = {};
     puzzleQueueLocks = {};
     branchSolvedState = {};
+    Object.keys(restartRequestedAt).forEach(key => { delete restartRequestedAt[key]; });
+    Object.keys(restartFreshStateSeen).forEach(key => { delete restartFreshStateSeen[key]; });
+    resetDmxUniverseBuffer({ send: true });
     Object.keys(pendingMediaFallbackTimers).forEach(pid => {
         Object.values(pendingMediaFallbackTimers[pid] || {}).forEach(timerId => clearTimeout(timerId));
     });
@@ -1965,6 +5601,7 @@ function resetAllPuzzleStates(defaultState = 'locked', options = {}) {
     hintProgress = {};
     clearAllAutoRestartTimers();
     getAllPuzzleNodes().forEach(node => {
+        resetPuzzleScriptSensorInstanceByPolicy(node.id);
         const devId = getDeviceIdForPuzzle(node);
         if (resetDevices && canSendToDevice(node, devId)) {
             publishCommand(devId, { action: "clearData" });
@@ -1978,10 +5615,14 @@ function resetPuzzleRuntimeState(puzzleId) {
     delete puzzleSolvedState[puzzleId];
     clearQueueSolvedForPuzzle(puzzleId);
     delete puzzleActivationState[puzzleId];
+    delete puzzleScriptingActiveUntil[puzzleId];
+    delete puzzleScriptingSeq[puzzleId];
     delete puzzleStateDetails[puzzleId];
     delete puzzleDataStore[puzzleId];
     delete puzzleInputFallbackStore[puzzleId];
     delete puzzleQueueLocks[puzzleId];
+    delete restartRequestedAt[puzzleId];
+    delete restartFreshStateSeen[puzzleId];
     if (pendingMediaFallbackTimers[puzzleId]) {
         Object.values(pendingMediaFallbackTimers[puzzleId] || {}).forEach(timerId => clearTimeout(timerId));
         delete pendingMediaFallbackTimers[puzzleId];
@@ -1990,6 +5631,7 @@ function resetPuzzleRuntimeState(puzzleId) {
     delete pendingOutputErrors[puzzleId];
     delete offlineErrorState[puzzleId];
     delete puzzleTelemetry[puzzleId];
+    resetPuzzleScriptSensorInstanceByPolicy(puzzleId);
     clearHintTimers(puzzleId);
     removeHintsForPuzzle(puzzleId);
 }
@@ -1998,6 +5640,41 @@ function getRoomStatusLabel() {
     if (!isRunning) return "Stopped";
     if (allPuzzlesSolved()) return "Solved";
     return "Running";
+}
+
+function getRoomStateKey() {
+    return allPuzzlesSolved() ? 'solved' : 'running';
+}
+
+function getBranchStateKey(branchId) {
+    const numericBranchId = parseInt(branchId, 10);
+    if (!Number.isFinite(numericBranchId)) return 'running';
+    const flowData = buildBranchFlowData();
+    const branch = (flowData.branches || []).find((entry) => entry.id === numericBranchId);
+    if (!branch) return 'running';
+    return isBranchSolved(branch) ? 'solved' : 'running';
+}
+
+function emitRoomAndBranchStateScriptingTransitions() {
+    if (!isRunning) return;
+    const nextRoomState = getRoomStateKey();
+    if (roomScriptingLastRoomState !== nextRoomState) {
+        roomScriptingLastRoomState = nextRoomState;
+        runRoomScriptingEvent('room_state_change', { state: nextRoomState });
+    }
+
+    const flowData = buildBranchFlowData();
+    const nextBranchStates = {};
+    (flowData.branches || []).forEach((branch) => {
+        const branchId = parseInt(branch?.id, 10);
+        if (!Number.isFinite(branchId)) return;
+        const state = isBranchSolved(branch) ? 'solved' : 'running';
+        nextBranchStates[branchId] = state;
+        if (roomScriptingLastBranchStates[branchId] !== state) {
+            runRoomScriptingEvent('branch_state_change', { branchId, state });
+        }
+    });
+    roomScriptingLastBranchStates = nextBranchStates;
 }
 
 function getDeviceIdForPuzzle(node) {
@@ -2198,13 +5875,36 @@ function collectMediaServerWarnings() {
     return warnings;
 }
 
+function collectDmxAdapterWarnings() {
+    const warnings = [];
+    const puzzles = getAllPuzzleNodes();
+    const requiresDmx = puzzles.some(node => {
+        if (!node) return false;
+        const rules = Array.isArray(node.properties?.scriptingRules)
+            ? node.properties.scriptingRules
+            : (Array.isArray(node.properties?.automationRules) ? node.properties.automationRules : []);
+        return rules.some(rule => {
+            const actionType = String(rule?.actionType || '').trim().toLowerCase();
+            const actionValue = String(rule?.actionValue || '').trim();
+            return actionType === 'play_cue' && actionValue.length > 0;
+        });
+    });
+    if (!requiresDmx) return warnings;
+    const adapter = getDmxAdapterInfo();
+    if (!adapter?.connected) {
+        warnings.push('no DMX adapter connected');
+    }
+    return warnings;
+}
+
 function buildReadinessWarnings() {
     return [
         ...collectDeviceWarnings(),
         ...collectDuplicateDeviceWarnings(),
         ...collectConnectionWarnings(),
         ...collectExternalCheckWarnings(),
-        ...collectMediaServerWarnings()
+        ...collectMediaServerWarnings(),
+        ...collectDmxAdapterWarnings()
     ];
 }
 
@@ -2256,6 +5956,7 @@ function createPuzzleFlowEntry(node, depth) {
         name: node.properties.Name || node.title || "Unnamed Puzzle",
         description: "",
         depth: depth,
+        hasScripting: hasScriptingBlocks(node),
         isAnalog: node.properties.isAnalog || false,
         device: deviceId,
         deviceName: deviceInfo?.name || deviceInfo?.ip || deviceId,
@@ -2281,6 +5982,7 @@ function buildBranchFlowData() {
     const { adjacencyMap, allNodes } = getGraphIndex();
     const depthByNode = {};
     const branches = [];
+    const usedBranchIds = new Set();
 
     const sortedStarts = [...startNodes].sort((a, b) => {
         const aId = isValidBranchId(a?.properties?.pairId) ? a.properties.pairId : a.id;
@@ -2289,7 +5991,15 @@ function buildBranchFlowData() {
     });
 
     sortedStarts.forEach((startNode, idx) => {
-        const branchId = isValidBranchId(startNode?.properties?.pairId) ? startNode.properties.pairId : (startNode.id || (idx + 1));
+        const rawBranchId = isValidBranchId(startNode?.properties?.pairId) ? startNode.properties.pairId : (startNode.id || (idx + 1));
+        let branchId = rawBranchId;
+        if (!Number.isFinite(branchId) || usedBranchIds.has(branchId)) {
+            branchId = Number.isFinite(startNode?.id) ? startNode.id : (idx + 1);
+        }
+        while (usedBranchIds.has(branchId)) {
+            branchId += 1;
+        }
+        usedBranchIds.add(branchId);
         const visited = new Set();
         const puzzles = [];
 
@@ -2491,7 +6201,12 @@ function buildQueueingMap() {
         (state.entries || []).forEach(entry => {
             if (!Number.isFinite(entry.branchId)) return;
             if (!result[entry.branchId]) result[entry.branchId] = {};
-            targetPuzzleIds.forEach(pid => { result[entry.branchId][pid] = true; });
+            targetPuzzleIds.forEach(pid => {
+                const lock = puzzleQueueLocks[pid];
+                // Already active/unlocked for this branch: do not render as queueing.
+                if (lock && Number.isFinite(lock.branchId) && lock.branchId === entry.branchId) return;
+                result[entry.branchId][pid] = true;
+            });
         });
     });
     return result;
@@ -2540,12 +6255,20 @@ function buildQueueChoiceMaps() {
 }
 function buildQueueActiveMap() {
     const map = {};
-    Object.keys(puzzleQueueLocks).forEach(puzzleId => {
-        const lock = puzzleQueueLocks[puzzleId];
-        const targetId = parseInt(puzzleId, 10);
-        if (!Number.isFinite(targetId)) return;
-        if (!lock || !Number.isFinite(lock.branchId)) return;
-        map[targetId] = lock.branchId;
+    Object.keys(queueStates || {}).forEach(queueId => {
+        const state = queueStates[queueId];
+        if (!state) return;
+        const activeEntries = Array.isArray(state.activeEntries) ? state.activeEntries : [];
+        activeEntries.forEach(active => {
+            if (!active || !Number.isFinite(active.branchId)) return;
+            const branchId = active.branchId;
+            const activePuzzleIds = Array.isArray(active.puzzleIds) ? active.puzzleIds : [];
+            activePuzzleIds.forEach(pidRaw => {
+                const pid = parseInt(pidRaw, 10);
+                if (!Number.isFinite(pid)) return;
+                map[pid] = branchId;
+            });
+        });
     });
     return map;
 }
@@ -2558,6 +6281,32 @@ function buildQueueSolvedMap() {
             if (entries[puzzleId]) acc[puzzleId] = true;
             return acc;
         }, {});
+    });
+    return map;
+}
+function buildQueueContextMap() {
+    const map = {};
+    const mark = (puzzleId) => {
+        const id = parseInt(puzzleId, 10);
+        if (!Number.isFinite(id)) return;
+        map[id] = true;
+    };
+    getQueueNodes().forEach(queueNode => {
+        const controlledIds = getQueueControlledPuzzleIds(queueNode);
+        controlledIds.forEach(mark);
+    });
+    Object.keys(puzzleQueueLocks || {}).forEach(mark);
+    Object.keys(queueStates || {}).forEach(queueId => {
+        const queueNode = graph.getNodeById ? graph.getNodeById(parseInt(queueId, 10)) : null;
+        if (!queueNode) return;
+        const controlledIds = getQueueControlledPuzzleIds(queueNode);
+        controlledIds.forEach(mark);
+    });
+    Object.keys(queueSolvedState || {}).forEach(branchId => {
+        const solved = queueSolvedState[branchId] || {};
+        Object.keys(solved).forEach(pid => {
+            if (solved[pid]) mark(pid);
+        });
     });
     return map;
 }
@@ -2602,11 +6351,16 @@ function initializePuzzleStatesOnStart(options = {}) {
 }
 
 function beginRoomRestart(options = {}) {
+    clearScriptingForeverTimers();
     clearAllAutoRestartTimers();
+    stopAllSoundCuePlayback();
     const triggerStartNodes = options.triggerStartNodes !== false;
     const activateFirstDepth = options.activateFirstDepth !== false;
+    const emitRoomStarted = options.emitRoomStarted === true;
 
     suppressDeviceStateUntil = Date.now() + 1500;
+    puzzleScriptingVariables = {};
+    roomScriptingVariables = {};
 
     resetAllPuzzleStates('locked', { outbound: false, resetDevices: false });
     puzzleTelemetry = {};
@@ -2629,7 +6383,6 @@ function beginRoomRestart(options = {}) {
         applyPuzzleState(parseInt(puzzleId, 10), state);
     });
 
-    suppressDeviceStateUntil = 0;
     gameStartTime = Date.now();
     const flowData = buildBranchFlowData();
     branchStartTimes = {};
@@ -2640,8 +6393,19 @@ function beginRoomRestart(options = {}) {
     if (triggerStartNodes) {
         (graph.findNodesByType("escape/Start") || []).forEach(n => n.triggerSlot(0));
     }
+    runRoomScriptingEvent('room_reset', {});
+    if (emitRoomStarted) {
+        runRoomScriptingEvent('room_started', {});
+        getAllPuzzleNodes().forEach((node) => {
+            runPuzzleScriptingEvent(node, 'on_room_started', {});
+        });
+    }
+    emitRoomAndBranchStateScriptingTransitions();
     logSystem("Room restart completed.", "success");
     emitUpdate('room-restart');
+    if (emitRoomStarted) {
+        emitUpdate('room-started');
+    }
     return { success: true, status: "running" };
 }
 
@@ -2703,9 +6467,18 @@ logSystem("Server started.", "success");
 // --- INIT SYSTEM ---
 async function initSystem() {
     try {
+        scheduleLinuxSerialMetadataRefresh();
+        scheduleOlaDmxCommandProbe();
+    } catch (err) {}
+    try {
         await loadSystemSettings();
     } catch (err) {
         console.error('System settings initialisation failed:', err);
+    }
+    try {
+        await reconcileManagedServiceStateOnStartup();
+    } catch (err) {
+        console.error('Managed service reconcile failed:', err);
     }
     try {
         await ensureMediaStorageDir();
@@ -2745,6 +6518,7 @@ async function loadRoomFromDB(roomName) {
                 const data = JSON.parse(row.json_data);
                 graph.clear();
                 graph.configure(data);
+                normalizeZigbeeMessageTriggers();
                 primeDataStoreWithOutputs();
                 
                 // Add callback for puzzle activation tracking
@@ -2792,9 +6566,21 @@ module.exports = {
     getScreens: () => getScreensConfig(),
     findScreenByPath: (pathStr) => findScreenByPath(pathStr),
     getSystemSettings: () => getSystemSettings(),
+    stopAllSoundPlayback: () => stopAllSoundCuePlayback(),
+    getZigbeeDevices: () => getZigbeeDevices(),
+    refreshZigbeeDevices: () => refreshZigbeeDevices(),
+    hideZigbeeDevice: (deviceId) => hideZigbeeDevice(deviceId),
+    setZigbeeDeviceResetOnPuzzleReset: (deviceId, enabled) => setZigbeeDeviceResetOnPuzzleReset(deviceId, enabled),
+    upsertZigbeeMessageTrigger: (payload) => upsertZigbeeMessageTrigger(payload),
+    deleteZigbeeMessageTrigger: (triggerId) => deleteZigbeeMessageTrigger(triggerId),
+    startZigbeeDiscovery: (durationSec) => startZigbeeDiscovery(durationSec),
+    stopZigbeeDiscovery: () => stopZigbeeDiscovery(),
+    renameZigbeeDevice: async (deviceId, newName) => renameZigbeeDevice(deviceId, newName),
     setMqttPort,
     setMediaServerEnabled,
     setAutostartEnabled,
+    setZigbeeBridgeEnabled,
+    setDmxServiceEnabled,
     setScreenSaverImage,
     setVictoryScreen,
     getHintsForScreen: (screenKey) => {
@@ -2871,6 +6657,10 @@ module.exports = {
 
         const submitted = (answerRaw === undefined || answerRaw === null) ? "" : String(answerRaw).trim();
         const correct = submitted === expected;
+        runPuzzleScriptingEvent(node, correct ? 'on_external_input_right' : 'on_external_input_false', {
+            submittedValue: submitted,
+            expectedValue: expected
+        });
 
         logSystem(`Player Input (${screen.name || screen.path || slug}) for "${getPuzzleName(node, numericId)}"- Eingabe: "${submitted}" => ${correct ? "richtig" : "falsch"}`, "system");
 
@@ -2891,6 +6681,24 @@ module.exports = {
     validateRoomReadiness: () => {
         const warnings = buildReadinessWarnings();
         return { warnings, ok: warnings.length === 0 };
+    },
+    testDmxCue: (fixtureId, cueId) => {
+        const numericFixtureId = parseInt(fixtureId, 10);
+        const numericCueId = parseInt(cueId, 10);
+        if (!Number.isFinite(numericFixtureId) || !Number.isFinite(numericCueId)) {
+            return { success: false, error: "fixtureId and cueId required" };
+        }
+        const cueRef = `${numericFixtureId}:${numericCueId}`;
+        const result = runDmxCueAction(cueRef, { triggerType: "manual_test" });
+        if (!result.success) return result;
+        return {
+            success: true,
+            fixtureId: numericFixtureId,
+            cueId: numericCueId,
+            infinite: result.infinite === true,
+            durationMs: result.infinite === true ? null : (result.durationMs || 0),
+            channelCount: result.channelCount || 0
+        };
     },
     clearLogs: () => {
         systemLogs.length = 0;
@@ -3034,7 +6842,7 @@ module.exports = {
     },
 
     startGame: (options = {}) => {
-        const result = beginRoomRestart(options);
+        const result = beginRoomRestart({ ...options, emitRoomStarted: true });
         if (!result.success) {
             logSystem(result.error || "Restart already in progress", "warn");
         }
@@ -3050,6 +6858,11 @@ module.exports = {
         if (!Number.isFinite(branchId)) {
             return { success: false, error: "branchId required" };
         }
+        clearScriptingForeverTimers();
+
+        // Mirror room-restart behavior: briefly ignore inbound device states
+        // so stale heartbeats (e.g. old "solved") cannot override fresh reset state.
+        suppressDeviceStateUntil = Date.now() + 1500;
 
         const flowData = buildBranchFlowData();
         const branch = (flowData.branches || []).find(b => b.id === branchId);
@@ -3068,6 +6881,7 @@ module.exports = {
       const puzzleIds = (branch.puzzles || []).map(p => p.id);
       puzzleIds.forEach(puzzleId => {
           const node = getPuzzleNodeById(puzzleId);
+          resetPuzzleScriptSensorInstanceByPolicy(puzzleId);
           const isQueueTarget = isQueueTargetPuzzleId(puzzleId);
           const queueLock = puzzleQueueLocks[puzzleId];
           const lockedForOtherBranch = isQueueTarget && queueLock && queueLock.branchId !== branchId;
@@ -3077,8 +6891,8 @@ module.exports = {
           if (isQueueTarget) {
               if (queueLock && queueLock.branchId === branchId) {
                   const queueState = getQueueState(queueLock.queueNodeId);
-                  if (queueState && queueState.active && queueState.active.branchId === branchId) {
-                      queueState.active = null;
+                  if (queueState && Array.isArray(queueState.activeEntries)) {
+                      queueState.activeEntries = queueState.activeEntries.filter(entry => !(entry && entry.branchId === branchId));
                   }
                   delete puzzleQueueLocks[puzzleId];
               }
@@ -3111,6 +6925,8 @@ module.exports = {
         }
 
         branchStartTimes[branchId] = Date.now();
+        runRoomScriptingEvent('branch_reset', { branchId });
+        emitRoomAndBranchStateScriptingTransitions();
         logSystem(`Branch ${branchId} restarted.`, "info");
         emitUpdate('branch-restart', { branchId });
         return { success: true };
@@ -3122,9 +6938,12 @@ module.exports = {
         puzzleNodes.forEach(node => {
             const devId = getDeviceIdForPuzzle(node);
             const stateRecord = getPuzzleStateRecord(node.id);
-        const stateKey = getPuzzleStateKey(node.id);
-        const checking = isExternalCheckActive(node, stateKey);
-        const isActive = ['active', 'starting', 'running', 'uploading', 'downloading'].includes(stateKey);
+            const stateKey = getPuzzleStateKey(node.id);
+            const checking = isExternalCheckActive(node, stateKey);
+            const isActive = ['active', 'starting', 'running', 'uploading', 'downloading'].includes(stateKey);
+            const restartAt = Number(restartRequestedAt[node.id] || 0);
+            const restartAgeMs = restartAt > 0 ? Math.max(0, Date.now() - restartAt) : null;
+            const restartPending = !!restartAt && !restartFreshStateSeen[node.id];
             statusList[node.id] = { 
                 online: isDeviceOnline(devId),
                 solved: stateRecord.state === 'solved' || !!puzzleSolvedState[node.id],
@@ -3132,6 +6951,10 @@ module.exports = {
                 state: stateRecord.state,
                 note: stateRecord.note,
                 updatedAt: stateRecord.updatedAt,
+                restartPending,
+                restartAgeMs,
+                scriptingActiveUntil: Number(puzzleScriptingActiveUntil[node.id] || 0),
+                scriptingSeq: Number(puzzleScriptingSeq[node.id] || 0),
                 checking,
                 externalInputActive: checking
             };
@@ -3146,6 +6969,11 @@ module.exports = {
         const addOutputEntry = (origin, out, outName, inputName, targetNode) => {
             const owner = targetNode || origin;
             const ownerId = owner.id;
+            const originBranch = getBranchForPuzzle(origin.id);
+            const ownerBranch = getBranchForPuzzle(ownerId);
+            const branchId = Number.isFinite(originBranch?.id)
+                ? originBranch.id
+                : (Number.isFinite(ownerBranch?.id) ? ownerBranch.id : null);
             const originSolved = puzzleStateDetails[origin.id]?.state === 'solved' || !!puzzleSolvedState[origin.id];
             const originState = getPuzzleStateKey(origin.id);
             const stored = puzzleDataStore[origin.id]?.outputs?.[outName];
@@ -3184,6 +7012,7 @@ module.exports = {
             inputMap[ownerId].outputs.push({
                 key: inputName || outName,
                 source: getPuzzleName(origin, origin.id),
+                branchId,
                 sourceKey: outName,
                 inputKey: inputName,
                 type: normalizeDataType(out.type),
@@ -3333,23 +7162,27 @@ module.exports = {
                 total: Object.keys(knownDevices).length,
                 online: countOnlineDevices()
             },
+            roomScriptingConfigured: hasRoomScriptingBlocks(),
+            roomScriptingActiveUntil: Number(roomScriptingActiveUntil || 0),
+            roomScriptingSeq: Number(roomScriptingSeq || 0),
             autoRestart: autoRestartConfig.enabled,
             autoRestartDelay: autoRestartConfig.delaySec
         };
     },
 
     // Get puzzle flow structure (order of puzzles from graph)
-      getPuzzleFlow: () => {
-          const flowData = buildPuzzleFlowData();
-          if (flowData.error) {
-              return { puzzles: [], error: flowData.error };
-          }
+    getPuzzleFlow: () => {
+        const flowData = buildPuzzleFlowData();
+        if (flowData.error) {
+            return { puzzles: [], error: flowData.error };
+        }
         const queueingMap = buildQueueingMap();
         const queueTargetMap = buildQueueTargetMap();
         const queueControlledMap = buildQueueControlledMap();
         const queueChoiceMaps = buildQueueChoiceMaps();
         const queueActiveMap = buildQueueActiveMap();
         const queueSolvedMap = buildQueueSolvedMap();
+        const queueContextMap = buildQueueContextMap();
 
           return { 
               puzzles: flowData.puzzles,
@@ -3363,7 +7196,22 @@ module.exports = {
                     queueActive: queueActiveMap[p.id] === branch.id,
                     queueBlocked: !!queueChoiceMaps.blockedMap?.[branch.id]?.[p.id],
                     queueChosen: !!queueChoiceMaps.chosenMap?.[branch.id]?.[p.id],
-                    queueSolved: !!queueSolvedMap[branch.id]?.[p.id]
+                    queueSolved: !!queueSolvedMap[branch.id]?.[p.id],
+                    queueInstanceState: (() => {
+                        const isSolved = !!queueSolvedMap[branch.id]?.[p.id];
+                        if (isSolved) return "solved";
+                        const isActive = queueActiveMap[p.id] === branch.id;
+                        if (isActive) return "running";
+                        const isQueueing = !!queueingMap[branch.id]?.[p.id];
+                        if (isQueueing) return "queueing";
+                        // Selected queue path in this branch follows normal flow rules.
+                        if (!!queueChoiceMaps.chosenMap?.[branch.id]?.[p.id]) return null;
+                        // Non-selected queue path in this branch stays locked.
+                        if (!!queueChoiceMaps.blockedMap?.[branch.id]?.[p.id]) return "locked";
+                        const inQueueContext = !!queueContextMap[p.id];
+                        if (!inQueueContext) return null;
+                        return "locked";
+                    })()
                   })),
                   startTime: branchStartTimes[branch.id] || gameStartTime || null
               })),
@@ -3426,7 +7274,7 @@ module.exports = {
             if (puzzleStateDetails[id]?.state === 'solved' || puzzleSolvedState[id]) return;
             const node = getPuzzleNodeById(id);
             if (!node) return;
-            applyPuzzleState(id, 'solved');
+            applyPuzzleState(id, 'solved', null, { outbound: true, branchId: resolvedBranchId });
             if (node.setSolved) {
                 node.setSolved();
             }
@@ -3543,6 +7391,8 @@ module.exports = {
 
     // Reset room (reset all puzzle states)
     resetRoom: () => {
+        clearScriptingForeverTimers();
+        stopAllSoundCuePlayback();
         suppressDeviceStateUntil = Date.now() + 1500;
         resetAllPuzzleStates('locked');
         puzzleTelemetry = {};
@@ -3560,6 +7410,7 @@ module.exports = {
             }
         });
         logSystem("Room reset.", "info");
+        emitUpdate('room-reset');
         return { success: true };
     },
 
@@ -3575,16 +7426,27 @@ module.exports = {
     getAutoRestart: () => ({ ...autoRestartConfig }),
 
     processMqttMessage: async (topic, message) => {
-        const parts = topic.split('/');
+        const topicStr = String(topic || "");
+        const rawText = message ? message.toString() : "";
+        let payload = {};
+        try { payload = JSON.parse(rawText); } catch (e) {
+            payload = rawText;
+        }
+
+        if (topicStr.startsWith(ZIGBEE_TOPIC_PREFIX)) {
+            processZigbeeMqttMessage(topicStr, payload, rawText);
+            if (!topicStr.startsWith("puzzle/")) return;
+        }
+
+        const parts = topicStr.split('/');
         if (parts.length < 3 || parts[0] !== 'puzzle') return;
         
         const deviceId = parts[1];
         const action = parts[2]; 
-        
-        let payload = {};
-        try { payload = JSON.parse(message.toString()); } catch (e) {}
 
-        logSystem(`MQTT ${action} from ${deviceId}`, "mqtt", { topic, payload });
+        if (action !== 'heartbeat') {
+            logSystem(`MQTT ${action} from ${deviceId}`, "mqtt", { topic: topicStr, payload, direction: "inbound" });
+        }
 
         if (action === 'heartbeat') {
             const deviceName = payload.name || "Unknown";
@@ -3622,6 +7484,17 @@ module.exports = {
             }
         }
 
+        if (action === 'custom' || action === 'custom-event' || action === 'custom_event') {
+            const puzzleNodes = graph.findNodesByType("escape/Puzzle");
+            const targetNode = puzzleNodes.find(n => n.properties.selectedDeviceID === deviceId);
+            if (targetNode) {
+                const customValueRaw = payload?.value ?? payload?.data ?? payload?.text ?? payload?.custom ?? '';
+                const customValue = String(customValueRaw ?? '');
+                runPuzzleScriptingEvent(targetNode, 'on_custom', { customValue });
+                logSystem(`Custom event from "${getPuzzleName(targetNode, targetNode.id)}": ${customValue}`, "system");
+            }
+        }
+
         if (action === 'external-check' || action === 'external_check' || action === 'externalCheck') {
             const puzzleNodes = graph.findNodesByType("escape/Puzzle");
             const targetNode = puzzleNodes.find(n => n.properties.selectedDeviceID === deviceId);
@@ -3633,6 +7506,7 @@ module.exports = {
             }
             const value = payload?.variable ?? payload?.value ?? payload?.solution ?? payload?.expected ?? payload?.data ?? null;
             setExternalCheckRuntime(targetNode.id, { active: true, value });
+            runPuzzleScriptingEvent(targetNode, 'on_external_input_activated', { expectedValue: value });
             logSystem(`External check activated for "${getPuzzleName(targetNode, targetNode.id)}"`, "system");
         }
     }

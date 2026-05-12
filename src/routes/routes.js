@@ -122,7 +122,7 @@ module.exports = (dbWrapper, mqttClient) => {
     router.post('/devices/delete', async (req, res) => { await gameEngine.removeDevice(req.body.id); res.json({status: "ok"}); });
     router.get('/logs', (req, res) => res.json(gameEngine.getLogs()));
     router.post('/logs/clear', (req, res) => res.json(gameEngine.clearLogs()));
-    router.get('/runtime/status', (req, res) => res.json(gameEngine.getPuzzleStatuses()));
+    router.get('/runtime/status', (req, res) => { noCache(res); res.json(gameEngine.getPuzzleStatuses()); });
     router.get('/screens/:slug/status', (req, res) => {
         noCache(res);
         const slug = (req.params.slug || "").toLowerCase();
@@ -161,11 +161,84 @@ module.exports = (dbWrapper, mqttClient) => {
         res.json(result);
     });
     router.get('/runtime/data', (req, res) => { noCache(res); res.json(gameEngine.getDataSnapshot()); });
-    router.get('/runtime/room/status', (req, res) => res.json(gameEngine.getRuntimeRoomStatus()));
+    router.get('/runtime/room/status', (req, res) => { noCache(res); res.json(gameEngine.getRuntimeRoomStatus()); });
     router.post('/runtime/auto-restart', (req, res) => {
         const enabled = !!req.body?.enabled;
         const delay = req.body?.delaySec ?? req.body?.delay;
         const result = gameEngine.setAutoRestart(enabled, delay);
+        res.json(result);
+    });
+    router.post('/runtime/dmx/cue/test', (req, res) => {
+        const fixtureId = req.body?.fixtureId;
+        const cueId = req.body?.cueId;
+        const result = gameEngine.testDmxCue(fixtureId, cueId);
+        if (!result.success) {
+            return res.status(400).json(result);
+        }
+        res.json(result);
+    });
+    router.get('/zigbee/devices', (req, res) => {
+        noCache(res);
+        const result = gameEngine.getZigbeeDevices();
+        res.json(result);
+    });
+    router.post('/zigbee/discovery/start', (req, res) => {
+        const durationSec = req.body?.durationSec;
+        const result = gameEngine.startZigbeeDiscovery(durationSec);
+        if (!result.success) {
+            return res.status(400).json(result);
+        }
+        res.json(result);
+    });
+    router.post('/zigbee/discovery/stop', (req, res) => {
+        const result = gameEngine.stopZigbeeDiscovery();
+        if (!result.success) {
+            return res.status(400).json(result);
+        }
+        res.json(result);
+    });
+    router.post('/zigbee/discovery/refresh', (req, res) => {
+        const result = gameEngine.refreshZigbeeDevices();
+        res.json(result);
+    });
+    router.post('/zigbee/devices/hide', (req, res) => {
+        const deviceId = req.body?.deviceId;
+        const result = gameEngine.hideZigbeeDevice(deviceId);
+        if (!result.success) {
+            return res.status(400).json(result);
+        }
+        res.json(result);
+    });
+    router.post('/zigbee/devices/rename', async (req, res) => {
+        const deviceId = req.body?.deviceId;
+        const newName = req.body?.newName;
+        const result = await gameEngine.renameZigbeeDevice(deviceId, newName);
+        if (!result.success) {
+            return res.status(400).json(result);
+        }
+        res.json(result);
+    });
+    router.post('/zigbee/devices/reset-on-puzzle-reset', (req, res) => {
+        const deviceId = req.body?.deviceId;
+        const enabled = !!req.body?.enabled;
+        const result = gameEngine.setZigbeeDeviceResetOnPuzzleReset(deviceId, enabled);
+        if (!result.success) {
+            return res.status(400).json(result);
+        }
+        res.json(result);
+    });
+    router.post('/zigbee/triggers/upsert', (req, res) => {
+        const result = gameEngine.upsertZigbeeMessageTrigger(req.body || {});
+        if (!result.success) {
+            return res.status(400).json(result);
+        }
+        res.json(result);
+    });
+    router.post('/zigbee/triggers/delete', (req, res) => {
+        const result = gameEngine.deleteZigbeeMessageTrigger(req.body?.triggerId);
+        if (!result.success) {
+            return res.status(400).json(result);
+        }
         res.json(result);
     });
     router.get('/system/settings', async (req, res) => {
@@ -198,6 +271,30 @@ module.exports = (dbWrapper, mqttClient) => {
             res.json(result);
         } catch (err) {
             res.status(500).json({ success: false, error: 'Autostart konnte nicht gesetzt werden.' });
+        }
+    });
+    router.post('/system/zigbee-bridge', async (req, res) => {
+        try {
+            const enabled = !!req.body?.enabled;
+            const result = await gameEngine.setZigbeeBridgeEnabled(enabled);
+            if (!result.success) {
+                return res.status(400).json(result);
+            }
+            res.json(result);
+        } catch (err) {
+            res.status(500).json({ success: false, error: 'Zigbee Bridge konnte nicht gesetzt werden.' });
+        }
+    });
+    router.post('/system/dmx-service', async (req, res) => {
+        try {
+            const enabled = !!req.body?.enabled;
+            const result = await gameEngine.setDmxServiceEnabled(enabled);
+            if (!result.success) {
+                return res.status(400).json(result);
+            }
+            res.json(result);
+        } catch (err) {
+            res.status(500).json({ success: false, error: 'DMX Service konnte nicht gesetzt werden.' });
         }
     });
     router.post('/system/mqtt-port', async (req, res) => {

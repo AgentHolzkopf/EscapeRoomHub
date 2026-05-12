@@ -368,12 +368,16 @@
             color: #ccc;
             font-size: 11px;
             line-height: 1.5;
+            scrollbar-width: thin;
+            scrollbar-color: #2c6aa3 #1f1f1f;
         }
         .runtime-log-entry { color: #fff; }
         .runtime-log-entry.log-success { color: #4caf50; }
         .runtime-log-entry.log-warn { color: #ffc107; }
         .runtime-log-entry.log-error { color: #ff5555; }
         .runtime-log-entry.log-system { color: #4aa3ff; }
+        .runtime-log-entry.log-zigbee { color: #67e8f9; }
+        .runtime-log-entry.log-dmx { color: #f59e0b; }
         .runtime-log-entry.log-data { color: #4caf50; }
         .runtime-log-empty { color: #9aa6b5; font-size: 11px; padding: 4px 0 10px 10px; }
         .fallback-tag { color: #ff5555; font-size: 11px; margin-left: 6px; }
@@ -386,25 +390,33 @@
         /* Scrollbars */
         .flow-scroll::-webkit-scrollbar,
         .detail-panel::-webkit-scrollbar,
-        .data-list::-webkit-scrollbar {
+        .data-list::-webkit-scrollbar,
+        .runtime-log-list::-webkit-scrollbar,
+        .runtime-log-body::-webkit-scrollbar {
             width: 8px;
         }
         .flow-scroll::-webkit-scrollbar-track,
         .detail-panel::-webkit-scrollbar-track,
-        .data-list::-webkit-scrollbar-track {
+        .data-list::-webkit-scrollbar-track,
+        .runtime-log-list::-webkit-scrollbar-track,
+        .runtime-log-body::-webkit-scrollbar-track {
             background: #1f1f1f;
             border-radius: 6px;
         }
         .flow-scroll::-webkit-scrollbar-thumb,
         .detail-panel::-webkit-scrollbar-thumb,
-        .data-list::-webkit-scrollbar-thumb {
+        .data-list::-webkit-scrollbar-thumb,
+        .runtime-log-list::-webkit-scrollbar-thumb,
+        .runtime-log-body::-webkit-scrollbar-thumb {
             background: linear-gradient(180deg, #2c6aa3, #1f4f7a);
             border-radius: 6px;
             border: 1px solid #12324f;
         }
         .flow-scroll::-webkit-scrollbar-thumb:hover,
         .detail-panel::-webkit-scrollbar-thumb:hover,
-        .data-list::-webkit-scrollbar-thumb:hover {
+        .data-list::-webkit-scrollbar-thumb:hover,
+        .runtime-log-list::-webkit-scrollbar-thumb:hover,
+        .runtime-log-body::-webkit-scrollbar-thumb:hover {
             background: linear-gradient(180deg, #3587d4, #236299);
         }
         .settings-modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: none; align-items: center; justify-content: center; z-index: 4000; }
@@ -524,6 +536,8 @@
                 <div class="runtime-log-filters">
                     <label class="log-filter"><input type="checkbox" value="heartbeat" checked> Heartbeats</label>
                     <label class="log-filter"><input type="checkbox" value="mqtt" checked> MQTT Messages</label>
+                    <label class="log-filter"><input type="checkbox" value="dmx" checked> DMX Messages</label>
+                    <label class="log-filter"><input type="checkbox" value="zigbee" checked> Zigbee Messages</label>
                     <label class="log-filter"><input type="checkbox" value="error" checked> Warnings/Error Messages</label>
                     <label class="log-filter"><input type="checkbox" value="system" checked> System Messages</label>
                 </div>
@@ -575,6 +589,18 @@
                         </label>
                     </div>
                     <div class="settings-sub" id="media-server-status"></div>
+                </div>
+                <div class="settings-section">
+                    <div class="settings-title">DMX Service</div>
+                    <div class="settings-sub">Run the OLA DMX service in the background.</div>
+                    <div class="settings-field settings-label-row">
+                        <label class="switch">
+                            <input type="checkbox" id="dmx-service-toggle">
+                            <span class="slider"></span>
+                            <span class="switch-label">DMX Service</span>
+                        </label>
+                    </div>
+                    <div class="settings-sub" id="dmx-service-status">Disabled</div>
                 </div>
             </div>
         </div>
@@ -645,7 +671,16 @@
         const victoryStatus = document.getElementById('victory-status');
         const mediaServerToggle = document.getElementById('media-server-toggle');
         const mediaServerStatus = document.getElementById('media-server-status');
-        let systemSettings = { screenSaverImage: null, victoryScreen: null, mediaServerEnabled: false };
+        const dmxServiceToggle = document.getElementById('dmx-service-toggle');
+        const dmxServiceStatus = document.getElementById('dmx-service-status');
+        let systemSettings = {
+            screenSaverImage: null,
+            victoryScreen: null,
+            mediaServerEnabled: false,
+            dmxServiceEnabled: false,
+            dmxServiceStatus: null,
+            dmxServiceAvailable: true
+        };
         const roomTimerEl = document.getElementById('room-timer');
         const roomStatusEl = document.getElementById('room-status');
         let roomStatus = 'Running';
@@ -668,7 +703,7 @@
         const runtimeLogList = document.getElementById('runtime-log-list');
         const runtimeLogEmpty = document.getElementById('runtime-log-empty');
         let runtimeLogs = [];
-        const runtimeLogFiltersState = { heartbeat: true, mqtt: true, error: true, system: true };
+        const runtimeLogFiltersState = { heartbeat: true, mqtt: true, dmx: true, zigbee: true, error: true, system: true };
 
         function normalizeDataType(type) {
             const t = (type ?? "string").toString().toLowerCase();
@@ -694,6 +729,9 @@
         function categorizeLog(entry) {
             const msg = (entry?.msg || '').toLowerCase();
             const type = (entry?.type || '').toLowerCase();
+            const topic = (entry?.meta?.topic || '').toLowerCase();
+            if (type === 'dmx' || msg.includes('dmx')) return 'dmx';
+            if (type === 'zigbee' || msg.includes('zigbee') || topic.startsWith('zigbee2mqtt/')) return 'zigbee';
             if (msg.includes('heartbeat')) return 'heartbeat';
             if (msg.includes('mqtt')) return 'mqtt';
             if (type === 'error' || type === 'warn' || type === 'warning' || msg.includes('error') || msg.includes('warn')) return 'error';
@@ -800,6 +838,13 @@
             }
             if (mediaServerToggle) mediaServerToggle.checked = !!systemSettings.mediaServerEnabled;
             if (mediaServerStatus) mediaServerStatus.textContent = systemSettings.mediaServerEnabled ? 'Enabled' : 'Disabled';
+            if (dmxServiceToggle) {
+                dmxServiceToggle.checked = !!systemSettings.dmxServiceEnabled;
+                dmxServiceToggle.disabled = systemSettings.dmxServiceAvailable === false;
+            }
+            if (dmxServiceStatus) {
+                dmxServiceStatus.textContent = systemSettings.dmxServiceStatus || (systemSettings.dmxServiceEnabled ? 'Running' : 'Stopped');
+            }
         }
 
         function openHintModal(puzzleId, puzzleName) {
@@ -1138,6 +1183,41 @@
                 alert('Media server update failed: ' + err.message);
             } finally {
                 mediaServerToggle.disabled = false;
+            }
+        }
+
+        async function persistDmxServiceSetting() {
+            if (!dmxServiceToggle) return;
+            const next = !!dmxServiceToggle.checked;
+            if (dmxServiceStatus) dmxServiceStatus.textContent = next ? 'Starting...' : 'Stopping...';
+            dmxServiceToggle.disabled = true;
+            try {
+                const res = await fetch('/api/system/dmx-service', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ enabled: next })
+                });
+                const data = await res.json();
+                if (!res.ok || data.success === false) {
+                    throw new Error(data.error || 'Update failed');
+                }
+                systemSettings.dmxServiceEnabled = !!data.enabled;
+                systemSettings.dmxServiceStatus = data.status || null;
+                systemSettings.dmxServiceAvailable = data.available !== false;
+                dmxServiceToggle.checked = systemSettings.dmxServiceEnabled;
+                dmxServiceToggle.disabled = systemSettings.dmxServiceAvailable === false;
+                if (dmxServiceStatus) {
+                    dmxServiceStatus.textContent = systemSettings.dmxServiceStatus || (systemSettings.dmxServiceEnabled ? 'Running' : 'Stopped');
+                }
+            } catch (err) {
+                dmxServiceToggle.checked = !!systemSettings.dmxServiceEnabled;
+                dmxServiceToggle.disabled = systemSettings.dmxServiceAvailable === false;
+                if (dmxServiceStatus) dmxServiceStatus.textContent = 'Update failed';
+                alert('DMX Service update failed: ' + err.message);
+            } finally {
+                if (dmxServiceToggle && systemSettings.dmxServiceAvailable !== false) {
+                    dmxServiceToggle.disabled = false;
+                }
             }
         }
 
@@ -1552,6 +1632,8 @@
                     typeClass === 'success' ? 'log-success' :
                     typeClass === 'warn' || typeClass === 'warning' ? 'log-warn' :
                     typeClass === 'error' ? 'log-error' :
+                    typeClass === 'dmx' ? 'log-dmx' :
+                    typeClass === 'zigbee' ? 'log-zigbee' :
                     typeClass === 'system' ? 'log-system' : ''
                 ].filter(Boolean).join(' ');
                 const time = escapeHtml(entry.timestamp || '--:--:--');
@@ -1627,6 +1709,7 @@
             victoryBtn?.addEventListener('click', ()=> victoryInput.click());
             victoryInput?.addEventListener('change', ()=> uploadVictoryScreen(victoryInput.files[0]));
             mediaServerToggle?.addEventListener('change', persistMediaServerSetting);
+            dmxServiceToggle?.addEventListener('change', persistDmxServiceSetting);
         }
         hintModalCancel.addEventListener('click', closeHintModal);
         hintModal.addEventListener('click', (e)=>{ if (e.target === hintModal) e.stopPropagation(); });

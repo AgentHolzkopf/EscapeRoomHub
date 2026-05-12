@@ -15,7 +15,9 @@ function attachClientHandlers(nextClient) {
         try {
             nextClient.subscribe('puzzle/+/heartbeat');
             nextClient.subscribe('puzzle/+/data');
+            nextClient.subscribe('puzzle/+/custom');
             nextClient.subscribe('puzzle/+/external-check');
+            nextClient.subscribe('zigbee2mqtt/#');
         } catch (err) {
             console.error('MQTT subscribe failed:', err);
         }
