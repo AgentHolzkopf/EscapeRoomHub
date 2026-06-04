@@ -63,6 +63,10 @@ let puzzleScriptingSensorInstances = {}; // { puzzleId: { deviceId: { field: val
 let scriptingForeverTimers = new Set();
 let puzzleForeverRunners = new Map();
 let roomForeverRunners = new Map();
+let puzzleScriptingTriggerLocks = new Set();
+let roomScriptingTriggerLocks = new Set();
+let puzzleLoopGeneration = new Map();
+let roomLoopGeneration = 0;
 let suppressDeviceStateUntil = 0;
 const ONLINE_THRESHOLD_MS = 5000;
 const VALID_PUZZLE_STATES = ['locked', 'active', 'starting', 'running', 'solved', 'error', 'uploading', 'downloading'];
@@ -118,15 +122,15 @@ let dmxUniverseBuffer = new Array(DMX_MAX_CHANNEL).fill(0);
 let dmxSendErrorGateAt = 0;
 let dmxCueTokenCounter = 0;
 let dmxPlaybackTimers = new Map();
-let dmxCueOrderCounter = 0;
-let dmxChannelLayers = Array.from({ length: DMX_MAX_CHANNEL }, () => []);
-let dmxCueChannelMap = new Map();
+let dmxActiveCueInstances = new Map();
+let dmxSceneScheduleTimers = new Set();
 let activeSoundCueProcesses = new Set();
 let soundCuePendingRequest = null;
 let soundCueWorkerRunning = false;
 let dmxSendInFlight = false;
 let dmxQueuedSendJob = null;
 let dmxOlaCommandProbeInFlight = false;
+let preferredSoundCuePlayer = null;
 let linuxSerialMetaCache = { at: 0, byPath: {} };
 let linuxSerialMetaProbeInFlight = false;
 let zigbeeCachePersistTimer = null;
@@ -1389,6 +1393,112 @@ function buildGroupCueResolvedEntries(groupCue) {
     return entries;
 }
 
+function normalizeSceneTimelineSlots(groupCue) {
+    const normalized = [];
+    const pushCueSlot = (rawItems) => {
+        const source = Array.isArray(rawItems) ? rawItems : [];
+        const seen = new Set();
+        const items = [];
+        source.forEach((entry) => {
+            const fixtureId = parseInt(entry?.fixtureId, 10);
+            const cueId = parseInt(entry?.cueId, 10);
+            if (!Number.isFinite(fixtureId) || !Number.isFinite(cueId)) return;
+            const key = `${fixtureId}:${cueId}`;
+            if (seen.has(key)) return;
+            seen.add(key);
+            items.push({ fixtureId, cueId });
+        });
+        if (items.length) normalized.push({ type: 'cues', items });
+    };
+
+    const rawTimeline = Array.isArray(groupCue?.sceneTimeline) ? groupCue.sceneTimeline : null;
+    if (rawTimeline && rawTimeline.length) {
+        rawTimeline.forEach((slot) => {
+            const type = String(slot?.type || '').trim().toLowerCase();
+            if (type === 'delay') {
+                const ms = clampDmxInt(slot?.ms, 0, 600000, 0);
+                if (ms > 0) normalized.push({ type: 'delay', ms });
+                return;
+            }
+            if (type === 'cues') {
+                pushCueSlot(slot?.items || slot?.cues || slot?.assignments || []);
+            }
+        });
+        if (normalized.length) return normalized;
+    }
+
+    // Backward compatibility: old scene cues only had groupAssignments (all parallel).
+    const assignments = normalizeGroupCueAssignments(groupCue);
+    assignments.forEach((assignment) => {
+        normalized.push({ type: 'cues', items: [{ fixtureId: assignment.fixtureId, cueId: assignment.cueId }] });
+    });
+    return normalized;
+}
+
+function estimateCueRuntimeMsByRef(fixtureId, cueId, stack = new Set()) {
+    const sourceFixture = getLightingFixtureById(fixtureId);
+    if (!sourceFixture || !Array.isArray(sourceFixture.cues)) return 0;
+    const sourceCue = sourceFixture.cues.find((entry) => parseInt(entry?.id, 10) === parseInt(cueId, 10));
+    if (!sourceCue) return 0;
+    if (!isLightingGroupFixture(sourceFixture)) {
+        const fx = normalizeCueEffects(sourceCue);
+        const fi = clampDmxInt(fx?.fadeInMs, 0, 600000, 0);
+        const du = clampDmxInt(fx?.durationMs, 0, 600000, 0);
+        const fo = clampDmxInt(fx?.fadeOutMs, 0, 600000, 0);
+        if (du === 0) return null;
+        return fi + du + fo;
+    }
+    const refKey = `${parseInt(fixtureId, 10)}:${parseInt(cueId, 10)}`;
+    if (stack.has(refKey)) return null;
+    const nextStack = new Set(stack);
+    nextStack.add(refKey);
+    const timeline = normalizeSceneTimelineSlots(sourceCue);
+    let totalMs = 0;
+    for (let slotIndex = 0; slotIndex < timeline.length; slotIndex += 1) {
+        const slot = timeline[slotIndex];
+        if (slot?.type === 'delay') {
+            totalMs += clampDmxInt(slot?.ms, 0, 600000, 0);
+            continue;
+        }
+        const items = Array.isArray(slot?.items) ? slot.items : [];
+        let stepMs = 0;
+        for (let itemIndex = 0; itemIndex < items.length; itemIndex += 1) {
+            const item = items[itemIndex];
+            const childMs = estimateCueRuntimeMsByRef(item?.fixtureId, item?.cueId, nextStack);
+            if (childMs == null) return null;
+            stepMs = Math.max(stepMs, childMs);
+        }
+        totalMs += stepMs;
+    }
+    return totalMs;
+}
+
+function isCueInfiniteByRef(fixtureId, cueId, stack = new Set()) {
+    const sourceFixture = getLightingFixtureById(fixtureId);
+    if (!sourceFixture || !Array.isArray(sourceFixture.cues)) return false;
+    const sourceCue = sourceFixture.cues.find((entry) => parseInt(entry?.id, 10) === parseInt(cueId, 10));
+    if (!sourceCue) return false;
+    if (!isLightingGroupFixture(sourceFixture)) {
+        const fx = normalizeCueEffects(sourceCue);
+        return clampDmxInt(fx?.durationMs, 0, 600000, 0) === 0;
+    }
+    const refKey = `${parseInt(fixtureId, 10)}:${parseInt(cueId, 10)}`;
+    if (stack.has(refKey)) return true;
+    const nextStack = new Set(stack);
+    nextStack.add(refKey);
+    const timeline = normalizeSceneTimelineSlots(sourceCue);
+    for (let slotIndex = 0; slotIndex < timeline.length; slotIndex += 1) {
+        const slot = timeline[slotIndex];
+        if (slot?.type !== 'cues') continue;
+        const items = Array.isArray(slot?.items) ? slot.items : [];
+        for (let itemIndex = 0; itemIndex < items.length; itemIndex += 1) {
+            const item = items[itemIndex];
+            if (isCueInfiniteByRef(item?.fixtureId, item?.cueId, nextStack)) return true;
+        }
+    }
+    return false;
+}
+
 function mergeGroupCueChannels(entries) {
     const byChannel = new Map();
     entries.forEach(({ cue }) => {
@@ -1584,26 +1694,58 @@ function clearDmxPlaybackTimers() {
     dmxPlaybackTimers.clear();
 }
 
-function registerCueTokenChannels(token, channels) {
+function clearDmxSceneScheduleTimers() {
+    if (!(dmxSceneScheduleTimers instanceof Set)) {
+        dmxSceneScheduleTimers = new Set();
+        return;
+    }
+    dmxSceneScheduleTimers.forEach((timerId) => {
+        try { clearTimeout(timerId); } catch (e) {}
+    });
+    dmxSceneScheduleTimers.clear();
+}
+
+function registerCueInstance(token, channels, snapshotMap) {
     const safeToken = clampDmxInt(token, 1, Number.MAX_SAFE_INTEGER, 0);
     if (!safeToken) return;
-    const set = new Set();
+    const channelSet = new Set();
     (Array.isArray(channels) ? channels : []).forEach((channel) => {
         const safeChannel = clampDmxInt(channel, 1, DMX_MAX_CHANNEL, -1);
-        if (safeChannel >= 1) set.add(safeChannel);
+        if (safeChannel >= 1) channelSet.add(safeChannel);
     });
-    dmxCueChannelMap.set(safeToken, set);
+    const safeSnapshot = new Map();
+    if (snapshotMap instanceof Map) {
+        snapshotMap.forEach((value, channel) => {
+            const safeChannel = clampDmxInt(channel, 1, DMX_MAX_CHANNEL, -1);
+            if (safeChannel < 1) return;
+            safeSnapshot.set(safeChannel, clampDmxInt(value, DMX_MIN_VALUE, DMX_MAX_VALUE, 0));
+        });
+    }
+    dmxActiveCueInstances.set(safeToken, {
+        token: safeToken,
+        channels: channelSet,
+        snapshotMap: safeSnapshot,
+        startedAt: Date.now()
+    });
 }
 
 function unregisterCueToken(token) {
     const safeToken = clampDmxInt(token, 1, Number.MAX_SAFE_INTEGER, 0);
     if (!safeToken) return;
-    dmxCueChannelMap.delete(safeToken);
-    for (let idx = 0; idx < dmxChannelLayers.length; idx += 1) {
-        const layers = dmxChannelLayers[idx];
-        if (!Array.isArray(layers) || !layers.length) continue;
-        dmxChannelLayers[idx] = layers.filter((entry) => entry?.token !== safeToken);
+    dmxActiveCueInstances.delete(safeToken);
+}
+
+function restoreCueSnapshot(token) {
+    const safeToken = clampDmxInt(token, 1, Number.MAX_SAFE_INTEGER, 0);
+    if (!safeToken) return { ok: true, noop: true };
+    const instance = dmxActiveCueInstances.get(safeToken);
+    if (!instance || !(instance.snapshotMap instanceof Map) || !instance.snapshotMap.size) {
+        unregisterCueToken(safeToken);
+        return { ok: true, noop: true };
     }
+    const result = sendFrameFromChannelValues(instance.snapshotMap);
+    unregisterCueToken(safeToken);
+    return result;
 }
 
 function interruptDmxCueLayersForChannels(channels) {
@@ -1614,10 +1756,10 @@ function interruptDmxCueLayersForChannels(channels) {
 
     const interruptedTokens = new Set();
     const safeChannelSet = new Set(safeChannels);
-    if (dmxCueChannelMap instanceof Map) {
-        dmxCueChannelMap.forEach((tokenChannels, token) => {
-            if (!(tokenChannels instanceof Set) || !tokenChannels.size) return;
-            for (const channel of tokenChannels.values()) {
+    if (dmxActiveCueInstances instanceof Map) {
+        dmxActiveCueInstances.forEach((instance, token) => {
+            if (!(instance?.channels instanceof Set) || !instance.channels.size) return;
+            for (const channel of instance.channels.values()) {
                 if (safeChannelSet.has(channel)) {
                     interruptedTokens.add(token);
                     break;
@@ -1625,14 +1767,6 @@ function interruptDmxCueLayersForChannels(channels) {
             }
         });
     }
-    safeChannels.forEach((channel) => {
-        const layers = dmxChannelLayers[channel - 1];
-        if (!Array.isArray(layers) || !layers.length) return;
-        layers.forEach((entry) => {
-            const token = clampDmxInt(entry?.token, 1, Number.MAX_SAFE_INTEGER, 0);
-            if (token) interruptedTokens.add(token);
-        });
-    });
     if (!interruptedTokens.size) return;
 
     if (!(dmxPlaybackTimers instanceof Map)) {
@@ -1645,10 +1779,9 @@ function interruptDmxCueLayersForChannels(channels) {
         dmxPlaybackTimers.delete(timerId);
     });
 
-    interruptedTokens.forEach((token) => unregisterCueToken(token));
-
-    const fallbackFrame = buildLayerFallbackFrame(safeChannels);
-    sendFrameFromChannelValues(fallbackFrame);
+    interruptedTokens.forEach((token) => {
+        restoreCueSnapshot(token);
+    });
 }
 
 function buildZeroMapForChannels(channels) {
@@ -1705,97 +1838,6 @@ function sendFrameFromChannelValues(valuesByChannel) {
     return result;
 }
 
-function getTopLayerForChannel(channel) {
-    const safeChannel = clampDmxInt(channel, 1, DMX_MAX_CHANNEL, -1);
-    if (safeChannel < 1) return null;
-    const layers = dmxChannelLayers[safeChannel - 1];
-    if (!Array.isArray(layers) || !layers.length) return null;
-    return layers[layers.length - 1] || null;
-}
-
-function getTopLayerForChannelExcludingToken(channel, token) {
-    const safeChannel = clampDmxInt(channel, 1, DMX_MAX_CHANNEL, -1);
-    const safeToken = clampDmxInt(token, 1, Number.MAX_SAFE_INTEGER, 0);
-    if (safeChannel < 1 || !safeToken) return null;
-    const layers = dmxChannelLayers[safeChannel - 1];
-    if (!Array.isArray(layers) || !layers.length) return null;
-    for (let i = layers.length - 1; i >= 0; i -= 1) {
-        const entry = layers[i];
-        if (!entry || entry.token === safeToken) continue;
-        return entry;
-    }
-    return null;
-}
-
-function registerCueLayerValues(token, targetMap) {
-    const safeToken = clampDmxInt(token, 1, Number.MAX_SAFE_INTEGER, 0);
-    if (!safeToken || !(targetMap instanceof Map)) return;
-    const order = ++dmxCueOrderCounter;
-    targetMap.forEach((value, channel) => {
-        const safeChannel = clampDmxInt(channel, 1, DMX_MAX_CHANNEL, -1);
-        if (safeChannel < 1) return;
-        const layers = dmxChannelLayers[safeChannel - 1];
-        const filtered = Array.isArray(layers) ? layers.filter((entry) => entry?.token !== safeToken) : [];
-        filtered.push({
-            token: safeToken,
-            order,
-            value: clampDmxInt(value, DMX_MIN_VALUE, DMX_MAX_VALUE, 0)
-        });
-        filtered.sort((a, b) => (a.order || 0) - (b.order || 0));
-        dmxChannelLayers[safeChannel - 1] = filtered;
-    });
-}
-
-function sendLayeredFrameFromChannelValues(valuesByChannel, token) {
-    const safeToken = clampDmxInt(token, 1, Number.MAX_SAFE_INTEGER, 0);
-    const filtered = new Map();
-    valuesByChannel.forEach((value, channel) => {
-        const top = getTopLayerForChannel(channel);
-        if (!top || top.token !== safeToken) return;
-        filtered.set(channel, value);
-    });
-    if (!filtered.size) return { ok: true, noop: true };
-    return sendFrameFromChannelValues(filtered);
-}
-
-function removeCueLayerTokenFromChannels(token, channels) {
-    const safeToken = clampDmxInt(token, 1, Number.MAX_SAFE_INTEGER, 0);
-    if (!safeToken || !Array.isArray(channels)) return;
-    channels.forEach((channel) => {
-        const safeChannel = clampDmxInt(channel, 1, DMX_MAX_CHANNEL, -1);
-        if (safeChannel < 1) return;
-        const layers = dmxChannelLayers[safeChannel - 1];
-        if (!Array.isArray(layers) || !layers.length) return;
-        dmxChannelLayers[safeChannel - 1] = layers.filter((entry) => entry?.token !== safeToken);
-    });
-}
-
-function buildLayerFallbackFrame(channels) {
-    const frame = new Map();
-    if (!Array.isArray(channels)) return frame;
-    channels.forEach((channel) => {
-        const safeChannel = clampDmxInt(channel, 1, DMX_MAX_CHANNEL, -1);
-        if (safeChannel < 1) return;
-        const top = getTopLayerForChannel(safeChannel);
-        const value = top ? clampDmxInt(top.value, DMX_MIN_VALUE, DMX_MAX_VALUE, 0) : 0;
-        frame.set(safeChannel, value);
-    });
-    return frame;
-}
-
-function buildLayerFallbackFrameExcludingToken(channels, token) {
-    const frame = new Map();
-    if (!Array.isArray(channels)) return frame;
-    channels.forEach((channel) => {
-        const safeChannel = clampDmxInt(channel, 1, DMX_MAX_CHANNEL, -1);
-        if (safeChannel < 1) return;
-        const top = getTopLayerForChannelExcludingToken(safeChannel, token);
-        const value = top ? clampDmxInt(top.value, DMX_MIN_VALUE, DMX_MAX_VALUE, 0) : 0;
-        frame.set(safeChannel, value);
-    });
-    return frame;
-}
-
 function runDmxCueWithEffects(cue, effects) {
     const targets = getCueChannelTargets(cue);
     if (!targets.length) return { success: false, error: 'cue-empty' };
@@ -1812,7 +1854,12 @@ function runDmxCueWithEffects(cue, effects) {
     const targetChannels = targets.map(entry => entry.channel);
     interruptDmxCueLayersForChannels(targetChannels);
     const token = ++dmxCueTokenCounter;
-    registerCueTokenChannels(token, targetChannels);
+    const snapshotMap = new Map();
+    targetChannels.forEach((channel) => {
+        const idx = channel - 1;
+        snapshotMap.set(channel, clampDmxInt(dmxUniverseBuffer[idx], DMX_MIN_VALUE, DMX_MAX_VALUE, 0));
+    });
+    registerCueInstance(token, targetChannels, snapshotMap);
 
     const schedule = (delayMs, fn) => {
         const safeDelay = Math.max(0, clampDmxInt(delayMs, 0, 600000, 0));
@@ -1831,7 +1878,7 @@ function runDmxCueWithEffects(cue, effects) {
             const value = Math.round(fromValue + ((toValue - fromValue) * safeRatio));
             frame.set(channel, clampDmxInt(value, DMX_MIN_VALUE, DMX_MAX_VALUE, 0));
         });
-        return sendLayeredFrameFromChannelValues(frame, token);
+        return sendFrameFromChannelValues(frame);
     };
 
     const delayMs = clampDmxInt(effects?.delayMs, 0, 600000, 0);
@@ -1839,18 +1886,8 @@ function runDmxCueWithEffects(cue, effects) {
     const durationMs = effects.durationMs;
     const fadeOutMs = effects.fadeOutMs;
     const infiniteDuration = durationMs === 0;
-    let ownersClaimed = false;
-    const ensureChannelOwnership = () => {
-        if (ownersClaimed) return;
-        ownersClaimed = true;
-        registerCueLayerValues(token, targetMap);
-    };
-
     const currentStartMap = new Map();
-    targetMap.forEach((_, channel) => {
-        const idx = channel - 1;
-        currentStartMap.set(channel, clampDmxInt(dmxUniverseBuffer[idx], DMX_MIN_VALUE, DMX_MAX_VALUE, 0));
-    });
+    snapshotMap.forEach((value, channel) => currentStartMap.set(channel, value));
 
     if (fadeInMs > 0) {
         const stepCount = Math.max(1, Math.ceil(fadeInMs / DMX_FADE_STEP_MS));
@@ -1858,7 +1895,6 @@ function runDmxCueWithEffects(cue, effects) {
             const ratio = step / stepCount;
             const at = delayMs + Math.round((fadeInMs * step) / stepCount);
             schedule(at, () => {
-                ensureChannelOwnership();
                 renderLerpFrame(currentStartMap, targetMap, ratio);
             });
         }
@@ -1866,12 +1902,10 @@ function runDmxCueWithEffects(cue, effects) {
         const sendAt = delayMs;
         if (sendAt > 0) {
             schedule(sendAt, () => {
-                ensureChannelOwnership();
-                sendLayeredFrameFromChannelValues(targetMap, token);
+                sendFrameFromChannelValues(targetMap);
             });
         } else {
-            ensureChannelOwnership();
-            const sendTarget = sendLayeredFrameFromChannelValues(targetMap, token);
+            const sendTarget = sendFrameFromChannelValues(targetMap);
             if (!sendTarget.ok) return { success: false, error: sendTarget.error || 'send-failed' };
         }
     }
@@ -1891,7 +1925,7 @@ function runDmxCueWithEffects(cue, effects) {
     const fadeOutStartAt = fadeInDoneAt + durationMs;
 
     if (fadeOutMs > 0) {
-        const fadeOutTargetMap = buildLayerFallbackFrameExcludingToken(targetChannels, token);
+        const fadeOutTargetMap = snapshotMap;
         const stepCountOut = Math.max(1, Math.ceil(fadeOutMs / DMX_FADE_STEP_MS));
         for (let step = 1; step <= stepCountOut; step += 1) {
             const ratio = step / stepCountOut;
@@ -1901,15 +1935,11 @@ function runDmxCueWithEffects(cue, effects) {
             });
         }
         schedule(fadeOutStartAt + fadeOutMs + 5, () => {
-            unregisterCueToken(token);
-            const fallbackFrame = buildLayerFallbackFrame(targetChannels);
-            sendFrameFromChannelValues(fallbackFrame);
+            restoreCueSnapshot(token);
         });
     } else {
         schedule(fadeOutStartAt, () => {
-            unregisterCueToken(token);
-            const fallbackFrame = buildLayerFallbackFrame(targetChannels);
-            sendFrameFromChannelValues(fallbackFrame);
+            restoreCueSnapshot(token);
         });
     }
 
@@ -1925,9 +1955,7 @@ function runDmxCueWithEffects(cue, effects) {
 function resetDmxUniverseBuffer({ send = false } = {}) {
     clearDmxPlaybackTimers();
     dmxCueTokenCounter += 1;
-    dmxCueOrderCounter = 0;
-    dmxCueChannelMap = new Map();
-    dmxChannelLayers = Array.from({ length: DMX_MAX_CHANNEL }, () => []);
+    dmxActiveCueInstances = new Map();
     if (!Array.isArray(dmxUniverseBuffer) || dmxUniverseBuffer.length !== DMX_MAX_CHANNEL) {
         dmxUniverseBuffer = new Array(DMX_MAX_CHANNEL).fill(0);
     } else {
@@ -1938,6 +1966,17 @@ function resetDmxUniverseBuffer({ send = false } = {}) {
     }
 }
 
+function stopAllDmxCuePlayback() {
+    clearDmxPlaybackTimers();
+    clearDmxSceneScheduleTimers();
+    const tokens = Array.from((dmxActiveCueInstances instanceof Map ? dmxActiveCueInstances.keys() : []));
+    tokens.forEach((token) => {
+        try { restoreCueSnapshot(token); } catch (e) {}
+    });
+    dmxActiveCueInstances = new Map();
+    return { success: true, stopped: tokens.length };
+}
+
 function runDmxCueAction(cueRef, context = {}) {
     const resolved = getLightingCueByRef(cueRef);
     if (!resolved) {
@@ -1945,67 +1984,121 @@ function runDmxCueAction(cueRef, context = {}) {
         return { success: false, error: 'cue-not-found' };
     }
     const { fixture, cue } = resolved;
+    const sceneStack = context && context._sceneStack instanceof Set ? context._sceneStack : new Set();
+    const sceneRefKey = `${parseInt(fixture?.id, 10)}:${parseInt(cue?.id, 10)}`;
+    if (sceneStack.has(sceneRefKey)) {
+        logSystem(`DMX Cue skipped (scene cycle): ${cueRef}`, 'warn');
+        return { success: false, error: 'scene-cycle-detected' };
+    }
     if (isLightingGroupFixture(fixture)) {
-        const entries = buildGroupCueResolvedEntries(cue);
-        if (!entries.length) {
+        const nextSceneStack = new Set(sceneStack);
+        nextSceneStack.add(sceneRefKey);
+        const timeline = normalizeSceneTimelineSlots(cue);
+        if (!timeline.length) {
             logSystem(`Scripting play_cue skipped: empty group cue "${cueRef}"`, 'warn');
             return { success: false, error: 'group-cue-empty' };
         }
         let okCount = 0;
         const failures = [];
-        entries.forEach((entry) => {
-            const sourceFixture = entry.fixture;
-            const sourceCue = entry.cue;
-            const sourceEffects = normalizeCueEffects(sourceCue);
-            const played = runDmxCueWithEffects(sourceCue, sourceEffects);
-            const assignmentMeta = {
-                direction: 'outbound',
-                action: 'playCue',
-                triggerType: context.triggerType || 'event',
-                fixtureId: parseInt(sourceFixture?.id, 10),
-                fixtureName: sourceFixture?.name || null,
-                cueId: parseInt(sourceCue?.id, 10),
-                cueName: sourceCue?.name || null,
-                parentFixtureId: parseInt(fixture?.id, 10),
-                parentFixtureName: fixture?.name || null,
-                parentCueId: parseInt(cue?.id, 10),
-                parentCueName: cue?.name || null
-            };
-            const cueLabel = `${sourceFixture?.name || `Lamp ${sourceFixture?.id}`}/${sourceCue?.name || `Cue ${sourceCue?.id}`}`;
-            const sceneLabel = `${fixture?.name || fixture?.id}`;
-            if (!played.success) {
-                failures.push(played.error || 'unknown-error');
-                logSystem(
-                    `DMX Cue failed: ${cueLabel} (Scene ${sceneLabel}: ${played.error || 'unknown-error'})`,
-                    'dmx',
-                    { ...assignmentMeta, status: 'failed', error: played.error || 'unknown-error' }
-                );
+        let timelineDelayMs = 0;
+        let blockedByInfiniteStep = false;
+        const scheduleSceneCueStart = (delayMs, runner) => {
+            const safeDelay = Math.max(0, clampDmxInt(delayMs, 0, 600000, 0));
+            if (safeDelay <= 0) {
+                runner();
                 return;
             }
-            okCount += 1;
-            const channelPayload = {};
-            (Array.isArray(sourceCue?.channels) ? sourceCue.channels : []).forEach((chEntry) => {
-                const ch = clampDmxInt(chEntry?.channel, 1, DMX_MAX_CHANNEL, null);
-                if (!Number.isFinite(ch)) return;
-                channelPayload[String(ch)] = clampDmxInt(chEntry?.value, DMX_MIN_VALUE, DMX_MAX_VALUE, 0);
-            });
-            const delayMs = clampDmxInt(played?.delayMs, 0, 600000, 0);
-            if (delayMs > 0) {
-                logSystem(
-                    `DMX Cue scheduled: ${cueLabel} (Scene ${sceneLabel}; +${delayMs}ms; ${context.triggerType || 'event'})`,
-                    'dmx',
-                    { ...assignmentMeta, status: 'scheduled', delayMs, payload: channelPayload }
-                );
-            } else {
-                logSystem(
-                    `DMX Cue played: ${cueLabel} (Scene ${sceneLabel}; ${context.triggerType || 'event'})`,
-                    'dmx',
-                    { ...assignmentMeta, status: 'played', payload: channelPayload }
-                );
+            const timerId = setTimeout(() => {
+                dmxSceneScheduleTimers.delete(timerId);
+                try { runner(); } catch (e) {}
+            }, safeDelay);
+            dmxSceneScheduleTimers.add(timerId);
+        };
+        for (let slotIndex = 0; slotIndex < timeline.length; slotIndex += 1) {
+            const slot = timeline[slotIndex];
+            if (slot?.type === 'delay') {
+                timelineDelayMs += clampDmxInt(slot?.ms, 0, 600000, 0);
+                continue;
             }
-        });
+            const slotItems = Array.isArray(slot?.items) ? slot.items : [];
+            let stepDurationMs = 0;
+            let stepHasInfiniteCue = false;
+            slotItems.forEach((item) => {
+                const sourceFixture = getLightingFixtureById(item?.fixtureId);
+                const sourceCue = sourceFixture?.cues?.find((entry) => parseInt(entry?.id, 10) === parseInt(item?.cueId, 10));
+                if (!sourceFixture || !sourceCue) return;
+                const assignmentMeta = {
+                    direction: 'outbound',
+                    action: 'playCue',
+                    triggerType: context.triggerType || 'event',
+                    fixtureId: parseInt(sourceFixture?.id, 10),
+                    fixtureName: sourceFixture?.name || null,
+                    cueId: parseInt(sourceCue?.id, 10),
+                    cueName: sourceCue?.name || null,
+                    parentFixtureId: parseInt(fixture?.id, 10),
+                    parentFixtureName: fixture?.name || null,
+                    parentCueId: parseInt(cue?.id, 10),
+                    parentCueName: cue?.name || null
+                };
+                const cueLabel = `${sourceFixture?.name || `Lamp ${sourceFixture?.id}`}/${sourceCue?.name || `Cue ${sourceCue?.id}`}`;
+                const sceneLabel = `${fixture?.name || fixture?.id}`;
+                const ownDurationMs = estimateCueRuntimeMsByRef(sourceFixture?.id, sourceCue?.id, nextSceneStack);
+                if (ownDurationMs == null || isCueInfiniteByRef(sourceFixture?.id, sourceCue?.id, nextSceneStack)) {
+                    stepHasInfiniteCue = true;
+                } else {
+                    stepDurationMs = Math.max(stepDurationMs, ownDurationMs);
+                }
+                const channelPayload = {};
+                (Array.isArray(sourceCue?.channels) ? sourceCue.channels : []).forEach((chEntry) => {
+                    const ch = clampDmxInt(chEntry?.channel, 1, DMX_MAX_CHANNEL, null);
+                    if (!Number.isFinite(ch)) return;
+                    channelPayload[String(ch)] = clampDmxInt(chEntry?.value, DMX_MIN_VALUE, DMX_MAX_VALUE, 0);
+                });
+                const delayMs = clampDmxInt(timelineDelayMs, 0, 600000, 0);
+                if (delayMs > 0) {
+                    logSystem(
+                        `DMX Cue scheduled: ${cueLabel} (Scene ${sceneLabel}; +${delayMs}ms; ${context.triggerType || 'event'})`,
+                        'dmx',
+                        { ...assignmentMeta, status: 'scheduled', delayMs, payload: channelPayload }
+                    );
+                }
+                scheduleSceneCueStart(delayMs, () => {
+                    const played = isLightingGroupFixture(sourceFixture)
+                        ? runDmxCueAction(`${parseInt(sourceFixture?.id, 10)}:${parseInt(sourceCue?.id, 10)}`, { ...context, _sceneStack: nextSceneStack })
+                        : runDmxCueWithEffects(sourceCue, { ...normalizeCueEffects(sourceCue), delayMs: 0 });
+                    if (!played.success) {
+                        failures.push(played.error || 'unknown-error');
+                        logSystem(
+                            `DMX Cue failed: ${cueLabel} (Scene ${sceneLabel}: ${played.error || 'unknown-error'})`,
+                            'dmx',
+                            { ...assignmentMeta, status: 'failed', error: played.error || 'unknown-error' }
+                        );
+                        return;
+                    }
+                    okCount += 1;
+                    logSystem(
+                        `DMX Cue played: ${cueLabel} (Scene ${sceneLabel}; ${context.triggerType || 'event'})`,
+                        'dmx',
+                        { ...assignmentMeta, status: 'played', payload: channelPayload }
+                    );
+                });
+            });
+            if (stepHasInfiniteCue) {
+                blockedByInfiniteStep = true;
+                break;
+            }
+            timelineDelayMs += stepDurationMs;
+        }
         if (!okCount) return { success: false, error: failures[0] || 'group-cue-failed' };
-        return { success: true, group: true, assignmentCount: okCount, failedCount: failures.length };
+        return {
+            success: true,
+            group: true,
+            assignmentCount: okCount,
+            failedCount: failures.length,
+            blockedByInfiniteStep,
+            infinite: blockedByInfiniteStep === true,
+            durationMs: blockedByInfiniteStep === true ? null : Math.max(0, clampDmxInt(timelineDelayMs, 0, 600000, 0))
+        };
     }
     const effectiveCue = cue;
     const effects = normalizeCueEffects(cue);
@@ -2173,6 +2266,33 @@ function waitMs(ms) {
     return new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(ms) || 0)));
 }
 
+function runSoundCommandSilently(cmd, args = []) {
+    return new Promise((resolve) => {
+        let child = null;
+        try {
+            child = spawn(cmd, args, { stdio: ['ignore', 'ignore', 'ignore'] });
+        } catch (err) {
+            resolve(false);
+            return;
+        }
+        child.on('error', () => resolve(false));
+        child.on('close', (code) => resolve(code === 0));
+    });
+}
+
+async function ensureSoundSystemMixerMax() {
+    // Best-effort only; keep cue playback resilient.
+    const commands = [
+        ['amixer', ['set', 'Master', '100%', 'unmute']],
+        ['amixer', ['set', 'PCM', '100%', 'unmute']],
+        ['amixer', ['-c', 'UC02', 'set', 'PCM', '100%', 'unmute']],
+        ['amixer', ['-c', '2', 'set', 'PCM', '100%', 'unmute']]
+    ];
+    for (const [cmd, args] of commands) {
+        try { await runSoundCommandSilently(cmd, args); } catch (e) {}
+    }
+}
+
 async function processSoundCueQueue() {
     if (soundCueWorkerRunning) return;
     soundCueWorkerRunning = true;
@@ -2200,20 +2320,30 @@ async function processSoundCueQueue() {
 }
 
 async function playSoundCueOnPi(filePath, volumePercent = 100) {
+    await ensureSoundSystemMixerMax();
     const vol = clampSoundVolumePercent(volumePercent);
     const paplayVolume = Math.round((vol / 100) * 65536);
     const mpg123Scale = Math.max(0, Math.min(32768, Math.round((vol / 100) * 32768)));
-    const candidates = [
+    const baseCandidates = [
         { cmd: 'ffplay', args: ['-nodisp', '-autoexit', '-loglevel', 'quiet', '-volume', String(vol), filePath] },
         { cmd: 'paplay', args: [`--volume=${paplayVolume}`, filePath] },
         { cmd: 'mpv', args: ['--no-video', '--really-quiet', `--volume=${vol}`, filePath] },
         { cmd: 'mpg123', args: ['-q', '-f', String(mpg123Scale), filePath] },
         { cmd: 'aplay', args: [filePath] }
     ];
+    const candidates = preferredSoundCuePlayer
+        ? [
+            ...baseCandidates.filter((c) => c.cmd === preferredSoundCuePlayer),
+            ...baseCandidates.filter((c) => c.cmd !== preferredSoundCuePlayer)
+        ]
+        : baseCandidates;
     let lastError = 'no player available';
     for (const candidate of candidates) {
         const result = await trySpawnSoundCuePlayer(candidate.cmd, candidate.args);
-        if (result?.ok) return { success: true, player: candidate.cmd };
+        if (result?.ok) {
+            preferredSoundCuePlayer = candidate.cmd;
+            return { success: true, player: candidate.cmd };
+        }
         lastError = result?.error || lastError;
     }
     return { success: false, error: lastError };
@@ -2527,6 +2657,10 @@ function clearScriptingForeverTimers() {
     roomForeverRunners.forEach((runner) => { if (runner) runner.stopped = true; });
     puzzleForeverRunners.clear();
     roomForeverRunners.clear();
+    puzzleScriptingTriggerLocks.clear();
+    roomScriptingTriggerLocks.clear();
+    puzzleLoopGeneration.clear();
+    roomLoopGeneration = 0;
 }
 
 function waitTracked(ms) {
@@ -2544,7 +2678,75 @@ function waitTracked(ms) {
     });
 }
 
-function runPuzzleScriptingEvent(node, triggerType, eventPayload = {}) {
+function waitTrackedRunner(ms, runner) {
+    const delay = Math.max(0, Math.round(Number(ms) || 0));
+    return new Promise((resolve) => {
+        if (delay <= 0 || (runner && runner.stopped)) {
+            resolve();
+            return;
+        }
+        const timer = setTimeout(() => {
+            scriptingForeverTimers.delete(timer);
+            if (runner && runner.__waitTimer === timer) runner.__waitTimer = null;
+            resolve();
+        }, delay);
+        scriptingForeverTimers.add(timer);
+        if (runner) runner.__waitTimer = timer;
+    });
+}
+
+function stopPuzzleForeverLoops(puzzleId) {
+    const numericId = Number(puzzleId);
+    if (Number.isFinite(numericId)) {
+        const nextGeneration = (Number(puzzleLoopGeneration.get(numericId)) || 0) + 1;
+        puzzleLoopGeneration.set(numericId, nextGeneration);
+    }
+    puzzleForeverRunners.forEach((runner, key) => {
+        if (!runner) return;
+        if (!Number.isFinite(numericId)) {
+            runner.stopped = true;
+            if (runner.__waitTimer) {
+                try { clearTimeout(runner.__waitTimer); } catch (e) {}
+                scriptingForeverTimers.delete(runner.__waitTimer);
+                runner.__waitTimer = null;
+            }
+            return;
+        }
+        if (String(key || '').startsWith(`puzzle:${numericId}:`)) {
+            runner.stopped = true;
+            if (runner.__waitTimer) {
+                try { clearTimeout(runner.__waitTimer); } catch (e) {}
+                scriptingForeverTimers.delete(runner.__waitTimer);
+                runner.__waitTimer = null;
+            }
+        }
+    });
+}
+
+function stopRoomForeverLoops() {
+    roomLoopGeneration += 1;
+    roomForeverRunners.forEach((runner) => {
+        if (!runner) return;
+        runner.stopped = true;
+        if (runner.__waitTimer) {
+            try { clearTimeout(runner.__waitTimer); } catch (e) {}
+            scriptingForeverTimers.delete(runner.__waitTimer);
+            runner.__waitTimer = null;
+        }
+    });
+}
+
+async function waitForCueActionCompletion(result) {
+    if (!result || result.success === false) return result;
+    if (result.infinite === true || result.durationMs == null) {
+        return { ...result, blocking: true, infinite: true };
+    }
+    const ms = clampDmxInt(result.durationMs, 0, 600000, 0);
+    if (ms > 0) await waitTracked(ms);
+    return { ...result, blocking: true, waitedMs: ms };
+}
+
+async function runPuzzleScriptingEvent(node, triggerType, eventPayload = {}) {
     if (!isRunning) return [];
     if (!node || node.type !== 'escape/Puzzle') return [];
     const normalizedTrigger = String(triggerType || '').trim().toLowerCase();
@@ -2611,18 +2813,17 @@ function runPuzzleScriptingEvent(node, triggerType, eventPayload = {}) {
         }
         return { key, type };
     };
-    const schedule = (fn, label = '') => {
+    const schedule = async (fn, label = '') => {
         if (delayMs <= 0) {
             touchPuzzleScripting();
             if (label) logScripting(label);
-            return fn();
+            return await fn();
         }
         if (label) logScripting(`${label} (scheduled +${delayMs}ms)`);
-        setTimeout(() => {
-            if (!isRunning) return;
-            touchPuzzleScripting();
-            try { fn(); } catch (e) { logScriptingRuntimeError(scriptScope, 'scheduled action', e); }
-        }, delayMs);
+        await waitTracked(delayMs);
+        if (!isRunning) return { success: false, aborted: true };
+        touchPuzzleScripting();
+        try { return await fn(); } catch (e) { logScriptingRuntimeError(scriptScope, 'scheduled action', e); }
         return { success: true, scheduled: true, delayMs };
     };
     const getForeverOwnerKey = (rule) => {
@@ -2636,7 +2837,7 @@ function runPuzzleScriptingEvent(node, triggerType, eventPayload = {}) {
         if (!foreverGroups.has(key)) {
             const intervalSec = Number(rule?.loopIntervalSec);
             foreverGroups.set(key, {
-                cycleDelayMs: Number.isFinite(intervalSec) ? Math.max(200, Math.round(intervalSec * 1000)) : 1000,
+                cycleDelayMs: Number.isFinite(intervalSec) ? Math.max(0, Math.round(intervalSec * 1000)) : 0,
                 entries: []
             });
         }
@@ -2655,11 +2856,12 @@ function runPuzzleScriptingEvent(node, triggerType, eventPayload = {}) {
             return false;
         }
     };
-    rules.forEach((rule, index) => {
+    for (let index = 0; index < rules.length; index += 1) {
+        const rule = rules[index];
         const ruleId = getScriptingRuleId(rule, index);
         const rulePrefix = `[Puzzle Script] "${puzzleName}" rule #${ruleId}`;
         const isForeverRule = String(rule?.loopMode || '').trim().toLowerCase() === 'forever';
-        if (!isForeverRule && !evaluateRuleNow(rule)) return;
+        if (!isForeverRule && !evaluateRuleNow(rule)) continue;
         if (rule.actionType === 'wait') {
             const seconds = Number(rule.actionValue);
             if (isForeverRule) {
@@ -2670,7 +2872,7 @@ function runPuzzleScriptingEvent(node, triggerType, eventPayload = {}) {
                 delayMs += Math.round(seconds * 1000);
                 logScripting(`${rulePrefix} wait ${seconds}s.`);
             }
-            return;
+            continue;
         }
         if (rule.actionType === 'break') {
             const execute = () => {
@@ -2683,14 +2885,30 @@ function runPuzzleScriptingEvent(node, triggerType, eventPayload = {}) {
             if (isForeverRule) {
                 registerForeverEntry(rule, { kind: 'break', execute, rulePrefix });
             } else {
-                const scheduled = schedule(execute, `${rulePrefix} break.`);
+                const scheduled = await schedule(execute, `${rulePrefix} break.`);
                 if (scheduled) results.push(scheduled);
             }
-            return;
+            continue;
+        }
+        if (rule.actionType === 'break_all_loops') {
+            const execute = () => {
+                if (!evaluateRuleNow(rule)) return;
+                stopPuzzleForeverLoops(node?.id);
+                brokenForeverLoopKeys.forEach((key) => brokenLoopKeys.add(key));
+                logScripting(`${rulePrefix} break all loops.`);
+                return { success: true };
+            };
+            if (isForeverRule) {
+                registerForeverEntry(rule, { kind: 'break', execute, rulePrefix });
+            } else {
+                const scheduled = await schedule(execute, `${rulePrefix} break all loops.`);
+                if (scheduled) results.push(scheduled);
+            }
+            continue;
         }
         if (rule.actionType === 'set_var_from_sensor') {
             const varName = String(rule.actionValue || '').trim();
-            if (!varName) return;
+            if (!varName) continue;
             const execute = () => {
                 if (!evaluateRuleNow(rule)) return;
                 const value = getSensorFieldValue(runtimePayload, rule.actionSourceDevice, rule.actionSourceField);
@@ -2700,14 +2918,14 @@ function runPuzzleScriptingEvent(node, triggerType, eventPayload = {}) {
             if (isForeverRule) {
                 registerForeverEntry(rule, { kind: 'action', execute, rulePrefix });
             } else {
-                const scheduled = schedule(execute, `${rulePrefix} set variable "${varName}" from sensor.`);
+                const scheduled = await schedule(execute, `${rulePrefix} set variable "${varName}" from sensor.`);
                 if (scheduled) results.push(scheduled);
             }
-            return;
+            continue;
         }
         if (rule.actionType === 'get_state') {
             const varName = String(rule.actionValue || '').trim();
-            if (!varName) return;
+            if (!varName) continue;
             const execute = () => {
                 if (!evaluateRuleNow(rule)) return;
                 puzzleVarMap[varName] = getPuzzleStateKey(node.id);
@@ -2717,10 +2935,10 @@ function runPuzzleScriptingEvent(node, triggerType, eventPayload = {}) {
             if (isForeverRule) {
                 registerForeverEntry(rule, { kind: 'action', execute, rulePrefix });
             } else {
-                const scheduled = schedule(execute, `${rulePrefix} get puzzle state.`);
+                const scheduled = await schedule(execute, `${rulePrefix} get puzzle state.`);
                 if (scheduled) results.push(scheduled);
             }
-            return;
+            continue;
         }
         if (rule.actionType === 'set_state') {
             const targetState = resolveScriptingStateTarget(rule.actionValue);
@@ -2733,28 +2951,29 @@ function runPuzzleScriptingEvent(node, triggerType, eventPayload = {}) {
             if (isForeverRule) {
                 registerForeverEntry(rule, { kind: 'action', execute, rulePrefix });
             } else {
-                const scheduled = schedule(execute, `${rulePrefix} set puzzle state.`);
+                const scheduled = await schedule(execute, `${rulePrefix} set puzzle state.`);
                 if (scheduled) results.push(scheduled);
             }
-            return;
+            continue;
         }
         if (rule.actionType === 'play_cue') {
             if (rule.actionValue.trim()) {
-                const execute = () => {
+                const execute = async () => {
                     if (!evaluateRuleNow(rule)) return;
-                    return runDmxCueAction(rule.actionValue, { triggerType: normalizedTrigger });
+                    const cueResult = runDmxCueAction(rule.actionValue, { triggerType: normalizedTrigger });
+                    return await waitForCueActionCompletion(cueResult);
                 };
                 if (isForeverRule) {
                     registerForeverEntry(rule, { kind: 'action', execute, rulePrefix });
                 } else {
-                    const scheduled = schedule(
+                    const scheduled = await schedule(
                         execute,
                         `${rulePrefix} play cue "${rule.actionValue}".`
                     );
                     if (scheduled) results.push(scheduled);
                 }
             }
-            return;
+            continue;
         }
         if (rule.actionType === 'play_sound') {
             if (String(rule.actionValue || '').trim()) {
@@ -2765,14 +2984,14 @@ function runPuzzleScriptingEvent(node, triggerType, eventPayload = {}) {
                 if (isForeverRule) {
                     registerForeverEntry(rule, { kind: 'action', execute, rulePrefix });
                 } else {
-                    const scheduled = schedule(
+                    const scheduled = await schedule(
                         execute,
                         `${rulePrefix} play sound "${rule.actionValue}".`
                     );
                     if (scheduled) results.push(scheduled);
                 }
             }
-            return;
+            continue;
         }
         if (rule.actionType === 'send_custom') {
             const execute = () => {
@@ -2784,10 +3003,10 @@ function runPuzzleScriptingEvent(node, triggerType, eventPayload = {}) {
             if (isForeverRule) {
                 registerForeverEntry(rule, { kind: 'action', execute, rulePrefix });
             } else {
-                const scheduled = schedule(execute, `${rulePrefix} send custom.`);
+                const scheduled = await schedule(execute, `${rulePrefix} send custom.`);
                 if (scheduled) results.push(scheduled);
             }
-            return;
+            continue;
         }
         if (rule.actionType === 'print_system') {
             const execute = () => {
@@ -2799,10 +3018,10 @@ function runPuzzleScriptingEvent(node, triggerType, eventPayload = {}) {
             if (isForeverRule) {
                 registerForeverEntry(rule, { kind: 'action', execute, rulePrefix });
             } else {
-                const scheduled = schedule(execute, '');
+                const scheduled = await schedule(execute, '');
                 if (scheduled) results.push(scheduled);
             }
-            return;
+            continue;
         }
         if (rule.actionType === 'give_hint') {
             const execute = () => {
@@ -2831,10 +3050,10 @@ function runPuzzleScriptingEvent(node, triggerType, eventPayload = {}) {
             if (isForeverRule) {
                 registerForeverEntry(rule, { kind: 'action', execute, rulePrefix });
             } else {
-                const scheduled = schedule(execute, `${rulePrefix} give hint.`);
+                const scheduled = await schedule(execute, `${rulePrefix} give hint.`);
                 if (scheduled) results.push(scheduled);
             }
-            return;
+            continue;
         }
         if (rule.actionType === 'send_custom_var') {
             const execute = () => {
@@ -2847,23 +3066,35 @@ function runPuzzleScriptingEvent(node, triggerType, eventPayload = {}) {
             if (isForeverRule) {
                 registerForeverEntry(rule, { kind: 'action', execute, rulePrefix });
             } else {
-                const scheduled = schedule(execute, `${rulePrefix} send custom variable.`);
+                const scheduled = await schedule(execute, `${rulePrefix} send custom variable.`);
                 if (scheduled) results.push(scheduled);
             }
         }
-    });
+    }
+    const foreverRunnerTasks = [];
+    const puzzleIdNumeric = Number(node?.id);
+    const localLoopGeneration = Number(puzzleLoopGeneration.get(puzzleIdNumeric)) || 0;
     foreverGroups.forEach((group, loopKey) => {
         const runnerKey = `puzzle:${node.id}:${normalizedTrigger}:${loopKey}`;
         if (!group?.entries?.length || puzzleForeverRunners.has(runnerKey)) return;
-        const runner = { stopped: false };
+        const runner = { stopped: false, generation: localLoopGeneration };
         puzzleForeverRunners.set(runnerKey, runner);
         const hasWait = group.entries.some((entry) => entry.kind === 'wait');
-        const cycleDelayMs = Number.isFinite(Number(group.cycleDelayMs)) ? Math.max(200, Number(group.cycleDelayMs)) : 1000;
-        void (async () => {
+        const runnerTask = (async () => {
             try {
                 while (isRunning && !runner.stopped) {
+                    const currentGeneration = Number(puzzleLoopGeneration.get(puzzleIdNumeric)) || 0;
+                    if (runner.generation !== currentGeneration) {
+                        runner.stopped = true;
+                        break;
+                    }
                     for (const entry of group.entries) {
                         if (!isRunning || runner.stopped) break;
+                        const currentGenerationInner = Number(puzzleLoopGeneration.get(puzzleIdNumeric)) || 0;
+                        if (runner.generation !== currentGenerationInner) {
+                            runner.stopped = true;
+                            break;
+                        }
                         if (brokenForeverLoopKeys.has(loopKey)) {
                             runner.stopped = true;
                             break;
@@ -2875,7 +3106,7 @@ function runPuzzleScriptingEvent(node, triggerType, eventPayload = {}) {
                             if (Number.isFinite(sec) && sec > 0) {
                                 touchPuzzleScripting();
                                 logScripting(`${entry.rulePrefix} wait ${sec}s.`);
-                                await waitTracked(sec * 1000);
+                                await waitTrackedRunner(sec * 1000, runner);
                             }
                             continue;
                         }
@@ -2887,25 +3118,30 @@ function runPuzzleScriptingEvent(node, triggerType, eventPayload = {}) {
                             break;
                         }
                         touchPuzzleScripting();
-                        try { entry.execute(); } catch (e) { logScriptingRuntimeError(scriptScope, 'forever action', e); }
+                        try { await entry.execute(); } catch (e) { logScriptingRuntimeError(scriptScope, 'forever action', e); }
                     }
-                    if (!hasWait && !runner.stopped && isRunning) {
-                        await waitTracked(cycleDelayMs);
-                    }
+                    // No implicit gap between loop cycles.
+                    // Timing should be controlled only by explicit Wait actions
+                    // or by blocking actions (e.g. cue/scene duration).
                 }
             } finally {
                 puzzleForeverRunners.delete(runnerKey);
             }
         })();
+        foreverRunnerTasks.push(runnerTask);
     });
+    if (foreverRunnerTasks.length) {
+        await Promise.allSettled(foreverRunnerTasks);
+    }
     return results;
 }
 
-function runRoomScriptingEvent(triggerType, eventPayload = {}) {
-    if (!isRunning) return [];
+async function runRoomScriptingEvent(triggerType, eventPayload = {}) {
     const runtimePayload = Object.assign({}, eventPayload, { scriptScope: 'room' });
     const normalizedTrigger = String(triggerType || '').trim().toLowerCase();
     if (!normalizedTrigger) return [];
+    const isResetTrigger = normalizedTrigger === 'room_reset' || normalizedTrigger === 'branch_reset';
+    if (!isRunning && !isResetTrigger) return [];
     const sensorDeviceId = String(eventPayload?.sensorDeviceId || '');
     const sensorData = (eventPayload && typeof eventPayload.sensorData === 'object' && !Array.isArray(eventPayload.sensorData))
         ? eventPayload.sensorData
@@ -2978,18 +3214,17 @@ function runRoomScriptingEvent(triggerType, eventPayload = {}) {
         }
         return { key, type };
     };
-    const schedule = (fn, label = '') => {
+    const schedule = async (fn, label = '') => {
         if (delayMs <= 0) {
             touchRoomScripting();
             if (label) logScripting(label);
-            return fn();
+            return await fn();
         }
         if (label) logScripting(`${label} (scheduled +${delayMs}ms)`);
-        setTimeout(() => {
-            if (!isRunning) return;
-            touchRoomScripting();
-            try { fn(); } catch (e) { logScriptingRuntimeError(scriptScope, 'scheduled action', e); }
-        }, delayMs);
+        await waitTracked(delayMs);
+        if (!isRunning) return { success: false, aborted: true };
+        touchRoomScripting();
+        try { return await fn(); } catch (e) { logScriptingRuntimeError(scriptScope, 'scheduled action', e); }
         return { success: true, scheduled: true, delayMs };
     };
     const getForeverOwnerKey = (rule) => {
@@ -3003,7 +3238,7 @@ function runRoomScriptingEvent(triggerType, eventPayload = {}) {
         if (!foreverGroups.has(key)) {
             const intervalSec = Number(rule?.loopIntervalSec);
             foreverGroups.set(key, {
-                cycleDelayMs: Number.isFinite(intervalSec) ? Math.max(200, Math.round(intervalSec * 1000)) : 1000,
+                cycleDelayMs: Number.isFinite(intervalSec) ? Math.max(0, Math.round(intervalSec * 1000)) : 0,
                 entries: []
             });
         }
@@ -3021,11 +3256,12 @@ function runRoomScriptingEvent(triggerType, eventPayload = {}) {
             return false;
         }
     };
-    rules.forEach((rule, index) => {
+    for (let index = 0; index < rules.length; index += 1) {
+        const rule = rules[index];
         const ruleId = getScriptingRuleId(rule, index);
         const rulePrefix = `[Room Script] rule #${ruleId}`;
         const isForeverRule = String(rule?.loopMode || '').trim().toLowerCase() === 'forever';
-        if (!isForeverRule && !evaluateRuleNow(rule)) return;
+        if (!isForeverRule && !evaluateRuleNow(rule)) continue;
         if (rule.actionType === 'wait') {
             const seconds = Number(rule.actionValue);
             if (isForeverRule) {
@@ -3036,7 +3272,7 @@ function runRoomScriptingEvent(triggerType, eventPayload = {}) {
                 delayMs += Math.round(seconds * 1000);
                 logScripting(`${rulePrefix} wait ${seconds}s.`);
             }
-            return;
+            continue;
         }
         if (rule.actionType === 'break') {
             const execute = () => {
@@ -3049,14 +3285,30 @@ function runRoomScriptingEvent(triggerType, eventPayload = {}) {
             if (isForeverRule) {
                 registerForeverEntry(rule, { kind: 'break', execute, rulePrefix });
             } else {
-                const scheduled = schedule(execute, `${rulePrefix} break.`);
+                const scheduled = await schedule(execute, `${rulePrefix} break.`);
                 if (scheduled) results.push(scheduled);
             }
-            return;
+            continue;
+        }
+        if (rule.actionType === 'break_all_loops') {
+            const execute = () => {
+                if (!evaluateRuleNow(rule)) return;
+                stopRoomForeverLoops();
+                brokenForeverLoopKeys.forEach((key) => brokenLoopKeys.add(key));
+                logScripting(`${rulePrefix} break all loops.`);
+                return { success: true };
+            };
+            if (isForeverRule) {
+                registerForeverEntry(rule, { kind: 'break', execute, rulePrefix });
+            } else {
+                const scheduled = await schedule(execute, `${rulePrefix} break all loops.`);
+                if (scheduled) results.push(scheduled);
+            }
+            continue;
         }
         if (rule.actionType === 'set_var_from_sensor') {
             const varName = String(rule.actionValue || '').trim();
-            if (!varName) return;
+            if (!varName) continue;
             const execute = () => {
                 if (!evaluateRuleNow(rule)) return;
                 const value = getSensorFieldValue(runtimePayload, rule.actionSourceDevice, rule.actionSourceField);
@@ -3066,10 +3318,10 @@ function runRoomScriptingEvent(triggerType, eventPayload = {}) {
             if (isForeverRule) {
                 registerForeverEntry(rule, { kind: 'action', execute, rulePrefix });
             } else {
-                const scheduled = schedule(execute, `${rulePrefix} set variable from sensor.`);
+                const scheduled = await schedule(execute, `${rulePrefix} set variable from sensor.`);
                 if (scheduled) results.push(scheduled);
             }
-            return;
+            continue;
         }
         if (rule.actionType === 'set_branch_state') {
             const target = String(rule.actionTargetPuzzle || 'room');
@@ -3081,29 +3333,30 @@ function runRoomScriptingEvent(triggerType, eventPayload = {}) {
             if (isForeverRule) {
                 registerForeverEntry(rule, { kind: 'action', execute, rulePrefix });
             } else {
-                const scheduled = schedule(
+                const scheduled = await schedule(
                     execute,
                     `${rulePrefix} set branch "${target}" to "${value}".`
                 );
                 if (scheduled) results.push(scheduled);
             }
-            return;
+            continue;
         }
         if (rule.actionType === 'play_cue' && String(rule.actionValue || '').trim()) {
-            const execute = () => {
+            const execute = async () => {
                 if (!evaluateRuleNow(rule)) return;
-                return runDmxCueAction(rule.actionValue, { triggerType: normalizedTrigger });
+                const cueResult = runDmxCueAction(rule.actionValue, { triggerType: normalizedTrigger });
+                return await waitForCueActionCompletion(cueResult);
             };
             if (isForeverRule) {
                 registerForeverEntry(rule, { kind: 'action', execute, rulePrefix });
             } else {
-                const scheduled = schedule(
+                const scheduled = await schedule(
                     execute,
                     `${rulePrefix} play cue "${rule.actionValue}".`
                 );
                 if (scheduled) results.push(scheduled);
             }
-            return;
+            continue;
         }
         if (rule.actionType === 'play_sound' && String(rule.actionValue || '').trim()) {
             const execute = () => {
@@ -3113,13 +3366,13 @@ function runRoomScriptingEvent(triggerType, eventPayload = {}) {
             if (isForeverRule) {
                 registerForeverEntry(rule, { kind: 'action', execute, rulePrefix });
             } else {
-                const scheduled = schedule(
+                const scheduled = await schedule(
                     execute,
                     `${rulePrefix} play sound "${rule.actionValue}".`
                 );
                 if (scheduled) results.push(scheduled);
             }
-            return;
+            continue;
         }
         if (rule.actionType === 'print_system') {
             const execute = () => {
@@ -3131,23 +3384,32 @@ function runRoomScriptingEvent(triggerType, eventPayload = {}) {
             if (isForeverRule) {
                 registerForeverEntry(rule, { kind: 'action', execute, rulePrefix });
             } else {
-                const scheduled = schedule(execute, '');
+                const scheduled = await schedule(execute, '');
                 if (scheduled) results.push(scheduled);
             }
         }
-    });
+    }
+    const foreverRunnerTasks = [];
+    const localLoopGeneration = roomLoopGeneration;
     foreverGroups.forEach((group, loopKey) => {
         const runnerKey = `room:${normalizedTrigger}:${loopKey}`;
         if (!group?.entries?.length || roomForeverRunners.has(runnerKey)) return;
-        const runner = { stopped: false };
+        const runner = { stopped: false, generation: localLoopGeneration };
         roomForeverRunners.set(runnerKey, runner);
         const hasWait = group.entries.some((entry) => entry.kind === 'wait');
-        const cycleDelayMs = Number.isFinite(Number(group.cycleDelayMs)) ? Math.max(200, Number(group.cycleDelayMs)) : 1000;
-        void (async () => {
+        const runnerTask = (async () => {
             try {
                 while (isRunning && !runner.stopped) {
+                    if (runner.generation !== roomLoopGeneration) {
+                        runner.stopped = true;
+                        break;
+                    }
                     for (const entry of group.entries) {
                         if (!isRunning || runner.stopped) break;
+                        if (runner.generation !== roomLoopGeneration) {
+                            runner.stopped = true;
+                            break;
+                        }
                         if (brokenForeverLoopKeys.has(loopKey)) {
                             runner.stopped = true;
                             break;
@@ -3159,7 +3421,7 @@ function runRoomScriptingEvent(triggerType, eventPayload = {}) {
                             if (Number.isFinite(sec) && sec > 0) {
                                 touchRoomScripting();
                                 logScripting(`${entry.rulePrefix} wait ${sec}s.`);
-                                await waitTracked(sec * 1000);
+                                await waitTrackedRunner(sec * 1000, runner);
                             }
                             continue;
                         }
@@ -3171,17 +3433,21 @@ function runRoomScriptingEvent(triggerType, eventPayload = {}) {
                             break;
                         }
                         touchRoomScripting();
-                        try { entry.execute(); } catch (e) { logScriptingRuntimeError(scriptScope, 'forever action', e); }
+                        try { await entry.execute(); } catch (e) { logScriptingRuntimeError(scriptScope, 'forever action', e); }
                     }
-                    if (!hasWait && !runner.stopped && isRunning) {
-                        await waitTracked(cycleDelayMs);
-                    }
+                    // No implicit gap between loop cycles.
+                    // Timing should be controlled only by explicit Wait actions
+                    // or by blocking actions (e.g. cue/scene duration).
                 }
             } finally {
                 roomForeverRunners.delete(runnerKey);
             }
         })();
+        foreverRunnerTasks.push(runnerTask);
     });
+    if (foreverRunnerTasks.length) {
+        await Promise.allSettled(foreverRunnerTasks);
+    }
     return results;
 }
 
@@ -4351,6 +4617,13 @@ function scheduleBranchAutoRestart(branch) {
     logSystem(`Auto-restart scheduled for branch ${branch.id} in ${autoRestartConfig.delaySec}s.`, "info");
     const timerId = setTimeout(() => {
         autoRestartTimers.delete(branch.id);
+        const flowData = buildBranchFlowData();
+        const branchCount = Array.isArray(flowData?.branches) ? flowData.branches.length : 0;
+        if (branchCount <= 1) {
+            // Single-branch rooms should behave like a full room restart.
+            beginRoomRestart({ emitRoomStarted: true });
+            return;
+        }
         module.exports.restartBranch({ branchId: branch.id });
     }, delayMs);
     autoRestartTimers.set(branch.id, timerId);
@@ -6354,6 +6627,7 @@ function beginRoomRestart(options = {}) {
     clearScriptingForeverTimers();
     clearAllAutoRestartTimers();
     stopAllSoundCuePlayback();
+    stopAllDmxCuePlayback();
     const triggerStartNodes = options.triggerStartNodes !== false;
     const activateFirstDepth = options.activateFirstDepth !== false;
     const emitRoomStarted = options.emitRoomStarted === true;
@@ -6394,6 +6668,11 @@ function beginRoomRestart(options = {}) {
         (graph.findNodesByType("escape/Start") || []).forEach(n => n.triggerSlot(0));
     }
     runRoomScriptingEvent('room_reset', {});
+    (flowData.branches || []).forEach((branch) => {
+        const branchId = parseInt(branch?.id, 10);
+        if (!Number.isFinite(branchId)) return;
+        runRoomScriptingEvent('branch_reset', { branchId });
+    });
     if (emitRoomStarted) {
         runRoomScriptingEvent('room_started', {});
         getAllPuzzleNodes().forEach((node) => {
@@ -6699,6 +6978,9 @@ module.exports = {
             durationMs: result.infinite === true ? null : (result.durationMs || 0),
             channelCount: result.channelCount || 0
         };
+    },
+    stopDmxTestPlayback: () => {
+        return stopAllDmxCuePlayback();
     },
     clearLogs: () => {
         systemLogs.length = 0;
@@ -7393,6 +7675,7 @@ module.exports = {
     resetRoom: () => {
         clearScriptingForeverTimers();
         stopAllSoundCuePlayback();
+        stopAllDmxCuePlayback();
         suppressDeviceStateUntil = Date.now() + 1500;
         resetAllPuzzleStates('locked');
         puzzleTelemetry = {};

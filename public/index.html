@@ -156,7 +156,7 @@
                     <div class="lighting-form-grid lighting-lamp-add-row">
                         <input type="text" id="lighting-fixture-name" placeholder="Lamp name">
                         <button type="button" id="lighting-add-fixture-btn" class="btn-primary">Add Lamp</button>
-                        <button type="button" id="lighting-open-preset-btn" class="btn-secondary">Add Preset</button>
+                        <button type="button" id="lighting-open-preset-btn" class="btn-secondary">Configure Preset</button>
                     </div>
                     <ul id="lighting-fixture-list" class="lighting-list"></ul>
                     <h3>Scenes</h3>
@@ -166,6 +166,7 @@
                         <span></span>
                     </div>
                     <ul id="lighting-group-list" class="lighting-list"></ul>
+                    <div id="lighting-scene-list-note" class="lighting-note" style="min-height:18px;"></div>
                 </div>
 
                 <div class="lighting-column">
@@ -188,6 +189,7 @@
                                 <input type="text" id="lighting-group-cue-name" placeholder="Scene Cue Name" style="display:none;">
                                 <select id="lighting-group-cue-source" style="display:none;"></select>
                                 <button type="button" id="lighting-add-channel-btn" class="btn-secondary">Add Channel</button>
+                                <button type="button" id="lighting-add-delay-btn" class="btn-secondary" style="display:none;">Add Delay</button>
                                 <button type="button" id="lighting-test-scene-btn" class="btn-secondary" style="display:none;">Test Scene</button>
                             </div>
                             <div id="lighting-channel-editor" class="lighting-channel-editor"></div>
@@ -213,6 +215,15 @@
                                 <input type="number" id="lighting-effect-duration" min="0" step="10" value="0">
                             </div>
                             <div id="lighting-effects-note" class="lighting-note"></div>
+                        </div>
+                        <div id="lighting-scene-delay-section" style="display:none;">
+                            <h3>Delay</h3>
+                            <div class="lighting-note">Set delay for selected delay block in the cue matrix.</div>
+                            <div class="lighting-effects-grid">
+                                <label for="lighting-scene-delay-ms">Delay (ms)</label>
+                                <input type="number" id="lighting-scene-delay-ms" min="0" step="50" value="1000">
+                            </div>
+                            <div id="lighting-scene-delay-note" class="lighting-note"></div>
                         </div>
                     </div>
                     <div id="lighting-group-assignment-section" style="display:none;">

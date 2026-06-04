@@ -1030,9 +1030,9 @@ hr { border: 0; border-top: 1px solid #444; margin: 20px 0; }
     z-index: 3500;
 }
 .lighting-modal-content {
-    width: 1320px;
-    height: 720px;
-    max-width: 96vw;
+    width: 1520px;
+    height: 760px;
+    max-width: 98vw;
     max-height: 92vh;
     background: #252525;
     border: 1px solid #444;
@@ -1138,7 +1138,7 @@ hr { border: 0; border-top: 1px solid #444; margin: 20px 0; }
 .lighting-modal-body {
     flex: 1 1 auto;
     display: grid;
-    grid-template-columns: 1fr 1.25fr 1fr;
+    grid-template-columns: 1fr 1.6fr 1fr;
     gap: 12px;
     padding: 12px;
     overflow: hidden;
@@ -1232,6 +1232,7 @@ hr { border: 0; border-top: 1px solid #444; margin: 20px 0; }
     gap: 10px;
     padding: 10px 12px;
     border-bottom: 1px solid #333;
+    user-select: none;
 }
 .sounds-file-item:last-child {
     border-bottom: none;
@@ -1244,6 +1245,11 @@ hr { border: 0; border-top: 1px solid #444; margin: 20px 0; }
 .sounds-file-name {
     font-weight: 600;
     color: #e9eef5;
+    user-select: text;
+    cursor: text;
+    display: inline-block;
+    width: fit-content;
+    max-width: 100%;
     min-width: 0;
     white-space: nowrap;
     overflow: hidden;
@@ -1348,6 +1354,7 @@ hr { border: 0; border-top: 1px solid #444; margin: 20px 0; }
     gap: 10px;
     padding: 10px 12px;
     border-bottom: 1px solid #343434;
+    user-select: none;
 }
 .zigbee-device-item:last-child {
     border-bottom: none;
@@ -1361,6 +1368,11 @@ hr { border: 0; border-top: 1px solid #444; margin: 20px 0; }
 .zigbee-device-name {
     font-weight: 700;
     color: #f0f0f0;
+    user-select: text;
+    cursor: text;
+    display: inline-block;
+    width: fit-content;
+    max-width: 100%;
 }
 .zigbee-device-name[contenteditable="true"] {
     outline: 1px solid #3b82f6;
@@ -1626,7 +1638,7 @@ hr { border: 0; border-top: 1px solid #444; margin: 20px 0; }
     grid-template-columns: 1fr auto auto;
 }
 .lighting-channel-add-row {
-    grid-template-columns: 1fr auto auto;
+    grid-template-columns: 1fr auto auto auto;
 }
 .lighting-form-grid input,
 .lighting-form-grid select,
@@ -1697,11 +1709,28 @@ hr { border: 0; border-top: 1px solid #444; margin: 20px 0; }
     border-left: 3px solid #007BFF;
     padding-left: 7px;
 }
+.lighting-list-item.scene-test-active {
+    background: #1f4d2b;
+    border-left: 3px solid #34d399;
+    box-shadow: inset 0 0 0 1px rgba(52, 211, 153, 0.35);
+}
+.lighting-list-item.lighting-scene-item.selected {
+    background: #5b2a36;
+    border-left-color: #e35b78;
+}
 .lighting-list-item.drop-target,
 .lighting-list.lighting-drop-active {
     outline: 1px dashed #3f95ff;
     outline-offset: -2px;
     background: #223448;
+}
+.lighting-list-item.drop-insert-before {
+    box-shadow: inset 0 3px 0 #4ea1ff;
+    margin-top: var(--scene-row-shift, 52px);
+}
+.lighting-list-item.drop-insert-after {
+    box-shadow: inset 0 -3px 0 #4ea1ff;
+    margin-bottom: var(--scene-row-shift, 52px);
 }
 .lighting-list-item .lighting-delete-btn {
     border: 1px solid #7f3030;
@@ -1715,9 +1744,68 @@ hr { border: 0; border-top: 1px solid #444; margin: 20px 0; }
 .lighting-list-item .lighting-delete-btn:hover {
     background: #953636;
 }
+.lighting-scene-dropzone {
+    list-style: none;
+    height: 16px;
+    margin: 0;
+    border-top: 2px solid transparent;
+    border-bottom: 2px solid transparent;
+}
+.lighting-scene-dropzone.active {
+    border-top-color: #4ea1ff;
+    border-bottom-color: #4ea1ff;
+    background: rgba(78, 161, 255, 0.12);
+}
 .lighting-list-item-main {
     min-width: 0;
     flex: 1;
+}
+.lighting-parallel-cue-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+.lighting-parallel-cue-box {
+    border: 1px solid #4f86cf;
+    background: #21406a;
+    color: #eef6ff;
+    border-radius: 6px;
+    padding: 5px 8px;
+    font-size: 12px;
+    line-height: 1.2;
+    cursor: pointer;
+    text-align: left;
+}
+.lighting-parallel-cue-box:hover {
+    border-color: #89b8ff;
+    background: #295086;
+}
+.lighting-parallel-cue-box.selected {
+    border-color: #fbbf24;
+    background: #3b4a1f;
+    color: #fff6da;
+    box-shadow: inset 0 0 0 1px rgba(251, 191, 36, 0.5);
+}
+.lighting-parallel-cue-box.scene-test-active {
+    border-color: #34d399;
+    background: #1f4d2b;
+    color: #eafff5;
+    box-shadow: inset 0 0 0 1px rgba(52, 211, 153, 0.4);
+}
+.lighting-parallel-cue-box.scene-ref {
+    border-color: #c45a72;
+    background: #4a2831;
+    color: #ffeaf0;
+}
+.lighting-parallel-cue-box.scene-ref:hover {
+    border-color: #e37d95;
+    background: #5a2f39;
+}
+.lighting-parallel-cue-box.scene-ref.scene-test-active {
+    border-color: #34d399;
+    background: #1f4d2b;
+    color: #eafff5;
+    box-shadow: inset 0 0 0 1px rgba(52, 211, 153, 0.4);
 }
 .lighting-fixture-main {
     display: flex;
@@ -1831,7 +1919,12 @@ hr { border: 0; border-top: 1px solid #444; margin: 20px 0; }
     color: #b8d9ff;
     font-size: 12px;
     overflow: auto;
-    flex: 1;
+    flex: 0 0 auto;
+    min-height: 280px;
+    max-height: 280px;
+}
+#lighting-effects-section {
+    margin-top: 10px;
 }
 .lighting-note {
     color: #9aa6b5;

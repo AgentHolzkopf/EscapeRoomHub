@@ -56,6 +56,7 @@ let roomScriptingConfig = { rules: [], nextRuleId: 1, blocklyState: null };
 let zigbeeSnapshot = { devices: [], discoveryActive: false, discoveryRemainingSec: 0, bridgeState: "unknown", bridgeSeenRecently: false };
 let zigbeePollTimer = null;
 let zigbeeBackgroundPollTimer = null;
+let zigbeeAgeRefreshTimer = null;
 let zigbeeDiscoveryBusy = false;
 let zigbeeEditingDeviceId = null;
 const zigbeeLastSeenById = new Map();
@@ -197,12 +198,33 @@ function normalizeLightingCueData(rawCue, idx) {
         seen.add(key);
         groupAssignments.push({ fixtureId, cueId });
     });
+    const rawTimeline = Array.isArray(rawCue?.sceneTimeline) ? rawCue.sceneTimeline : [];
+    const sceneTimeline = rawTimeline
+        .map((slot) => {
+            const type = String(slot?.type || "").trim().toLowerCase();
+            if (type === "delay") {
+                const ms = lightingClampInt(slot?.ms, 0, 600000, 0);
+                return ms > 0 ? { type: "delay", ms } : null;
+            }
+            const itemsRaw = Array.isArray(slot?.items) ? slot.items : (Array.isArray(slot?.cues) ? slot.cues : []);
+            const items = itemsRaw
+                .map((item) => {
+                    const fixtureId = parseInt(item?.fixtureId, 10);
+                    const cueId = parseInt(item?.cueId, 10);
+                    if (!Number.isFinite(fixtureId) || !Number.isFinite(cueId)) return null;
+                    return { fixtureId, cueId };
+                })
+                .filter(Boolean);
+            return items.length ? { type: "cues", items } : null;
+        })
+        .filter(Boolean);
     return {
         id,
         name: (rawCue?.name || `Cue ${idx + 1}`).toString(),
         channels: normalizeLightingChannelsData(rawCue?.channels),
         effects: normalizeLightingEffectsData(rawCue?.effects),
-        groupAssignments
+        groupAssignments,
+        sceneTimeline
     };
 }
 
@@ -269,6 +291,9 @@ function normalizeLightingConfigData(rawConfig) {
             fixture.presetId = "custom";
         }
         if (fixture.presetId === "group") {
+            const preservedSceneTimeline = Array.isArray(fixture?.cues?.[0]?.sceneTimeline)
+                ? fixture.cues[0].sceneTimeline
+                : [];
             const validMemberSet = new Set();
             fixture.cues = (fixture.cues || []).map((cue) => {
                 ensureGroupCueAssignments(cue);
@@ -299,7 +324,8 @@ function normalizeLightingConfigData(rawConfig) {
                 name: (fixture.name || `Scene ${fixture.id}`).toString(),
                 channels: [],
                 effects: normalizeLightingEffectsData(null),
-                groupAssignments: mergedAssignments
+                groupAssignments: mergedAssignments,
+                sceneTimeline: preservedSceneTimeline
             }];
             fixture.groupMembers = Array.from(validMemberSet.values());
         }
@@ -938,6 +964,7 @@ const lightingUI = {
     groupName: document.getElementById("lighting-group-name"),
     addGroupBtn: document.getElementById("lighting-add-group-btn"),
     groupList: document.getElementById("lighting-group-list"),
+    sceneListNote: document.getElementById("lighting-scene-list-note"),
     cueName: document.getElementById("lighting-cue-name"),
     groupMemberSelect: document.getElementById("lighting-group-member-select"),
     addCueBtn: document.getElementById("lighting-add-cue-btn"),
@@ -951,10 +978,14 @@ const lightingUI = {
     groupCueName: document.getElementById("lighting-group-cue-name"),
     groupCueSourceSelect: document.getElementById("lighting-group-cue-source"),
     addChannelBtn: document.getElementById("lighting-add-channel-btn"),
+    addDelayBtn: document.getElementById("lighting-add-delay-btn"),
     testSceneBtn: document.getElementById("lighting-test-scene-btn"),
     channelEditor: document.getElementById("lighting-channel-editor"),
     cueDetailsSection: document.getElementById("lighting-cue-details-section"),
     effectsSection: document.getElementById("lighting-effects-section"),
+    sceneDelaySection: document.getElementById("lighting-scene-delay-section"),
+    sceneDelayInput: document.getElementById("lighting-scene-delay-ms"),
+    sceneDelayNote: document.getElementById("lighting-scene-delay-note"),
     groupAssignmentSection: document.getElementById("lighting-group-assignment-section"),
     groupAssignLamp: document.getElementById("lighting-group-assign-lamp"),
     groupAssignCue: document.getElementById("lighting-group-assign-cue"),
@@ -1013,9 +1044,18 @@ const soundsUI = {
 let selectedLightingFixtureId = null;
 let selectedLightingCueId = null;
 let selectedLightingGroupMemberId = null;
+let selectedSceneTimelineIndex = null;
+let selectedSceneEffectsCueRef = null;
 let draggedLightingCueRef = null;
+let draggedSceneMatrixCueRef = null;
 let selectedLightingPresetId = null;
 let lightingTestCueBusy = false;
+let lightingTestActiveCueRef = null;
+let lightingTestCueClearTimer = null;
+let lightingSceneTestTimers = [];
+let lightingSceneTestActiveSlotIndex = null;
+let lightingSceneTestActiveCueKeys = new Set();
+let lightingSceneTestActiveCueKeyCounts = new Map();
 let soundsListCache = [];
 let soundsUploadBusy = false;
 let selectedSoundName = null;
@@ -1034,6 +1074,179 @@ function formatSoundFileSize(size) {
     return `${(num / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function clearLightingSceneTestPlayback() {
+    (Array.isArray(lightingSceneTestTimers) ? lightingSceneTestTimers : []).forEach((id) => {
+        try { clearTimeout(id); } catch (e) {}
+    });
+    lightingSceneTestTimers = [];
+    lightingSceneTestActiveSlotIndex = null;
+    lightingSceneTestActiveCueKeys = new Set();
+    lightingSceneTestActiveCueKeyCounts = new Map();
+}
+
+function clearLightingCueTestHighlight() {
+    if (lightingTestCueClearTimer) {
+        try { clearTimeout(lightingTestCueClearTimer); } catch (e) {}
+        lightingTestCueClearTimer = null;
+    }
+    lightingTestActiveCueRef = null;
+}
+
+function hasActiveLightingTestPlayback() {
+    return !!(
+        lightingTestCueBusy ||
+        (Array.isArray(lightingSceneTestTimers) && lightingSceneTestTimers.length) ||
+        (lightingSceneTestActiveCueKeys && lightingSceneTestActiveCueKeys.size) ||
+        Number.isFinite(lightingSceneTestActiveSlotIndex) ||
+        lightingTestActiveCueRef
+    );
+}
+
+function stopLightingTestsImmediate() {
+    if (!hasActiveLightingTestPlayback()) return;
+    clearLightingSceneTestPlayback();
+    clearLightingCueTestHighlight();
+    lightingTestCueBusy = false;
+    renderLightingTestCueButton();
+    if (lightingUI.effectsNote) {
+        lightingUI.effectsNote.textContent = "Test stopped.";
+    }
+    renderLightingModal();
+    fetch('/api/runtime/dmx/cue/test/stop', { method: 'POST' }).catch(() => {});
+}
+
+function setLightingCueTestHighlight(fixtureId, cueId, durationMs, infinite = false) {
+    clearLightingCueTestHighlight();
+    const numericFixtureId = parseInt(fixtureId, 10);
+    const numericCueId = parseInt(cueId, 10);
+    if (!Number.isFinite(numericFixtureId) || !Number.isFinite(numericCueId)) return;
+    lightingTestActiveCueRef = { fixtureId: numericFixtureId, cueId: numericCueId, infinite: !!infinite };
+    if (!infinite) {
+        const ms = Math.max(0, lightingClampInt(durationMs, 0, 600000, 0));
+        lightingTestCueClearTimer = setTimeout(() => {
+            lightingTestCueClearTimer = null;
+            lightingTestActiveCueRef = null;
+            renderLightingModal();
+        }, ms + 120);
+    }
+}
+
+function setLightingSceneTestCueActive(cueKey, active) {
+    if (!cueKey) return;
+    const next = new Map(lightingSceneTestActiveCueKeyCounts || []);
+    const current = Number(next.get(cueKey) || 0);
+    if (active) {
+        next.set(cueKey, current + 1);
+    } else if (current <= 1) {
+        next.delete(cueKey);
+    } else {
+        next.set(cueKey, current - 1);
+    }
+    lightingSceneTestActiveCueKeyCounts = next;
+    lightingSceneTestActiveCueKeys = new Set(Array.from(next.keys()));
+}
+
+function scheduleLightingSceneTestPlayback(fixture, sceneCue) {
+    clearLightingSceneTestPlayback();
+    if (!isLightingGroupFixture(fixture) || !sceneCue) return;
+    const timeline = normalizeSceneTimeline(sceneCue);
+    if (!Array.isArray(timeline) || !timeline.length) return;
+
+    const estimateCueTiming = (fixtureId, cueId, visited = new Set()) => {
+        const sourceFixture = getLightingFixtureById(parseInt(fixtureId, 10));
+        const sourceCue = Array.isArray(sourceFixture?.cues)
+            ? sourceFixture.cues.find((entry) => parseInt(entry?.id, 10) === parseInt(cueId, 10))
+            : null;
+        if (!sourceCue) return { startMs: 0, totalMs: 0, infinite: false };
+        if (isLightingGroupFixture(sourceFixture)) {
+            const key = `${parseInt(fixtureId, 10)}:${parseInt(cueId, 10)}`;
+            if (visited.has(key)) return { startMs: 0, totalMs: 0, infinite: true };
+            const nextVisited = new Set(visited);
+            nextVisited.add(key);
+            const nestedTimeline = normalizeSceneTimeline(sourceCue);
+            let totalMs = 0;
+            for (let slotIndex = 0; slotIndex < nestedTimeline.length; slotIndex += 1) {
+                const slot = nestedTimeline[slotIndex];
+                if (slot?.type === "delay") {
+                    totalMs += lightingClampInt(slot?.ms, 0, 600000, 0);
+                    continue;
+                }
+                const slotItems = Array.isArray(slot?.items) ? slot.items : [];
+                let stepMs = 0;
+                for (let itemIndex = 0; itemIndex < slotItems.length; itemIndex += 1) {
+                    const nested = estimateCueTiming(slotItems[itemIndex]?.fixtureId, slotItems[itemIndex]?.cueId, nextVisited);
+                    if (nested.infinite) return { startMs: 0, totalMs: 0, infinite: true };
+                    stepMs = Math.max(stepMs, Math.max(0, nested.startMs + nested.totalMs));
+                }
+                totalMs += stepMs;
+            }
+            return { startMs: 0, totalMs, infinite: false };
+        }
+        ensureCueEffects(sourceCue);
+        const de = lightingClampInt(sourceCue?.effects?.delayMs, 0, 600000, 0);
+        const fi = lightingClampInt(sourceCue?.effects?.fadeInMs, 0, 600000, 0);
+        const fo = lightingClampInt(sourceCue?.effects?.fadeOutMs, 0, 600000, 0);
+        const du = lightingClampInt(sourceCue?.effects?.durationMs, 0, 600000, 0);
+        if (du === 0) return { startMs: de, totalMs: 0, infinite: true }; // infinite
+        return { startMs: de, totalMs: fi + du + fo, infinite: false };
+    };
+
+    let currentOffset = 0;
+    let infiniteEncountered = false;
+    timeline.forEach((slot, slotIndex) => {
+        if (infiniteEncountered) return;
+        if (slot?.type === "delay") {
+            const ms = lightingClampInt(slot?.ms, 0, 600000, 0);
+            const enterTimer = setTimeout(() => {
+                lightingSceneTestActiveSlotIndex = slotIndex;
+                lightingSceneTestActiveCueKeys = new Set();
+                renderLightingModal();
+            }, currentOffset);
+            lightingSceneTestTimers.push(enterTimer);
+            currentOffset += ms;
+            return;
+        }
+        const items = Array.isArray(slot?.items) ? slot.items : [];
+        const enterTimer = setTimeout(() => {
+            lightingSceneTestActiveSlotIndex = slotIndex;
+            renderLightingModal();
+        }, currentOffset);
+        lightingSceneTestTimers.push(enterTimer);
+        let stepMs = 0;
+        items.forEach((item, itemIndex) => {
+            const cueKey = `${slotIndex}:${itemIndex}`;
+            const timing = estimateCueTiming(item?.fixtureId, item?.cueId);
+            const cueOnTimer = setTimeout(() => {
+                setLightingSceneTestCueActive(cueKey, true);
+                renderLightingModal();
+            }, currentOffset + Math.max(0, timing.startMs));
+            lightingSceneTestTimers.push(cueOnTimer);
+            if (timing.infinite) {
+                infiniteEncountered = true;
+                return;
+            }
+            const cueOffTimer = setTimeout(() => {
+                setLightingSceneTestCueActive(cueKey, false);
+                renderLightingModal();
+            }, currentOffset + Math.max(0, timing.startMs + timing.totalMs));
+            lightingSceneTestTimers.push(cueOffTimer);
+            stepMs = Math.max(stepMs, Math.max(0, timing.startMs + timing.totalMs));
+        });
+        if (!infiniteEncountered) currentOffset += stepMs;
+    });
+
+    if (!infiniteEncountered) {
+        const clearAt = Math.max(0, currentOffset + 120);
+        const clearTimer = setTimeout(() => {
+            lightingSceneTestActiveSlotIndex = null;
+            lightingSceneTestActiveCueKeys = new Set();
+            lightingSceneTestActiveCueKeyCounts = new Map();
+            renderLightingModal();
+        }, clearAt);
+        lightingSceneTestTimers.push(clearTimer);
+    }
+}
+
 function formatSoundModifiedAt(value) {
     const ts = Number(value);
     if (!Number.isFinite(ts) || ts <= 0) return "";
@@ -1042,6 +1255,21 @@ function formatSoundModifiedAt(value) {
     } catch (err) {
         return "";
     }
+}
+
+function showSceneCycleBlockedNotice() {
+    updateStatus("Cannot nest scene: cyclic reference detected.", "#ff9f43");
+    if (lightingUI.sceneListNote) {
+        lightingUI.sceneListNote.textContent = "Cannot nest scene: cyclic reference detected.";
+        lightingUI.sceneListNote.style.color = "#ff9f43";
+    }
+    setTimeout(() => {
+        if (lightingUI.sceneListNote && lightingUI.sceneListNote.textContent.includes("cyclic reference")) {
+            lightingUI.sceneListNote.textContent = "";
+            lightingUI.sceneListNote.style.color = "";
+        }
+    }, 2400);
+    setTimeout(() => updateStatus("Ready", "#fff"), 2400);
 }
 
 function getSelectedSoundEntry() {
@@ -1053,7 +1281,7 @@ function getSoundVolumePercent(name) {
     const key = String(name || "");
     const existing = Number(soundVolumeByName.get(key));
     if (Number.isFinite(existing)) return Math.max(0, Math.min(100, existing));
-    return 100;
+    return 50;
 }
 
 function getSoundVolumeNormalized(name) {
@@ -1307,8 +1535,6 @@ function renderSoundsList() {
             startRenameSound();
         };
         name.addEventListener("dblclick", onDoubleClickRename);
-        main.addEventListener("dblclick", onDoubleClickRename);
-        item.addEventListener("dblclick", onDoubleClickRename);
 
         item.appendChild(main);
         item.appendChild(actions);
@@ -1659,6 +1885,18 @@ function getSelectedLightingCue() {
     return fixture.cues.find((cue) => cue.id === selectedLightingCueId) || null;
 }
 
+function getSelectedSceneEffectsCue() {
+    const fixture = getSelectedLightingFixture();
+    if (!isLightingGroupFixture(fixture)) return null;
+    const ref = selectedSceneEffectsCueRef;
+    if (!ref || typeof ref !== "object") return null;
+    const sourceFixture = getLightingFixtureById(parseInt(ref.fixtureId, 10));
+    if (!sourceFixture || !Array.isArray(sourceFixture.cues)) return null;
+    const sourceCue = sourceFixture.cues.find((entry) => parseInt(entry?.id, 10) === parseInt(ref.cueId, 10));
+    if (!sourceCue) return null;
+    return { fixture: sourceFixture, cue: sourceCue };
+}
+
 function ensureGroupCueAssignments(cue) {
     if (!cue) return;
     cue.groupAssignments = Array.isArray(cue.groupAssignments) ? cue.groupAssignments : [];
@@ -1674,6 +1912,172 @@ function ensureGroupCueAssignments(cue) {
         entry.cueId = cueId;
         return true;
     });
+}
+
+function normalizeSceneTimeline(cue) {
+    const toCueItem = (entry) => {
+        const fixtureId = parseInt(entry?.fixtureId, 10);
+        const cueId = parseInt(entry?.cueId, 10);
+        if (!Number.isFinite(fixtureId) || !Number.isFinite(cueId)) return null;
+        return { fixtureId, cueId };
+    };
+    const cueItems = (items) => {
+        const out = [];
+        (Array.isArray(items) ? items : []).forEach((entry) => {
+            const parsed = toCueItem(entry);
+            if (!parsed) return;
+            out.push(parsed);
+        });
+        return out;
+    };
+
+    let timeline = Array.isArray(cue?.sceneTimeline) ? cue.sceneTimeline : [];
+    if (!timeline.length) {
+        const assignments = Array.isArray(cue?.groupAssignments) ? cue.groupAssignments : [];
+        timeline = assignments
+            .map((entry) => toCueItem(entry))
+            .filter(Boolean)
+            .map((item) => ({ type: "cues", items: [item] }));
+    }
+
+    const normalized = [];
+    timeline.forEach((slot) => {
+        const type = String(slot?.type || "").trim().toLowerCase();
+        if (type === "delay") {
+            const ms = lightingClampInt(slot?.ms, 0, 600000, 0);
+            if (ms > 0) normalized.push({ type: "delay", ms });
+            return;
+        }
+        const items = cueItems(slot?.items || slot?.cues || slot?.assignments || []);
+        if (items.length) normalized.push({ type: "cues", items });
+    });
+    cue.sceneTimeline = normalized;
+    return cue.sceneTimeline;
+}
+
+function sceneCueContainsTargetRef(sceneFixtureId, sceneCueId, targetFixtureId, targetCueId, visited = new Set()) {
+    const sceneFixture = getLightingFixtureById(parseInt(sceneFixtureId, 10));
+    if (!sceneFixture || !isLightingGroupFixture(sceneFixture)) return false;
+    const cue = Array.isArray(sceneFixture.cues)
+        ? sceneFixture.cues.find((entry) => parseInt(entry?.id, 10) === parseInt(sceneCueId, 10))
+        : null;
+    if (!cue) return false;
+    const sceneKey = `${parseInt(sceneFixtureId, 10)}:${parseInt(sceneCueId, 10)}`;
+    if (visited.has(sceneKey)) return false;
+    visited.add(sceneKey);
+    const timeline = normalizeSceneTimeline(cue);
+    for (let i = 0; i < timeline.length; i += 1) {
+        const slot = timeline[i];
+        if (slot?.type !== "cues") continue;
+        const items = Array.isArray(slot.items) ? slot.items : [];
+        for (let j = 0; j < items.length; j += 1) {
+            const item = items[j];
+            const fixtureId = parseInt(item?.fixtureId, 10);
+            const cueId = parseInt(item?.cueId, 10);
+            if (!Number.isFinite(fixtureId) || !Number.isFinite(cueId)) continue;
+            if (fixtureId === parseInt(targetFixtureId, 10) && cueId === parseInt(targetCueId, 10)) return true;
+            const nestedFixture = getLightingFixtureById(fixtureId);
+            if (isLightingGroupFixture(nestedFixture)) {
+                if (sceneCueContainsTargetRef(fixtureId, cueId, targetFixtureId, targetCueId, visited)) return true;
+            }
+        }
+    }
+    return false;
+}
+
+function sceneFixtureContainsFixture(sceneFixtureId, targetFixtureId, visited = new Set()) {
+    const sourceFixture = getLightingFixtureById(parseInt(sceneFixtureId, 10));
+    const targetFid = parseInt(targetFixtureId, 10);
+    if (!sourceFixture || !isLightingGroupFixture(sourceFixture) || !Number.isFinite(targetFid)) return false;
+    const sourceFid = parseInt(sceneFixtureId, 10);
+    if (sourceFid === targetFid) return true;
+    const visitKey = `f:${sourceFid}`;
+    if (visited.has(visitKey)) return false;
+    visited.add(visitKey);
+    const cues = Array.isArray(sourceFixture.cues) ? sourceFixture.cues : [];
+    for (let c = 0; c < cues.length; c += 1) {
+        const timeline = normalizeSceneTimeline(cues[c]);
+        for (let i = 0; i < timeline.length; i += 1) {
+            const slot = timeline[i];
+            if (slot?.type !== "cues") continue;
+            const items = Array.isArray(slot.items) ? slot.items : [];
+            for (let j = 0; j < items.length; j += 1) {
+                const refFixtureId = parseInt(items[j]?.fixtureId, 10);
+                if (!Number.isFinite(refFixtureId)) continue;
+                if (refFixtureId === targetFid) return true;
+                const refFixture = getLightingFixtureById(refFixtureId);
+                if (isLightingGroupFixture(refFixture)) {
+                    if (sceneFixtureContainsFixture(refFixtureId, targetFid, visited)) return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+function canInsertSceneReference(targetSceneFixture, sourceFixtureId, sourceCueId) {
+    if (!targetSceneFixture || !isLightingGroupFixture(targetSceneFixture)) return true;
+    const targetCue = getSelectedLightingCue() || ensureSceneCue(targetSceneFixture);
+    if (!targetCue) return false;
+    const targetFixtureId = parseInt(targetSceneFixture?.id, 10);
+    const targetCueId = parseInt(targetCue?.id, 10);
+    const sourceFixture = getLightingFixtureById(parseInt(sourceFixtureId, 10));
+    if (!sourceFixture) return false;
+    if (!isLightingGroupFixture(sourceFixture)) return true;
+    const sourceFid = parseInt(sourceFixtureId, 10);
+    const sourceCid = parseInt(sourceCueId, 10);
+    if (sourceFid === targetFixtureId && sourceCid === targetCueId) return false;
+    if (sourceFid === targetFixtureId) return false;
+    // Robust cycle prevention on fixture level (covers multiple cue IDs per scene fixture).
+    if (sceneFixtureContainsFixture(sourceFid, targetFixtureId)) return false;
+    return !sceneCueContainsTargetRef(sourceFid, sourceCid, targetFixtureId, targetCueId);
+}
+
+function isSceneCueRef(refValue) {
+    const [fixtureRaw, cueRaw] = String(refValue || "").split(":");
+    const fixtureId = parseInt(fixtureRaw, 10);
+    const cueId = parseInt(cueRaw, 10);
+    if (!Number.isFinite(fixtureId) || !Number.isFinite(cueId)) return false;
+    const fixture = getLightingFixtureById(fixtureId);
+    if (!fixture || !isLightingGroupFixture(fixture)) return false;
+    return Array.isArray(fixture.cues) && fixture.cues.some((cue) => parseInt(cue?.id, 10) === cueId);
+}
+
+function updateLightingAddCueButtonLabel() {
+    if (!lightingUI.addChannelBtn) return;
+    const fixture = getSelectedLightingFixture();
+    if (!isLightingGroupFixture(fixture)) {
+        lightingUI.addChannelBtn.textContent = "Add Channel";
+        return;
+    }
+    const selectedRef = String(lightingUI.groupCueSourceSelect?.value || "");
+    lightingUI.addChannelBtn.textContent = isSceneCueRef(selectedRef) ? "Add Scene" : "Add Cue";
+}
+
+function syncSceneCueDerivedAssignments(cue, fixture = null) {
+    const timeline = normalizeSceneTimeline(cue);
+    const assignments = [];
+    const seen = new Set();
+    timeline.forEach((slot) => {
+        if (slot.type !== "cues") return;
+        (slot.items || []).forEach((item) => {
+            const key = `${item.fixtureId}:${item.cueId}`;
+            if (seen.has(key)) return;
+            seen.add(key);
+            assignments.push({ fixtureId: item.fixtureId, cueId: item.cueId });
+        });
+    });
+    cue.groupAssignments = assignments;
+    if (fixture && isLightingGroupFixture(fixture)) {
+        fixture.groupMembers = Array.from(new Set(
+            assignments
+                .map((entry) => parseInt(entry?.fixtureId, 10))
+                .filter((fixtureId) => {
+                    const memberFixture = getLightingFixtureById(fixtureId);
+                    return Number.isFinite(fixtureId) && memberFixture && !isLightingGroupFixture(memberFixture);
+                })
+        ));
+    }
 }
 
 function ensureCueEffects(cue) {
@@ -1730,18 +2134,25 @@ function ensureSceneCue(groupFixture) {
         };
     }
     ensureGroupCueAssignments(groupFixture.cues[0]);
+    normalizeSceneTimeline(groupFixture.cues[0]);
+    syncSceneCueDerivedAssignments(groupFixture.cues[0], groupFixture);
     return groupFixture.cues[0];
 }
 
 function addCueToScene(groupFixture, sourceFixtureId, sourceCueId) {
     const sourceFixture = getLightingFixtureById(sourceFixtureId);
-    if (!groupFixture || !sourceFixture || isLightingGroupFixture(sourceFixture)) return false;
+    if (!groupFixture || !sourceFixture) return false;
     const sceneCue = ensureSceneCue(groupFixture);
     if (!sceneCue) return false;
-    const exists = (sceneCue.groupAssignments || []).some((entry) => entry.fixtureId === sourceFixtureId && entry.cueId === sourceCueId);
-    if (exists) return false;
-    sceneCue.groupAssignments.push({ fixtureId: sourceFixtureId, cueId: sourceCueId });
-    groupFixture.groupMembers = Array.from(new Set((sceneCue.groupAssignments || []).map((entry) => entry.fixtureId)));
+    if (!canInsertSceneReference(groupFixture, sourceFixtureId, sourceCueId)) {
+        showSceneCycleBlockedNotice();
+        return false;
+    }
+    normalizeSceneTimeline(sceneCue).push({
+        type: "cues",
+        items: [{ fixtureId: sourceFixtureId, cueId: sourceCueId }]
+    });
+    syncSceneCueDerivedAssignments(sceneCue, groupFixture);
     selectedLightingFixtureId = groupFixture.id;
     selectedLightingCueId = sceneCue.id;
     return true;
@@ -1782,7 +2193,7 @@ function cloneCueDataForCopy(sourceCue, targetFixture, sourceFixture = null) {
             presetChannelId: Number.isFinite(parseInt(entry?.presetChannelId, 10)) ? parseInt(entry.presetChannelId, 10) : null
         })),
         effects: {
-            delayMs: sourceCue.effects.delayMs,
+            delayMs: 0,
             fadeInMs: sourceCue.effects.fadeInMs,
             fadeOutMs: sourceCue.effects.fadeOutMs,
             durationMs: sourceCue.effects.durationMs
@@ -1824,12 +2235,19 @@ function ensureLightingSelectionValidity() {
         selectedLightingCueId = cues.length ? cues[0].id : null;
     }
     if (isLightingGroupFixture(fixture)) {
+        const sceneCue = cues[0] || null;
+        const timeline = sceneCue ? normalizeSceneTimeline(sceneCue) : [];
+        if (!Number.isFinite(selectedSceneTimelineIndex) || selectedSceneTimelineIndex < 0 || selectedSceneTimelineIndex >= timeline.length) {
+            selectedSceneTimelineIndex = null;
+        }
         const memberIds = getLightingGroupMemberFixtures(fixture).map((entry) => entry.id);
         if (!memberIds.includes(selectedLightingGroupMemberId)) {
             selectedLightingGroupMemberId = memberIds.length ? memberIds[0] : null;
         }
     } else {
         selectedLightingGroupMemberId = null;
+        selectedSceneTimelineIndex = null;
+        selectedSceneEffectsCueRef = null;
     }
 }
 
@@ -1886,18 +2304,26 @@ function buildLightingGroupCuePreviewPayload(groupFixture, groupCue) {
     return ordered;
 }
 
-function getAllLampCueOptions() {
+function getAllSceneSourceCueOptions(targetSceneFixture = null, targetSceneCue = null) {
     const options = [];
     (lightingFixtures || []).forEach((fixture) => {
-        if (isLightingGroupFixture(fixture)) return;
         const fixtureId = parseInt(fixture?.id, 10);
         if (!Number.isFinite(fixtureId)) return;
         (Array.isArray(fixture?.cues) ? fixture.cues : []).forEach((cue) => {
             const cueId = parseInt(cue?.id, 10);
             if (!Number.isFinite(cueId)) return;
+            if (targetSceneFixture && targetSceneCue) {
+                const targetFixtureId = parseInt(targetSceneFixture?.id, 10);
+                const targetCueId = parseInt(targetSceneCue?.id, 10);
+                if (fixtureId === targetFixtureId && cueId === targetCueId) return;
+                if (isLightingGroupFixture(fixture)) {
+                    if (!canInsertSceneReference(targetSceneFixture, fixtureId, cueId)) return;
+                }
+            }
+            const kind = isLightingGroupFixture(fixture) ? "Scene" : "Lamp";
             options.push({
                 value: `${fixtureId}:${cueId}`,
-                label: `${fixture?.name || `Lamp ${fixtureId}`} / ${cue?.name || `Cue ${cueId}`}`
+                label: `${kind}: ${fixture?.name || `${kind} ${fixtureId}`} / ${cue?.name || `Cue ${cueId}`}`
             });
         });
     });
@@ -1959,11 +2385,19 @@ function removeGroupAssignment(groupFixture, memberFixtureId, sourceCueId) {
         groupFixture.cues = Array.isArray(groupFixture.cues) ? groupFixture.cues : [];
         const sceneCue = groupFixture.cues[0];
         if (!sceneCue) return false;
-        ensureGroupCueAssignments(sceneCue);
-        const before = sceneCue.groupAssignments.length;
-        sceneCue.groupAssignments = sceneCue.groupAssignments.filter((entry) => !(entry.fixtureId === memberId && entry.cueId === cueId));
-        groupFixture.groupMembers = Array.from(new Set((sceneCue.groupAssignments || []).map((entry) => entry.fixtureId)));
-        return sceneCue.groupAssignments.length !== before;
+        normalizeSceneTimeline(sceneCue);
+        const before = JSON.stringify(sceneCue.sceneTimeline);
+        sceneCue.sceneTimeline = sceneCue.sceneTimeline
+            .map((slot) => {
+                if (slot.type !== "cues") return slot;
+                return {
+                    ...slot,
+                    items: (slot.items || []).filter((entry) => !(entry.fixtureId === memberId && entry.cueId === cueId))
+                };
+            })
+            .filter((slot) => !(slot.type === "cues" && !(slot.items || []).length));
+        syncSceneCueDerivedAssignments(sceneCue, groupFixture);
+        return JSON.stringify(sceneCue.sceneTimeline) !== before;
     }
     let changed = false;
     groupFixture.cues = (groupFixture.cues || []).filter((groupCue) => {
@@ -1989,7 +2423,7 @@ function updateLightingMiddleModeUI() {
         lightingUI.middleTopTitle.textContent = "Cues";
     }
     if (lightingUI.middleBottomTitle) {
-        lightingUI.middleBottomTitle.textContent = isGroup ? "Cues" : "Channels";
+        lightingUI.middleBottomTitle.textContent = isGroup ? "Cue Matrix" : "Channels";
     }
     if (lightingUI.cueName) {
         lightingUI.cueName.style.display = isGroup ? "none" : "";
@@ -2014,6 +2448,9 @@ function updateLightingMiddleModeUI() {
     if (lightingUI.addChannelBtn) {
         lightingUI.addChannelBtn.textContent = isGroup ? "Add Cue" : "Add Channel";
     }
+    if (lightingUI.addDelayBtn) {
+        lightingUI.addDelayBtn.style.display = isGroup ? "" : "none";
+    }
     if (lightingUI.testSceneBtn) {
         lightingUI.testSceneBtn.style.display = isGroup ? "" : "none";
         lightingUI.testSceneBtn.disabled = !isGroup || lightingTestCueBusy;
@@ -2025,7 +2462,7 @@ function updateLightingMiddleModeUI() {
         lightingUI.cueDetailsSection.style.display = "";
     }
     if (lightingUI.effectsSection) {
-        lightingUI.effectsSection.style.display = isGroup ? "none" : "";
+        lightingUI.effectsSection.style.display = "";
     }
     if (lightingUI.groupAssignmentSection) {
         lightingUI.groupAssignmentSection.style.display = "none";
@@ -2248,7 +2685,7 @@ function renderLightingGroupList() {
     groups.forEach((groupFixture) => {
         ensureFixturePresetFields(groupFixture);
         const item = document.createElement("li");
-        item.className = `lighting-list-item${groupFixture.id === selectedLightingFixtureId ? " selected" : ""}`;
+        item.className = `lighting-list-item lighting-scene-item${groupFixture.id === selectedLightingFixtureId ? " selected" : ""}`;
         const main = document.createElement("div");
         main.className = "lighting-list-item-main";
         const nameLabel = document.createElement("div");
@@ -2264,6 +2701,8 @@ function renderLightingGroupList() {
         item.addEventListener("click", () => {
             if (selectedLightingFixtureId === groupFixture.id) return;
             selectedLightingFixtureId = groupFixture.id;
+            selectedSceneTimelineIndex = null;
+            selectedSceneEffectsCueRef = null;
             ensureLightingSelectionValidity();
             renderLightingModal();
         });
@@ -2285,10 +2724,28 @@ function renderLightingGroupList() {
             const sourceFixtureId = parseInt(draggedLightingCueRef?.sourceFixtureId, 10);
             const sourceCueId = parseInt(draggedLightingCueRef?.cueId, 10);
             if (!Number.isFinite(sourceFixtureId) || !Number.isFinite(sourceCueId)) return;
-            if (!addCueToScene(groupFixture, sourceFixtureId, sourceCueId)) return;
+            if (!addCueToScene(groupFixture, sourceFixtureId, sourceCueId)) {
+                if (isLightingGroupFixture(getLightingFixtureById(sourceFixtureId))) {
+                    showSceneCycleBlockedNotice();
+                }
+                return;
+            }
             ensureLightingSelectionValidity();
             renderLightingModal();
             autoSave();
+        });
+        item.draggable = true;
+        item.addEventListener("dragstart", (event) => {
+            const sceneCue = ensureSceneCue(groupFixture);
+            if (!sceneCue) return;
+            draggedLightingCueRef = { sourceFixtureId: groupFixture.id, cueId: sceneCue.id };
+            if (event.dataTransfer) {
+                event.dataTransfer.effectAllowed = "copy";
+                event.dataTransfer.setData("text/plain", `${groupFixture.id}:${sceneCue.id}`);
+            }
+        });
+        item.addEventListener("dragend", () => {
+            draggedLightingCueRef = null;
         });
         const startRenameGroup = (event) => {
             event.stopPropagation();
@@ -2425,6 +2882,12 @@ function renderLightingCueList() {
     fixture.cues.forEach((cue) => {
         const item = document.createElement("li");
         item.className = `lighting-list-item${cue.id === selectedLightingCueId ? " selected" : ""}`;
+        if (
+            parseInt(lightingTestActiveCueRef?.fixtureId, 10) === parseInt(fixture?.id, 10) &&
+            parseInt(lightingTestActiveCueRef?.cueId, 10) === parseInt(cue?.id, 10)
+        ) {
+            item.classList.add("scene-test-active");
+        }
         item.draggable = true;
 
         const main = document.createElement("div");
@@ -2546,6 +3009,9 @@ function renderLightingChannelAdder() {
         if (lightingUI.addChannelBtn) {
             lightingUI.addChannelBtn.disabled = !hasCue;
         }
+        if (lightingUI.addDelayBtn) {
+            lightingUI.addDelayBtn.disabled = true;
+        }
         return;
     }
     if (lightingUI.channelNumber) {
@@ -2555,7 +3021,9 @@ function renderLightingChannelAdder() {
         lightingUI.groupCueName.disabled = !fixture;
     }
     if (lightingUI.groupCueSourceSelect) {
-        const sourceOptions = getAllLampCueOptions();
+        const sourceOptions = (isGroup && cue)
+            ? getAllSceneSourceCueOptions(fixture, cue)
+            : getAllSceneSourceCueOptions();
         lightingUI.groupCueSourceSelect.innerHTML = "";
         sourceOptions.forEach((entry) => {
             const option = document.createElement("option");
@@ -2564,9 +3032,14 @@ function renderLightingChannelAdder() {
             lightingUI.groupCueSourceSelect.appendChild(option);
         });
         lightingUI.groupCueSourceSelect.disabled = !hasCue || sourceOptions.length === 0;
+        lightingUI.groupCueSourceSelect.onchange = () => updateLightingAddCueButtonLabel();
     }
     if (lightingUI.addChannelBtn) {
         lightingUI.addChannelBtn.disabled = !hasCue || !lightingUI.groupCueSourceSelect || lightingUI.groupCueSourceSelect.disabled;
+    }
+    updateLightingAddCueButtonLabel();
+    if (lightingUI.addDelayBtn) {
+        lightingUI.addDelayBtn.disabled = !hasCue;
     }
 }
 
@@ -2579,10 +3052,10 @@ function renderLightingChannelEditor() {
             lightingUI.channelEditor.innerHTML = `<div class="lighting-empty">No scene configured.</div>`;
             return;
         }
-        ensureGroupCueAssignments(selectedSceneCue);
-        const assignments = selectedSceneCue.groupAssignments || [];
-        if (!assignments.length) {
-            lightingUI.channelEditor.innerHTML = `<div class="lighting-empty">No cues assigned to this scene yet.</div>`;
+        const timeline = normalizeSceneTimeline(selectedSceneCue);
+        syncSceneCueDerivedAssignments(selectedSceneCue, fixture);
+        if (!timeline.length) {
+            lightingUI.channelEditor.innerHTML = `<div class="lighting-empty">No scene timeline yet. Add cues or delay blocks.</div>`;
             return;
         }
         const list = document.createElement("ul");
@@ -2590,28 +3063,347 @@ function renderLightingChannelEditor() {
         list.style.flex = "1 1 auto";
         list.style.maxHeight = "none";
         list.style.minHeight = "0";
-        assignments.forEach((assignment) => {
-            const sourceFixture = getLightingFixtureById(assignment.fixtureId);
-            const sourceCue = sourceFixture?.cues?.find((entry) => parseInt(entry?.id, 10) === assignment.cueId);
-            if (!sourceFixture || !sourceCue) return;
-
+        let draggedIndex = null;
+        const rowDropPosition = new Map();
+        let hoveredRowIndex = null;
+        let hoveredInsertPos = "before";
+        const clearSceneRowDropIndicators = () => {
+            list.querySelectorAll(".lighting-list-item.drop-target,.lighting-list-item.drop-insert-before,.lighting-list-item.drop-insert-after")
+                .forEach((entry) => {
+                    entry.classList.remove("drop-target", "drop-insert-before", "drop-insert-after");
+                    entry.style.removeProperty("--scene-row-shift");
+                });
+            list.querySelectorAll(".lighting-scene-dropzone.active").forEach((entry) => entry.classList.remove("active"));
+            hoveredRowIndex = null;
+            hoveredInsertPos = "before";
+        };
+        const setRowInsertIndicator = (rowEl, rowIndex, clientY) => {
+            if (!rowEl) return;
+            clearSceneRowDropIndicators();
+            const rect = rowEl.getBoundingClientRect();
+            const insertAfter = (clientY - rect.top) >= (rect.height / 2);
+            const draggingEl = list.querySelector(".lighting-list-item.dragging");
+            const shiftPx = Math.max(44, draggingEl?.offsetHeight || rowEl.offsetHeight || 44);
+            rowEl.style.setProperty("--scene-row-shift", `${shiftPx}px`);
+            const nextPos = insertAfter ? "after" : "before";
+            rowDropPosition.set(rowIndex, nextPos);
+            hoveredRowIndex = rowIndex;
+            hoveredInsertPos = nextPos;
+            rowEl.classList.add(insertAfter ? "drop-insert-after" : "drop-insert-before");
+        };
+        const updateRowDropFromPointer = (clientY) => {
+            if (!Number.isFinite(draggedIndex) || draggedSceneMatrixCueRef) return;
+            const rows = Array.from(list.querySelectorAll(".lighting-list-item"))
+                .filter((entry) => parseInt(entry.dataset.slotIndex, 10) !== draggedIndex);
+            if (!rows.length) return;
+            let nearest = null;
+            let bestDist = Number.POSITIVE_INFINITY;
+            rows.forEach((rowEl) => {
+                const rect = rowEl.getBoundingClientRect();
+                const center = rect.top + (rect.height / 2);
+                const dist = Math.abs(clientY - center);
+                if (dist < bestDist) {
+                    bestDist = dist;
+                    nearest = { rowEl, rect, slotIndex: parseInt(rowEl.dataset.slotIndex, 10) };
+                }
+            });
+            if (!nearest || !Number.isFinite(nearest.slotIndex)) return;
+            const mid = nearest.rect.top + (nearest.rect.height / 2);
+            let nextPos = clientY >= mid ? "after" : "before";
+            // Hysteresis around center to avoid flicker while hovering.
+            if (hoveredRowIndex === nearest.slotIndex && Math.abs(clientY - mid) < 14) {
+                nextPos = hoveredInsertPos || nextPos;
+            }
+            clearSceneRowDropIndicators();
+            const draggingEl = list.querySelector(".lighting-list-item.dragging");
+            const shiftPx = Math.max(44, draggingEl?.offsetHeight || nearest.rowEl.offsetHeight || 44);
+            nearest.rowEl.style.setProperty("--scene-row-shift", `${shiftPx}px`);
+            nearest.rowEl.classList.add(nextPos === "after" ? "drop-insert-after" : "drop-insert-before");
+            rowDropPosition.set(nearest.slotIndex, nextPos);
+            hoveredRowIndex = nearest.slotIndex;
+            hoveredInsertPos = nextPos;
+        };
+        const removeSlotBtn = (slotIndex) => {
+            selectedSceneCue.sceneTimeline = (selectedSceneCue.sceneTimeline || []).filter((_, idx) => idx !== slotIndex);
+            syncSceneCueDerivedAssignments(selectedSceneCue, fixture);
+            if (selectedSceneTimelineIndex === slotIndex) selectedSceneTimelineIndex = null;
+            renderLightingModal();
+            autoSave();
+        };
+        const removeCueItemFromSlot = (slotIndex, itemIndex) => {
+            const next = Array.isArray(selectedSceneCue.sceneTimeline) ? [...selectedSceneCue.sceneTimeline] : [];
+            const slot = next[slotIndex];
+            if (!slot || slot.type !== "cues") return { next, moved: null };
+            const items = Array.isArray(slot.items) ? [...slot.items] : [];
+            if (itemIndex < 0 || itemIndex >= items.length) return { next, moved: null };
+            const [moved] = items.splice(itemIndex, 1);
+            if (items.length) {
+                next[slotIndex] = { ...slot, items };
+            } else {
+                next.splice(slotIndex, 1);
+            }
+            return { next, moved };
+        };
+        const moveCueToOwnSlot = (fromSlotIndex, fromItemIndex, insertIndexRaw) => {
+            if (!Number.isFinite(fromSlotIndex) || !Number.isFinite(fromItemIndex)) return false;
+            const pulled = removeCueItemFromSlot(fromSlotIndex, fromItemIndex);
+            if (!pulled.moved) return false;
+            let insertIndex = Number.isFinite(insertIndexRaw) ? insertIndexRaw : pulled.next.length;
+            if (fromSlotIndex < insertIndex) insertIndex -= 1;
+            insertIndex = Math.max(0, Math.min(insertIndex, pulled.next.length));
+            pulled.next.splice(insertIndex, 0, { type: "cues", items: [pulled.moved] });
+            selectedSceneCue.sceneTimeline = pulled.next;
+            syncSceneCueDerivedAssignments(selectedSceneCue, fixture);
+            draggedSceneMatrixCueRef = null;
+            selectedSceneTimelineIndex = insertIndex;
+            clearSceneRowDropIndicators();
+            renderLightingModal();
+            autoSave();
+            return true;
+        };
+        const createCueInsertZone = (insertIndex) => {
+            const zone = document.createElement("li");
+            zone.className = "lighting-scene-dropzone";
+            zone.dataset.insertIndex = String(insertIndex);
+            zone.addEventListener("dragover", (event) => {
+                if (!draggedSceneMatrixCueRef) return;
+                event.preventDefault();
+                event.stopPropagation();
+                if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+                clearSceneRowDropIndicators();
+                zone.classList.add("active");
+            });
+            zone.addEventListener("dragleave", () => {
+                zone.classList.remove("active");
+            });
+            zone.addEventListener("drop", (event) => {
+                if (!draggedSceneMatrixCueRef) return;
+                event.preventDefault();
+                event.stopPropagation();
+                zone.classList.remove("active");
+                const fromSlotIndex = parseInt(draggedSceneMatrixCueRef?.slotIndex, 10);
+                const fromItemIndex = parseInt(draggedSceneMatrixCueRef?.itemIndex, 10);
+                moveCueToOwnSlot(fromSlotIndex, fromItemIndex, insertIndex);
+            });
+            return zone;
+        };
+        list.appendChild(createCueInsertZone(0));
+        timeline.forEach((slot, slotIndex) => {
             const item = document.createElement("li");
             item.className = "lighting-list-item";
+            if (Number.isFinite(selectedSceneTimelineIndex) && selectedSceneTimelineIndex === slotIndex) {
+                item.classList.add("selected");
+            }
+            if (Number.isFinite(lightingSceneTestActiveSlotIndex) && lightingSceneTestActiveSlotIndex === slotIndex) {
+                item.classList.add("scene-test-active");
+            }
+            item.draggable = true;
+            item.dataset.slotIndex = String(slotIndex);
             item.addEventListener("click", () => {
-                selectedLightingFixtureId = sourceFixture.id;
-                selectedLightingCueId = sourceCue.id;
-                ensureLightingSelectionValidity();
+                selectedSceneTimelineIndex = slotIndex;
+                if (slot?.type === "delay") selectedSceneEffectsCueRef = null;
                 renderLightingModal();
+            });
+            item.addEventListener("dragstart", () => {
+                draggedIndex = slotIndex;
+                item.classList.add("dragging");
+            });
+            item.addEventListener("dragend", () => {
+                draggedIndex = null;
+                item.classList.remove("dragging");
+                clearSceneRowDropIndicators();
+                rowDropPosition.clear();
+            });
+            item.addEventListener("dragover", (event) => {
+                event.preventDefault();
+                if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+                if (draggedSceneMatrixCueRef) {
+                    const timelineSlot = timeline[slotIndex];
+                    clearSceneRowDropIndicators();
+                    if (timelineSlot?.type === "cues") item.classList.add("drop-target");
+                    return;
+                }
+                if (!Number.isFinite(draggedIndex) || draggedIndex === slotIndex) return;
+                updateRowDropFromPointer(event.clientY);
+            });
+            item.addEventListener("dragleave", (event) => {
+                const nextTarget = event.relatedTarget;
+                if (nextTarget && item.contains(nextTarget)) return;
+                item.classList.remove("drop-target");
+            });
+            item.addEventListener("drop", (event) => {
+                item.classList.remove("drop-target", "drop-insert-before", "drop-insert-after");
+                // Dragging one cue-box out of a parallel row => create own row below target.
+                if (draggedSceneMatrixCueRef) {
+                    event.preventDefault();
+                    const fromSlotIndex = parseInt(draggedSceneMatrixCueRef?.slotIndex, 10);
+                    const fromItemIndex = parseInt(draggedSceneMatrixCueRef?.itemIndex, 10);
+                    if (Number.isFinite(fromSlotIndex) && Number.isFinite(fromItemIndex) && timeline[slotIndex]?.type === "cues") {
+                        const pulled = removeCueItemFromSlot(fromSlotIndex, fromItemIndex);
+                        if (pulled.moved) {
+                            let targetSlotIndex = slotIndex;
+                            if (fromSlotIndex < targetSlotIndex) targetSlotIndex -= 1;
+                            const targetSlot = pulled.next[targetSlotIndex];
+                            if (targetSlot?.type === "cues") {
+                                const nextItems = Array.isArray(targetSlot.items) ? [...targetSlot.items, pulled.moved] : [pulled.moved];
+                                pulled.next[targetSlotIndex] = { ...targetSlot, items: nextItems };
+                            } else {
+                                pulled.next.splice(Math.max(0, targetSlotIndex + 1), 0, { type: "cues", items: [pulled.moved] });
+                                targetSlotIndex = Math.max(0, targetSlotIndex + 1);
+                            }
+                            selectedSceneCue.sceneTimeline = pulled.next;
+                            syncSceneCueDerivedAssignments(selectedSceneCue, fixture);
+                            draggedSceneMatrixCueRef = null;
+                            selectedSceneTimelineIndex = Math.max(0, targetSlotIndex);
+                            renderLightingModal();
+                            autoSave();
+                            return;
+                        }
+                    }
+                }
+                if (!Number.isFinite(draggedIndex) || draggedIndex === slotIndex) return;
+                // Row reordering is handled by list-level drop for stable hit-testing.
+                event.preventDefault();
             });
             const main = document.createElement("div");
             main.className = "lighting-list-item-main";
             const nameLabel = document.createElement("div");
-            const lampName = sourceFixture.name || `Lamp ${sourceFixture.id}`;
-            const cueName = sourceCue.name || `Cue ${sourceCue.id}`;
-            nameLabel.textContent = `${lampName} - ${cueName}`;
             const meta = document.createElement("div");
             meta.className = "lighting-item-meta";
-            meta.textContent = `${(sourceCue.channels || []).length} channels`;
+            if (slot.type === "delay") {
+                nameLabel.textContent = `Delay`;
+                meta.textContent = `${lightingClampInt(slot.ms, 0, 600000, 0)} ms`;
+            } else {
+                const items = Array.isArray(slot.items) ? slot.items : [];
+                const cueEntries = items.map((entry) => {
+                    const sourceFixture = getLightingFixtureById(entry.fixtureId);
+                    const sourceCue = sourceFixture?.cues?.find((candidate) => parseInt(candidate?.id, 10) === entry.cueId);
+                    return {
+                        fixtureId: entry.fixtureId,
+                        cueId: entry.cueId,
+                        label: `${sourceFixture?.name || `Lamp ${entry.fixtureId}`} - ${sourceCue?.name || `Cue ${entry.cueId}`}`
+                    };
+                });
+                const boxes = document.createElement("div");
+                boxes.className = "lighting-parallel-cue-grid";
+                cueEntries.forEach((cueEntry, boxIndex) => {
+                    const cueBox = document.createElement("button");
+                    cueBox.type = "button";
+                    cueBox.className = "lighting-parallel-cue-box";
+                    const cueFixture = getLightingFixtureById(cueEntry.fixtureId);
+                    if (isLightingGroupFixture(cueFixture)) cueBox.classList.add("scene-ref");
+                    const cueKey = `${slotIndex}:${boxIndex}`;
+                    if (
+                        parseInt(selectedSceneEffectsCueRef?.fixtureId, 10) === parseInt(cueEntry.fixtureId, 10) &&
+                        parseInt(selectedSceneEffectsCueRef?.cueId, 10) === parseInt(cueEntry.cueId, 10)
+                    ) {
+                        cueBox.classList.add("selected");
+                    }
+                    if (lightingSceneTestActiveCueKeys?.has(cueKey)) {
+                        cueBox.classList.add("scene-test-active");
+                    }
+                    cueBox.textContent = cueEntry.label;
+                    cueBox.title = cueEntry.label;
+                    cueBox.draggable = true;
+                    cueBox.addEventListener("dragstart", (dragEvent) => {
+                        dragEvent.stopPropagation();
+                        draggedSceneMatrixCueRef = { slotIndex, itemIndex: boxIndex };
+                    });
+                    cueBox.addEventListener("dragend", () => {
+                        draggedSceneMatrixCueRef = null;
+                        clearSceneRowDropIndicators();
+                    });
+                    cueBox.addEventListener("dragover", (dragEvent) => {
+                        if (draggedLightingCueRef) {
+                            dragEvent.preventDefault();
+                            dragEvent.stopPropagation();
+                            if (dragEvent.dataTransfer) dragEvent.dataTransfer.dropEffect = "copy";
+                            clearSceneRowDropIndicators();
+                            item.classList.add("drop-target");
+                            return;
+                        }
+                        if (draggedSceneMatrixCueRef) {
+                            dragEvent.preventDefault();
+                            dragEvent.stopPropagation();
+                            if (dragEvent.dataTransfer) dragEvent.dataTransfer.dropEffect = "move";
+                            clearSceneRowDropIndicators();
+                            item.classList.add("drop-target");
+                            return;
+                        }
+                        if (!Number.isFinite(draggedIndex) || draggedIndex === slotIndex) return;
+                        dragEvent.preventDefault();
+                        dragEvent.stopPropagation();
+                        if (dragEvent.dataTransfer) dragEvent.dataTransfer.dropEffect = "move";
+                        setRowInsertIndicator(item, slotIndex, dragEvent.clientY);
+                    });
+                    cueBox.addEventListener("drop", (dropEvent) => {
+                        if (draggedLightingCueRef) {
+                            dropEvent.preventDefault();
+                            dropEvent.stopPropagation();
+                            const sourceFixtureId = parseInt(draggedLightingCueRef?.sourceFixtureId, 10);
+                            const sourceCueId = parseInt(draggedLightingCueRef?.cueId, 10);
+                            if (!Number.isFinite(sourceFixtureId) || !Number.isFinite(sourceCueId)) return;
+                            if (!canInsertSceneReference(fixture, sourceFixtureId, sourceCueId)) {
+                                showSceneCycleBlockedNotice();
+                                return;
+                            }
+                            const next = Array.isArray(selectedSceneCue.sceneTimeline) ? [...selectedSceneCue.sceneTimeline] : [];
+                            const targetSlot = next[slotIndex];
+                            if (!targetSlot || targetSlot.type !== "cues") return;
+                            targetSlot.items = [...(Array.isArray(targetSlot.items) ? targetSlot.items : []), { fixtureId: sourceFixtureId, cueId: sourceCueId }];
+                            selectedSceneCue.sceneTimeline = next;
+                            syncSceneCueDerivedAssignments(selectedSceneCue, fixture);
+                            draggedLightingCueRef = null;
+                            clearSceneRowDropIndicators();
+                            renderLightingModal();
+                            autoSave();
+                            return;
+                        }
+                        if (!draggedSceneMatrixCueRef) return;
+                        dropEvent.preventDefault();
+                        dropEvent.stopPropagation();
+                        const fromSlotIndex = parseInt(draggedSceneMatrixCueRef?.slotIndex, 10);
+                        const fromItemIndex = parseInt(draggedSceneMatrixCueRef?.itemIndex, 10);
+                        if (!Number.isFinite(fromSlotIndex) || !Number.isFinite(fromItemIndex)) return;
+                        const pulled = removeCueItemFromSlot(fromSlotIndex, fromItemIndex);
+                        if (!pulled.moved) return;
+                        let targetSlotIndex = slotIndex;
+                        if (fromSlotIndex < targetSlotIndex) targetSlotIndex -= 1;
+                        const targetSlot = pulled.next[targetSlotIndex];
+                        if (!targetSlot || targetSlot.type !== "cues") return;
+                        pulled.next[targetSlotIndex] = {
+                            ...targetSlot,
+                            items: [...(Array.isArray(targetSlot.items) ? targetSlot.items : []), pulled.moved]
+                        };
+                        selectedSceneCue.sceneTimeline = pulled.next;
+                        syncSceneCueDerivedAssignments(selectedSceneCue, fixture);
+                        draggedSceneMatrixCueRef = null;
+                        selectedSceneTimelineIndex = Math.max(0, targetSlotIndex);
+                        clearSceneRowDropIndicators();
+                        renderLightingModal();
+                        autoSave();
+                    });
+                    cueBox.addEventListener("click", (clickEvent) => {
+                        clickEvent.stopPropagation();
+                        selectedSceneTimelineIndex = slotIndex;
+                        const selectedFixture = getLightingFixtureById(cueEntry.fixtureId);
+                        if (isLightingGroupFixture(selectedFixture)) {
+                            selectedSceneEffectsCueRef = null;
+                        } else {
+                            selectedSceneEffectsCueRef = { fixtureId: cueEntry.fixtureId, cueId: cueEntry.cueId };
+                        }
+                        renderLightingModal();
+                    });
+                    boxes.appendChild(cueBox);
+                });
+                nameLabel.appendChild(boxes);
+                meta.textContent = `${items.length} cue${items.length === 1 ? "" : "s"} (parallel)`;
+                item.addEventListener("click", () => {
+                    selectedSceneTimelineIndex = slotIndex;
+                    selectedSceneEffectsCueRef = null;
+                    renderLightingModal();
+                });
+            }
             main.appendChild(nameLabel);
             main.appendChild(meta);
             item.appendChild(main);
@@ -2622,26 +3414,106 @@ function renderLightingChannelEditor() {
             deleteBtn.textContent = "X";
             deleteBtn.addEventListener("click", (event) => {
                 event.stopPropagation();
-                if (removeGroupAssignment(fixture, sourceFixture.id, sourceCue.id)) {
-                    ensureLightingSelectionValidity();
-                    renderLightingModal();
-                    autoSave();
-                }
+                removeSlotBtn(slotIndex);
             });
             item.appendChild(deleteBtn);
             list.appendChild(item);
+            list.appendChild(createCueInsertZone(slotIndex + 1));
         });
         lightingUI.channelEditor.innerHTML = "";
+        const hint = document.createElement("div");
+        hint.className = "lighting-item-meta";
+        hint.style.marginBottom = "8px";
+        hint.textContent = "Drag a whole row to reorder. Drag a blue cue box onto another cue row/box to add it to that parallel group.";
+        lightingUI.channelEditor.appendChild(hint);
         lightingUI.channelEditor.appendChild(list);
+        list.addEventListener("dragover", (event) => {
+            if (draggedLightingCueRef) {
+                event.preventDefault();
+                if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+                updateRowDropFromPointer(event.clientY);
+                return;
+            }
+            if (draggedSceneMatrixCueRef) {
+                event.preventDefault();
+                if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+                updateRowDropFromPointer(event.clientY);
+                return;
+            }
+            if (!Number.isFinite(draggedIndex)) return;
+            event.preventDefault();
+            if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+            updateRowDropFromPointer(event.clientY);
+        });
+        list.addEventListener("drop", (event) => {
+            if (draggedLightingCueRef) {
+                event.preventDefault();
+                const sourceFixtureId = parseInt(draggedLightingCueRef?.sourceFixtureId, 10);
+                const sourceCueId = parseInt(draggedLightingCueRef?.cueId, 10);
+                if (!Number.isFinite(sourceFixtureId) || !Number.isFinite(sourceCueId)) return;
+                if (!canInsertSceneReference(fixture, sourceFixtureId, sourceCueId)) {
+                    showSceneCycleBlockedNotice();
+                    return;
+                }
+                const next = Array.isArray(selectedSceneCue.sceneTimeline) ? [...selectedSceneCue.sceneTimeline] : [];
+                let insertIndex = next.length;
+                if (Number.isFinite(hoveredRowIndex)) {
+                    insertIndex = hoveredInsertPos === "before" ? hoveredRowIndex : hoveredRowIndex + 1;
+                }
+                insertIndex = Math.max(0, Math.min(insertIndex, next.length));
+                next.splice(insertIndex, 0, { type: "cues", items: [{ fixtureId: sourceFixtureId, cueId: sourceCueId }] });
+                selectedSceneCue.sceneTimeline = next;
+                syncSceneCueDerivedAssignments(selectedSceneCue, fixture);
+                draggedLightingCueRef = null;
+                selectedSceneTimelineIndex = insertIndex;
+                clearSceneRowDropIndicators();
+                renderLightingModal();
+                autoSave();
+                return;
+            }
+            if (draggedSceneMatrixCueRef) {
+                event.preventDefault();
+                const fromSlotIndex = parseInt(draggedSceneMatrixCueRef?.slotIndex, 10);
+                const fromItemIndex = parseInt(draggedSceneMatrixCueRef?.itemIndex, 10);
+                moveCueToOwnSlot(fromSlotIndex, fromItemIndex, Number.isFinite(hoveredRowIndex) ? (hoveredInsertPos === "before" ? hoveredRowIndex : hoveredRowIndex + 1) : timeline.length);
+                return;
+            }
+            if (!Number.isFinite(draggedIndex)) return;
+            event.preventDefault();
+            const targetIndex = Number.isFinite(hoveredRowIndex) ? hoveredRowIndex : null;
+            if (!Number.isFinite(targetIndex) || draggedIndex === targetIndex) {
+                clearSceneRowDropIndicators();
+                return;
+            }
+            const next = Array.isArray(selectedSceneCue.sceneTimeline) ? [...selectedSceneCue.sceneTimeline] : [];
+            const [moved] = next.splice(draggedIndex, 1);
+            const preferred = hoveredInsertPos || rowDropPosition.get(targetIndex) || "before";
+            let insertAt = targetIndex;
+            if (draggedIndex < targetIndex) insertAt -= 1;
+            if (preferred === "after") insertAt += 1;
+            insertAt = Math.max(0, Math.min(next.length, insertAt));
+            next.splice(insertAt, 0, moved);
+            selectedSceneCue.sceneTimeline = next;
+            syncSceneCueDerivedAssignments(selectedSceneCue, fixture);
+            clearSceneRowDropIndicators();
+            renderLightingModal();
+            autoSave();
+        });
+        lightingUI.channelEditor.ondragover = null;
+        lightingUI.channelEditor.ondrop = null;
         return;
     }
     const cue = getSelectedLightingCue();
     if (!cue) {
+        lightingUI.channelEditor.ondragover = null;
+        lightingUI.channelEditor.ondrop = null;
         lightingUI.channelEditor.innerHTML = `<div class="lighting-empty">Select a cue to edit channels.</div>`;
         return;
     }
 
     cue.channels = normalizeLightingChannelsData(cue.channels);
+    lightingUI.channelEditor.ondragover = null;
+    lightingUI.channelEditor.ondrop = null;
     lightingUI.channelEditor.innerHTML = "";
 
     if (!cue.channels.length) {
@@ -2700,10 +3572,17 @@ function renderLightingChannelEditor() {
 }
 
 function renderLightingEffects() {
-    const cue = getSelectedLightingCue();
+    const fixture = getSelectedLightingFixture();
+    const isScene = isLightingGroupFixture(fixture);
+    const inspectedSceneCue = isScene ? getSelectedSceneEffectsCue() : null;
+    const cue = (isScene && inspectedSceneCue?.cue) ? inspectedSceneCue.cue : getSelectedLightingCue();
     const hasCue = !!cue;
+    const showEffects = isScene ? !!inspectedSceneCue?.cue : hasCue;
 
     if (cue) ensureCueEffects(cue);
+    if (lightingUI.effectsSection) {
+        lightingUI.effectsSection.style.display = showEffects ? "" : "none";
+    }
 
     if (lightingUI.effectDelay) {
         lightingUI.effectDelay.disabled = !hasCue;
@@ -2722,7 +3601,29 @@ function renderLightingEffects() {
         lightingUI.effectDuration.value = hasCue ? String(cue.effects.durationMs) : "0";
     }
     if (lightingUI.effectsNote) {
-        lightingUI.effectsNote.textContent = hasCue ? `Editing effects for \"${cue.name}\".` : "Select a cue to edit effects.";
+        if (isScene) {
+            lightingUI.effectsNote.textContent = hasCue
+                ? `Editing effects for \"${inspectedSceneCue?.fixture?.name || "Lamp"} / ${cue.name}\".`
+                : "Click a cue box in the scene matrix to edit that cue's effects.";
+        } else {
+            lightingUI.effectsNote.textContent = hasCue ? `Editing effects for \"${cue.name}\".` : "Select a cue to edit effects.";
+        }
+    }
+    const timeline = (isScene && cue) ? normalizeSceneTimeline(cue) : [];
+    const idx = Number.isFinite(selectedSceneTimelineIndex) ? selectedSceneTimelineIndex : -1;
+    const slot = idx >= 0 ? timeline[idx] : null;
+    const isDelay = slot?.type === "delay";
+    if (lightingUI.sceneDelaySection) {
+        lightingUI.sceneDelaySection.style.display = isDelay ? "" : "none";
+    }
+    if (lightingUI.sceneDelayInput) {
+        lightingUI.sceneDelayInput.disabled = !isDelay;
+        lightingUI.sceneDelayInput.value = isDelay ? String(lightingClampInt(slot.ms, 0, 600000, 0)) : "1000";
+    }
+    if (lightingUI.sceneDelayNote) {
+        lightingUI.sceneDelayNote.textContent = slot?.type === "delay"
+            ? `Editing delay block #${idx + 1}.`
+            : "Select a delay block in the cue matrix.";
     }
 }
 
@@ -3071,6 +3972,7 @@ lightingUI.openBtn?.addEventListener("click", () => {
 });
 
 function closeLightingModal() {
+    stopLightingTestsImmediate();
     if (lightingUI.overlay) lightingUI.overlay.style.display = "none";
     closeLightingPresetModal();
 }
@@ -3082,6 +3984,14 @@ function closeLightingPresetModal() {
 lightingUI.closeBtn?.addEventListener("click", closeLightingModal);
 lightingUI.overlay?.addEventListener("click", (event) => {
     if (event.target === lightingUI.overlay) closeLightingModal();
+});
+lightingUI.overlay?.addEventListener("click", (event) => {
+    const target = event.target instanceof Element ? event.target : null;
+    if (!target) return;
+    const actionable = target.closest("button, .lighting-list-item, .lighting-parallel-cue-box");
+    if (!actionable) return;
+    if (actionable === lightingUI.testCueBtn || actionable === lightingUI.testSceneBtn) return;
+    stopLightingTestsImmediate();
 });
 lightingUI.openPresetBtn?.addEventListener("click", () => {
     renderLightingPresetModal();
@@ -3188,6 +4098,8 @@ lightingUI.testCueBtn?.addEventListener("click", async () => {
     const cue = getSelectedLightingCue();
     if (!fixture || !cue || lightingTestCueBusy || isLightingGroupFixture(fixture)) return;
 
+    clearLightingSceneTestPlayback();
+    clearLightingCueTestHighlight();
     lightingTestCueBusy = true;
     renderLightingTestCueButton();
     if (lightingUI.effectsNote) {
@@ -3207,13 +4119,17 @@ lightingUI.testCueBtn?.addEventListener("click", async () => {
         if (lightingUI.effectsNote) {
             if (data?.infinite === true) {
                 lightingUI.effectsNote.textContent = "Cue test running (infinite duration).";
+                setLightingCueTestHighlight(fixture.id, cue.id, null, true);
             } else {
                 const durationMs = Number.isFinite(parseInt(data.durationMs, 10)) ? parseInt(data.durationMs, 10) : 0;
                 const durationSec = Math.max(0, durationMs / 1000);
                 lightingUI.effectsNote.textContent = `Cue test running (${durationSec.toFixed(1)}s).`;
+                setLightingCueTestHighlight(fixture.id, cue.id, durationMs, false);
             }
+            renderLightingModal();
         }
     } catch (err) {
+        clearLightingCueTestHighlight();
         if (lightingUI.effectsNote) {
             lightingUI.effectsNote.textContent = `Cue test failed: ${err?.message || 'unknown error'}`;
         }
@@ -3229,6 +4145,12 @@ lightingUI.testSceneBtn?.addEventListener("click", async () => {
     const cue = getSelectedLightingCue();
     if (!fixture || !cue || lightingTestCueBusy || !isLightingGroupFixture(fixture)) return;
 
+    selectedSceneTimelineIndex = null;
+    selectedSceneEffectsCueRef = null;
+    clearLightingCueTestHighlight();
+    renderLightingModal();
+    clearLightingSceneTestPlayback();
+    scheduleLightingSceneTestPlayback(fixture, cue);
     lightingTestCueBusy = true;
     if (lightingUI.testSceneBtn) {
         lightingUI.testSceneBtn.disabled = true;
@@ -3246,6 +4168,7 @@ lightingUI.testSceneBtn?.addEventListener("click", async () => {
             throw new Error(data?.error || `HTTP ${res.status}`);
         }
     } catch (err) {
+        clearLightingSceneTestPlayback();
     } finally {
         lightingTestCueBusy = false;
         if (lightingUI.testSceneBtn) {
@@ -3268,15 +4191,20 @@ lightingUI.addChannelBtn?.addEventListener("click", () => {
         const sourceCueId = parseInt(cueRaw, 10);
         if (!Number.isFinite(sourceFixtureId) || !Number.isFinite(sourceCueId)) return;
         const sourceFixture = getLightingFixtureById(sourceFixtureId);
-        if (!sourceFixture || isLightingGroupFixture(sourceFixture)) return;
+        if (!sourceFixture) return;
+        if (!canInsertSceneReference(fixture, sourceFixtureId, sourceCueId)) {
+            showSceneCycleBlockedNotice();
+            return;
+        }
         const sourceCue = sourceFixture?.cues?.find((entry) => parseInt(entry?.id, 10) === sourceCueId);
         if (!sourceCue) return;
-        ensureGroupCueAssignments(sceneCue);
-        const exists = (sceneCue.groupAssignments || []).some((entry) => entry.fixtureId === sourceFixtureId && entry.cueId === sourceCueId);
-        if (!exists) {
-            sceneCue.groupAssignments.push({ fixtureId: sourceFixtureId, cueId: sourceCueId });
-            fixture.groupMembers = Array.from(new Set((sceneCue.groupAssignments || []).map((entry) => entry.fixtureId)));
-        }
+        const timeline = normalizeSceneTimeline(sceneCue);
+        timeline.push({
+            type: "cues",
+            items: [{ fixtureId: sourceFixtureId, cueId: sourceCueId }]
+        });
+        syncSceneCueDerivedAssignments(sceneCue, fixture);
+        selectedSceneTimelineIndex = timeline.length - 1;
         renderLightingModal();
         autoSave();
         return;
@@ -3298,14 +4226,32 @@ lightingUI.addChannelBtn?.addEventListener("click", () => {
     autoSave();
 });
 
+lightingUI.addDelayBtn?.addEventListener("click", () => {
+    const fixture = getSelectedLightingFixture();
+    if (!isLightingGroupFixture(fixture)) return;
+    const sceneCue = getSelectedLightingCue() || ensureSceneCue(fixture);
+    if (!sceneCue) return;
+    const timeline = normalizeSceneTimeline(sceneCue);
+    timeline.push({ type: "delay", ms: 1000 });
+    syncSceneCueDerivedAssignments(sceneCue, fixture);
+    selectedSceneTimelineIndex = timeline.length - 1;
+    selectedLightingCueId = sceneCue.id;
+    renderLightingModal();
+    autoSave();
+});
+
 function bindLightingEffectInput(inputEl, key) {
     inputEl?.addEventListener("change", () => {
-        const cue = getSelectedLightingCue();
+        const fixture = getSelectedLightingFixture();
+        const isScene = isLightingGroupFixture(fixture);
+        const inspectedSceneCue = isScene ? getSelectedSceneEffectsCue() : null;
+        const cue = (isScene && inspectedSceneCue?.cue) ? inspectedSceneCue.cue : getSelectedLightingCue();
         if (!cue) return;
         ensureCueEffects(cue);
         cue.effects[key] = lightingClampInt(inputEl.value, 0, 600000, 0);
         inputEl.value = String(cue.effects[key]);
         renderLightingCuePreview();
+        renderLightingEffects();
         autoSave();
     });
 }
@@ -3314,6 +4260,21 @@ bindLightingEffectInput(lightingUI.effectDelay, "delayMs");
 bindLightingEffectInput(lightingUI.effectFadeIn, "fadeInMs");
 bindLightingEffectInput(lightingUI.effectFadeOut, "fadeOutMs");
 bindLightingEffectInput(lightingUI.effectDuration, "durationMs");
+
+lightingUI.sceneDelayInput?.addEventListener("change", () => {
+    const fixture = getSelectedLightingFixture();
+    const cue = getSelectedLightingCue();
+    if (!isLightingGroupFixture(fixture) || !cue) return;
+    const timeline = normalizeSceneTimeline(cue);
+    const idx = Number.isFinite(selectedSceneTimelineIndex) ? selectedSceneTimelineIndex : -1;
+    if (idx < 0 || idx >= timeline.length) return;
+    if (timeline[idx]?.type !== "delay") return;
+    timeline[idx].ms = lightingClampInt(lightingUI.sceneDelayInput.value, 0, 600000, 0);
+    if (timeline[idx].ms <= 0) timeline[idx].ms = 50;
+    syncSceneCueDerivedAssignments(cue, fixture);
+    renderLightingModal();
+    autoSave();
+});
 
 lightingUI.addPresetBtn?.addEventListener("click", () => {
     const name = (lightingUI.presetName?.value || "").trim() || `Preset ${nextLightingPresetId}`;
@@ -3552,6 +4513,8 @@ function renderZigbeeDeviceDetail() {
         nameEl.textContent = `${entry.label}`;
         const metaEl = document.createElement("div");
         metaEl.className = "zigbee-device-message-meta";
+        metaEl.dataset.baseValue = String(entry.value ?? "");
+        metaEl.dataset.lastSeen = String(Number(entry.lastSeen) || now);
         metaEl.textContent = `${entry.value} | seen ${formatZigbeeAge(Math.max(0, now - (Number(entry.lastSeen) || now)))}`;
         left.appendChild(nameEl);
         left.appendChild(metaEl);
@@ -3724,11 +4687,16 @@ function renderZigbeeDeviceList() {
 
         const meta = document.createElement("div");
         meta.className = "zigbee-device-meta";
+        meta.dataset.deviceId = String(device.id || "");
         const vendorModel = [device.vendor, device.model].filter(Boolean).join(" / ");
-        const tail = `ID: ${device.id || "--"} | seen ${formatZigbeeAge(device.ageMs)}`;
+        const lastSeenForAge = Number(device?.lastSeen || zigbeeLastSeenById.get(String(device?.id || "")) || 0);
+        const ageMs = lastSeenForAge > 0 ? Math.max(0, Date.now() - lastSeenForAge) : Number(device?.ageMs || 0);
+        const tail = `ID: ${device.id || "--"} | seen ${formatZigbeeAge(ageMs)}`;
         const rawBattery = Number.isFinite(Number(device?.battery)) ? Number(device.battery) : null;
         const battery = rawBattery === null ? null : Math.max(0, Math.min(100, Math.round(rawBattery)));
         const batteryText = battery === null ? "Battery: --" : `Battery: ${battery}%`;
+        meta.dataset.vendorModel = vendorModel || "";
+        meta.dataset.batteryText = batteryText;
         const details = vendorModel ? `${vendorModel} | ${tail}` : tail;
         meta.textContent = `${details} | ${batteryText}`;
         main.appendChild(meta);
@@ -3799,6 +4767,35 @@ function renderZigbeeDeviceList() {
         item.appendChild(right);
         zigbeeUI.list.appendChild(item);
     });
+}
+
+function refreshZigbeeAgeLabels() {
+    if (zigbeeUI.overlay?.style.display !== "flex") return;
+    const now = Date.now();
+
+    if (zigbeeUI.deviceMessageList) {
+        const nodes = zigbeeUI.deviceMessageList.querySelectorAll(".zigbee-device-message-meta[data-last-seen]");
+        nodes.forEach((node) => {
+            const lastSeen = Number(node.dataset.lastSeen || 0);
+            const value = String(node.dataset.baseValue || "").trim();
+            if (!lastSeen) return;
+            node.textContent = `${value} | seen ${formatZigbeeAge(Math.max(0, now - lastSeen))}`;
+        });
+    }
+
+    if (zigbeeUI.list) {
+        const nodes = zigbeeUI.list.querySelectorAll(".zigbee-device-meta[data-device-id]");
+        nodes.forEach((node) => {
+            const deviceId = String(node.dataset.deviceId || "").trim();
+            if (!deviceId) return;
+            const vendorModel = String(node.dataset.vendorModel || "").trim();
+            const batteryText = String(node.dataset.batteryText || "Battery: --");
+            const lastSeen = Number(zigbeeLastSeenById.get(deviceId) || 0);
+            const tail = `ID: ${deviceId || "--"} | seen ${formatZigbeeAge(lastSeen > 0 ? Math.max(0, now - lastSeen) : 0)}`;
+            const details = vendorModel ? `${vendorModel} | ${tail}` : tail;
+            node.textContent = `${details} | ${batteryText}`;
+        });
+    }
 }
 
 function renderZigbeeMessageLog() {
@@ -3942,13 +4939,23 @@ async function loadZigbeeDevices(options = {}) {
             const existingMessages = getZigbeeDeviceMessages(id);
             const existingByKey = new Map(existingMessages.map((entry) => [entry.key, entry]));
             const nextMessages = [];
+            const hasFreshSensorMessage = shouldCountAsSensorMessage && lastSeen > 0 && lastSeen > prevSeen;
             payloadEntries.forEach((entry) => {
                 const prev = existingByKey.get(entry.key);
+                const entrySeenRaw = Number(entry?.lastSeen || 0);
+                const entrySeen = entrySeenRaw > 0 ? entrySeenRaw : 0;
+                const previousSeen = Number(prev?.lastSeen || 0);
+                // "seen ..." should reflect last incoming message for this device signal key,
+                // not only value changes. If a fresh sensor message arrived, advance timestamp
+                // to at least device.lastSeen even when value stayed identical.
+                const effectiveLastSeen = hasFreshSensorMessage
+                    ? Math.max(entrySeen || 0, lastSeen, previousSeen || 0, now)
+                    : (entrySeen || (prev?.value === entry.value ? (previousSeen || now) : now));
                 const nextEntry = {
                     key: entry.key,
                     label: entry.label,
                     value: entry.value,
-                    lastSeen: Number(entry?.lastSeen) || (prev?.value === entry.value ? (prev?.lastSeen || now) : now)
+                    lastSeen: effectiveLastSeen
                 };
                 nextMessages.push(nextEntry);
             });
@@ -4012,12 +5019,21 @@ function startZigbeePolling() {
         if (zigbeeUI.overlay?.style.display !== "flex") return;
         loadZigbeeDevices();
     }, 500);
+    if (zigbeeAgeRefreshTimer) clearInterval(zigbeeAgeRefreshTimer);
+    zigbeeAgeRefreshTimer = setInterval(() => {
+        refreshZigbeeAgeLabels();
+    }, 1000);
 }
 
 function stopZigbeePolling() {
-    if (!zigbeePollTimer) return;
-    clearInterval(zigbeePollTimer);
-    zigbeePollTimer = null;
+    if (zigbeePollTimer) {
+        clearInterval(zigbeePollTimer);
+        zigbeePollTimer = null;
+    }
+    if (zigbeeAgeRefreshTimer) {
+        clearInterval(zigbeeAgeRefreshTimer);
+        zigbeeAgeRefreshTimer = null;
+    }
 }
 
 function startZigbeeBackgroundPolling() {
@@ -4635,7 +5651,7 @@ const SCRIPTING_TRIGGER_TYPES = [
     "on_external_input_right"
 ];
 const SCRIPTING_CONDITION_TYPES = ["none", "custom_equals", "custom_contains", "var_compare", "sensor_compare", "expr"];
-const SCRIPTING_ACTION_TYPES = ["play_cue", "play_sound", "send_custom", "print_system", "give_hint", "send_custom_var", "set_var_from_sensor", "get_state", "set_state", "wait", "break"];
+const SCRIPTING_ACTION_TYPES = ["play_cue", "play_sound", "send_custom", "print_system", "give_hint", "send_custom_var", "set_var_from_sensor", "get_state", "set_state", "wait", "break", "break_all_loops"];
 const SCRIPTING_BLOCKLY_TOOLBOX = {
     kind: "categoryToolbox",
     contents: [
@@ -4688,6 +5704,7 @@ const SCRIPTING_BLOCKLY_TOOLBOX = {
                 { kind: "block", type: "hub_action_set_state" },
                 { kind: "block", type: "hub_action_wait" },
                 { kind: "block", type: "hub_action_break" },
+                { kind: "block", type: "hub_action_break_all_loops" },
                 { kind: "block", type: "script_repeat_times" },
                 { kind: "block", type: "script_forever" }
             ]
@@ -4702,7 +5719,7 @@ let scriptingBlocklyLoadedStateHash = "";
 let scriptingBlocklyTheme = null;
 
 const ROOM_SCRIPTING_TRIGGER_TYPES = ["room_reset", "room_started", "room_state_change", "branch_reset", "branch_state_change", "any_puzzle_state", "sensor_data", "sensor_match", "hint_triggered"];
-const ROOM_SCRIPTING_ACTION_TYPES = ["play_cue", "play_sound", "print_system", "set_var_from_sensor", "set_branch_state", "wait", "break"];
+const ROOM_SCRIPTING_ACTION_TYPES = ["play_cue", "play_sound", "print_system", "set_var_from_sensor", "set_branch_state", "wait", "break", "break_all_loops"];
 const ROOM_SCRIPTING_PUZZLE_STATES = [
     ["Locked", "locked"],
     ["Activate", "active"],
@@ -4764,6 +5781,7 @@ const ROOM_SCRIPTING_BLOCKLY_TOOLBOX = {
                 { kind: "block", type: "room_action_set_branch_state" },
                 { kind: "block", type: "room_action_wait" },
                 { kind: "block", type: "room_action_break" },
+                { kind: "block", type: "room_action_break_all_loops" },
                 { kind: "block", type: "script_repeat_times" },
                 { kind: "block", type: "script_forever" }
             ]
@@ -5785,6 +6803,14 @@ function ensureRoomScriptingBlocklyDefinitions() {
                 this.setColour("#3b82f6");
             }
         };
+        BlocklyRef.Blocks["room_action_break_all_loops"] = {
+            init: function() {
+                this.appendDummyInput().appendField("Break All Loops");
+                this.setPreviousStatement(true, null);
+                this.setNextStatement(true, null);
+                this.setColour("#3b82f6");
+            }
+        };
     }
 
     roomScriptingBlocklyDefinitionsReady = true;
@@ -5936,6 +6962,8 @@ function populateWorkspaceFromRoomScriptingRules(workspace) {
             actionBlock.setFieldValue(Number.isFinite(Number(rule.actionValue)) ? Number(rule.actionValue) : 1, "SECONDS");
         } else if (rule.actionType === "break") {
             actionBlock = workspace.newBlock("room_action_break");
+        } else if (rule.actionType === "break_all_loops") {
+            actionBlock = workspace.newBlock("room_action_break_all_loops");
         } else if (rule.actionType === "play_sound") {
             actionBlock = workspace.newBlock("room_action_play_sound");
             actionBlock.setFieldValue(String(rule.actionValue || ""), "SOUND");
@@ -6002,6 +7030,7 @@ function extractRoomScriptingRulesFromWorkspace(workspace) {
         const isSetBranchState = current.type === "room_action_set_branch_state";
         const isWait = current.type === "room_action_wait";
         const isBreak = current.type === "room_action_break";
+        const isBreakAllLoops = current.type === "room_action_break_all_loops";
         const isPlaySound = current.type === "room_action_play_sound";
         const loopStack = normalizeLoopStack(loopCtx?.stack || []);
         const currentLoop = loopStack.length ? loopStack[loopStack.length - 1] : null;
@@ -6022,12 +7051,24 @@ function extractRoomScriptingRulesFromWorkspace(workspace) {
             conditionValue: state.conditionValue,
             actionType: isVarSet
                 ? "set_var_from_sensor"
-                : (isSetBranchState ? "set_branch_state" : (isWait ? "wait" : (isBreak ? "break" : (isPlaySound ? "play_sound" : (isPrintSystem ? "print_system" : "play_cue"))))),
+                : (isSetBranchState
+                    ? "set_branch_state"
+                    : (isWait
+                        ? "wait"
+                        : (isBreak
+                            ? "break"
+                            : (isBreakAllLoops
+                                ? "break_all_loops"
+                                : (isPlaySound ? "play_sound" : (isPrintSystem ? "print_system" : "play_cue")))))),
             actionValue: isVarSet
                 ? String(current.getFieldValue("VAR") || "sensorValue")
                 : (isSetBranchState
                     ? String(current.getFieldValue("STATE") || "running")
-                    : (isWait ? String(current.getFieldValue("SECONDS") || "1") : (isBreak ? "" : (isPlaySound ? String(current.getFieldValue("SOUND") || "") : (isPrintSystem ? "" : String(current.getFieldValue("CUE") || "")))))),
+                    : (isWait
+                        ? String(current.getFieldValue("SECONDS") || "1")
+                        : ((isBreak || isBreakAllLoops)
+                            ? ""
+                            : (isPlaySound ? String(current.getFieldValue("SOUND") || "") : (isPrintSystem ? "" : String(current.getFieldValue("CUE") || "")))))),
             actionTargetPuzzle: isSetBranchState ? String(current.getFieldValue("TARGET") || "room") : "",
             actionSourceDevice: isVarSet ? String(current.getFieldValue("DEVICE") || "") : "",
             actionSourceField: isVarSet ? String(current.getFieldValue("FIELD") || "") : "",
@@ -6104,7 +7145,8 @@ function extractRoomScriptingRulesFromWorkspace(workspace) {
                 || current.type === "room_var_set_sensor"
                 || current.type === "room_action_set_branch_state"
                 || current.type === "room_action_wait"
-                || current.type === "room_action_break") {
+                || current.type === "room_action_break"
+                || current.type === "room_action_break_all_loops") {
                 emitActionRule(current, state, loopCtx);
             }
             current = current.getNextBlock();
@@ -6569,6 +7611,14 @@ function ensureScriptingBlocklyDefinitions() {
                 this.setColour("#3b82f6");
             }
         };
+        BlocklyRef.Blocks["hub_action_break_all_loops"] = {
+            init: function() {
+                this.appendDummyInput().appendField("Break All Loops");
+                this.setPreviousStatement(true, null);
+                this.setNextStatement(true, null);
+                this.setColour("#3b82f6");
+            }
+        };
     }
 
     scriptingBlocklyDefinitionsReady = true;
@@ -6742,6 +7792,8 @@ function populateWorkspaceFromLegacyScriptingRules(workspace, node) {
             actionBlock.setFieldValue(Number.isFinite(Number(rule.actionValue)) ? Number(rule.actionValue) : 1, "SECONDS");
         } else if (rule.actionType === "break") {
             actionBlock = workspace.newBlock("hub_action_break");
+        } else if (rule.actionType === "break_all_loops") {
+            actionBlock = workspace.newBlock("hub_action_break_all_loops");
         } else {
             actionBlock = workspace.newBlock("hub_action_send_custom");
         }
@@ -6825,7 +7877,11 @@ function extractScriptingRulesFromWorkspace(workspace) {
                         ? "set_var_from_sensor"
                         : (current.type === "hub_action_get_state"
                             ? "get_state"
-                            : (current.type === "hub_action_set_state" ? "set_state" : (current.type === "hub_action_break" ? "break" : "wait")))))))));
+                            : (current.type === "hub_action_set_state"
+                                ? "set_state"
+                                : (current.type === "hub_action_break"
+                                    ? "break"
+                                    : (current.type === "hub_action_break_all_loops" ? "break_all_loops" : "wait"))))))))));
         const hintMode = actionType === "give_hint" ? String(current.getFieldValue("MODE") || "list") : "";
         const loopStack = normalizeLoopStack(loopCtx?.stack || []);
         const currentLoop = loopStack.length ? loopStack[loopStack.length - 1] : null;
@@ -6850,7 +7906,9 @@ function extractScriptingRulesFromWorkspace(workspace) {
                             ? String(current.getFieldValue("VAR") || "puzzleState")
                             : (actionType === "set_state"
                                 ? String(current.getFieldValue("STATE") || "locked")
-                                : (actionType === "break" ? "" : String(current.getFieldValue("SECONDS") || "1")))))))));
+                                : ((actionType === "break" || actionType === "break_all_loops")
+                                    ? ""
+                                    : String(current.getFieldValue("SECONDS") || "1")))))))));
         rules.push({
             id: nextId++,
             triggerType: state.triggerType,
@@ -6961,7 +8019,8 @@ function extractScriptingRulesFromWorkspace(workspace) {
                 || current.type === "hub_action_get_state"
                 || current.type === "hub_action_set_state"
                 || current.type === "hub_action_wait"
-                || current.type === "hub_action_break") {
+                || current.type === "hub_action_break"
+                || current.type === "hub_action_break_all_loops") {
                 emitActionRule(current, state, loopCtx);
             }
             current = current.getNextBlock();

@@ -80,11 +80,43 @@ function sanitizeSoundName(name) {
 }
 
 let activeSoundTestProcess = null;
+let preferredSoundPlayer = null;
 
 function clampSoundVolumePercent(value) {
     const parsed = parseInt(value, 10);
     if (!Number.isFinite(parsed)) return 100;
     return Math.max(0, Math.min(100, parsed));
+}
+
+function runCommandSilently(cmd, args = []) {
+    return new Promise((resolve) => {
+        let child = null;
+        try {
+            child = spawn(cmd, args, { stdio: ['ignore', 'ignore', 'ignore'] });
+        } catch (err) {
+            resolve(false);
+            return;
+        }
+        child.on('error', () => resolve(false));
+        child.on('close', (code) => resolve(code === 0));
+    });
+}
+
+async function setSystemAudioToMaxOnHubStart() {
+    // Best-effort only: keep startup robust even if amixer/card names differ.
+    const commands = [
+        ['amixer', ['set', 'Master', '100%', 'unmute']],
+        ['amixer', ['set', 'PCM', '100%', 'unmute']],
+        ['amixer', ['-c', 'UC02', 'set', 'PCM', '100%', 'unmute']],
+        ['amixer', ['-c', '2', 'set', 'PCM', '100%', 'unmute']]
+    ];
+    for (const [cmd, args] of commands) {
+        try { await runCommandSilently(cmd, args); } catch (e) {}
+    }
+}
+
+async function ensureSystemAudioMax() {
+    await setSystemAudioToMaxOnHubStart();
 }
 
 function stopActiveSoundTestProcess() {
@@ -142,22 +174,31 @@ function trySpawnSoundPlayer(cmd, args) {
 }
 
 async function playSoundTestOnPi(filePath, volumePercent) {
+    await ensureSystemAudioMax();
     const vol = clampSoundVolumePercent(volumePercent);
     const paplayVolume = Math.round((vol / 100) * 65536);
     const mpg123Scale = Math.max(0, Math.min(32768, Math.round((vol / 100) * 32768)));
-
-    const candidates = [
+    const baseCandidates = [
         { cmd: 'ffplay', args: ['-nodisp', '-autoexit', '-loglevel', 'quiet', '-volume', String(vol), filePath] },
         { cmd: 'paplay', args: [`--volume=${paplayVolume}`, filePath] },
         { cmd: 'mpv', args: ['--no-video', '--really-quiet', `--volume=${vol}`, filePath] },
         { cmd: 'mpg123', args: ['-q', '-f', String(mpg123Scale), filePath] },
         { cmd: 'aplay', args: [filePath] }
     ];
+    const candidates = preferredSoundPlayer
+        ? [
+            ...baseCandidates.filter((c) => c.cmd === preferredSoundPlayer),
+            ...baseCandidates.filter((c) => c.cmd !== preferredSoundPlayer)
+        ]
+        : baseCandidates;
 
     let lastError = 'no player available';
     for (const candidate of candidates) {
         const result = await trySpawnSoundPlayer(candidate.cmd, candidate.args);
-        if (result.ok) return { ok: true, player: candidate.cmd };
+        if (result.ok) {
+            preferredSoundPlayer = candidate.cmd;
+            return { ok: true, player: candidate.cmd };
+        }
         lastError = result.error || lastError;
     }
     return { ok: false, error: lastError };
@@ -583,4 +624,5 @@ app.get('/:screenPath', (req, res, next) => {
 const PORT = 80;
 server.listen(PORT, () => {
 console.log(`Escape Room Hub running on http://localhost:${PORT}`);
+void setSystemAudioToMaxOnHubStart();
 });

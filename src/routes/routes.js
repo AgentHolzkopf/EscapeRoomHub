@@ -177,6 +177,13 @@ module.exports = (dbWrapper, mqttClient) => {
         }
         res.json(result);
     });
+    router.post('/runtime/dmx/cue/test/stop', (req, res) => {
+        const result = gameEngine.stopDmxTestPlayback();
+        if (!result.success) {
+            return res.status(400).json(result);
+        }
+        res.json(result);
+    });
     router.get('/zigbee/devices', (req, res) => {
         noCache(res);
         const result = gameEngine.getZigbeeDevices();
