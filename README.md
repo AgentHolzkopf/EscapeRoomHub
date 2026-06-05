@@ -17,7 +17,7 @@ Unterstützt werden unter anderem:
 * Blockly-Scripting für Room- und Puzzle-Logik
 * Zigbee2MQTT Sensorintegration
 * DMX/OLA Lichtsteürung
-* Sound-Cüs mit Upload und Lautstärkeregelung
+* Sound-cues mit Upload und Lautstärkeregelung
 * Hint-, Player- und Progress-Screens
 * Kommunikation mit externen Puzzle-Clients über MQTT und HTTP
 * System-Settings für Dienste, USB-Geräte und Screens
@@ -160,7 +160,7 @@ Die Hauptoberfläche besteht aus mehreren Bereichen:
 * **Sounds**: Upload, Test und Lautstärke pro Sound
 * **Room Scripting**: Blockly-Regeln für Raumlogik
 * **Puzzle Scripting**: Blockly-Regeln für einzelne Puzzles
-* **Lighting / DMX**: Lampen, Presets, Cüs und Scenes
+* **Lighting / DMX**: Lampen, Presets, cues und Scenes
 * **Running Room Screen**: Live-Status, Logs und Puzzle-Zustände
 * **System Settings**: Dienste, Screens, Audio, DMX, Zigbee und Autostart
 
@@ -192,17 +192,17 @@ HubRemoteEditing/PuzzleTemplates/
 
 ## DMX und Lichtsteürung
 
-Das Lighting-System verwaltet Lampen, Cüs und Scenes.
+Das Lighting-System verwaltet Lampen, cues und Scenes.
 
 Unterstützt werden:
 
 * Lampen mit Presets oder Custom-Kanälen
-* Cüs mit DMX-Werten
-* Cü-Effekte wie Delay, Fade In, Fade Out und Duration
-* Scenes mit mehreren Cüs, parallelen Cüs und Delays
+* cues mit DMX-Werten
+* cue-Effekte wie Delay, Fade In, Fade Out und Duration
+* Scenes mit mehreren cues, parallelen cues und Delays
 * Verschachtelte Scenes
-* Test Cü und Test Scene
-* Script-Action `Play Lighting Cü`
+* Test cue und Test Scene
+* Script-Action `Play Lighting cue`
 
 Wichtig:
 
@@ -210,7 +210,7 @@ Wichtig:
 duration = 0
 ```
 
-bedeutet, dass eine Cü unendlich lange aktiv bleibt. Sie endet erst, wenn sie durch eine andere Cü ersetzt, durch einen Test-Stopp beendet oder beim Schliessen des Raums gestoppt wird.
+bedeutet, dass eine cue unendlich lange aktiv bleibt. Sie endet erst, wenn sie durch eine andere cue ersetzt, durch einen Test-Stopp beendet oder beim Schliessen des Raums gestoppt wird.
 
 ---
 
@@ -223,7 +223,7 @@ Eigenschaften:
 * Systemlautstärke wird beim Hub-Start auf 100 Prozent gesetzt
 * Jeder Sound hat eine eigene Lautstärke im Hub
 * Neü Sounds starten standardmässig mit 50 Prozent
-* Sounds können über Blockly-Skripte mit `Play Sound Cü` abgespielt werden
+* Sounds können über Blockly-Skripte mit `Play Sound cue` abgespielt werden
 * Laufende Sounds werden beim Schliessen des Sound-Fensters oder beim Schliessen des Raums beendet
 
 ---
