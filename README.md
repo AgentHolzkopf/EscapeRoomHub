@@ -91,7 +91,7 @@ oder direkt über die IP-Adresse des Raspberry Pi:
 http://<hub-ip>
 ```
 
-Der Server nutzt standardmässig Port `80`.
+Der Server nutzt standardmäßig Port `80`.
 
 ---
 
@@ -178,7 +178,7 @@ Typischer Ablauf eines digitalen Puzzles:
 2. Auf `reset`, `running` oder `solved` reagieren
 3. Outputs oder Custom Values setzen
 4. Wenn gelöst, State auf `solved` setzen
-5. Heartbeat bzw. Status regelmässig oder bei State Changes senden
+5. Heartbeat bzw. Status regelmäßig oder bei State Changes senden
 
 Templates liegen hier:
 
@@ -210,7 +210,7 @@ Wichtig:
 duration = 0
 ```
 
-bedeutet, dass eine cue unendlich lange aktiv bleibt. Sie endet erst, wenn sie durch eine andere cue ersetzt, durch einen Test-Stopp beendet oder beim Schliessen des Raums gestoppt wird.
+bedeutet, dass eine cue unendlich lange aktiv bleibt. Sie endet erst, wenn sie durch eine andere cue ersetzt, durch einen Test-Stopp beendet oder beim Schließen des Raums gestoppt wird.
 
 ---
 
@@ -222,9 +222,9 @@ Eigenschaften:
 
 * Systemlautstärke wird beim Hub-Start auf 100 Prozent gesetzt
 * Jeder Sound hat eine eigene Lautstärke im Hub
-* Neü Sounds starten standardmässig mit 50 Prozent
+* Neü Sounds starten standardmäßig mit 50 Prozent
 * Sounds können über Blockly-Skripte mit `Play Sound cue` abgespielt werden
-* Laufende Sounds werden beim Schliessen des Sound-Fensters oder beim Schliessen des Raums beendet
+* Laufende Sounds werden beim Schließen des Sound-Fensters oder beim Schließen des Raums beendet
 
 ---
 
