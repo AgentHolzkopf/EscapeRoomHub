@@ -176,7 +176,7 @@ Typischer Ablauf eines digitalen Puzzles:
 
 1. State vom Hub lesen
 2. Auf `reset`, `running` oder `solved` reagieren
-3. Outputs oder Custom Valüs setzen
+3. Outputs oder Custom Values setzen
 4. Wenn gelöst, State auf `solved` setzen
 5. Heartbeat bzw. Status regelmässig oder bei State Changes senden
 
