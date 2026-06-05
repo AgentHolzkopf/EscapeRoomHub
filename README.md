@@ -1,194 +1,324 @@
-# EscapeHub / MD2-ProjektB
+# EscapeHub - Escape Room Control System
 
-EscapeHub ist eine webbasierte Steuerzentrale fuer Escape-Room-Raeume und digitale/analoge Raetsel. Der Hub verwaltet Raeume, Branches, Puzzle-Status, Sensoren, Licht/DMX, Sounds, Screens, Hinweise und die Kommunikation mit externen Raetsel-Clients.
+EscapeHub ist eine **lokale Web-Anwendung** zur Steuerung und Verwaltung von **Escape-Room-Raeumen, Raetseln, Sensoren, Licht, Sounds und Screens**.
 
-## Features
+Das System laeuft typischerweise auf einem **Raspberry Pi** und verbindet mehrere Komponenten: digitale Puzzle-Clients, Zigbee-Sensoren, DMX-Lampen, Sound-Ausgabe, Player-Screens und eine visuelle Scripting-Oberflaeche.
 
-- Raumverwaltung mit mehreren gespeicherten Rooms
-- Visueller Puzzle-Graph auf Basis von LiteGraph
-- Blockly-Scripting fuer Room- und Puzzle-Logik
-- Puzzle-Kommunikation ueber MQTT und HTTP-Template-API
-- Zigbee2MQTT-Integration fuer Sensoren und Buttons
-- DMX/OLA-Integration fuer Lampen, Cues und Scenes
-- Sound-Verwaltung mit Upload, Test und Script-Triggern
-- Screen-System fuer Player-, Hint- und Progress-Screens
-- Medien-Upload fuer Puzzle-Dateien
-- System-Settings fuer DMX, Zigbee, Audio, Screensaver, Autostart und Media Server
+---
+
+## Kurzueberblick
+
+EscapeHub bietet eine zentrale Oberflaeche, um einen Escape Room zu konfigurieren, zu starten und live zu ueberwachen.
+
+Unterstuetzt werden unter anderem:
+
+* Raum- und Branch-Verwaltung
+* Visueller Puzzle-Graph
+* Blockly-Scripting fuer Room- und Puzzle-Logik
+* Zigbee2MQTT Sensorintegration
+* DMX/OLA Lichtsteuerung
+* Sound-Cues mit Upload und Lautstaerkeregelung
+* Hint-, Player- und Progress-Screens
+* Kommunikation mit externen Puzzle-Clients ueber MQTT und HTTP
+* System-Settings fuer Dienste, USB-Geraete und Screens
+
+---
 
 ## Projektstruktur
 
 ```text
 MD2-ProjektB/
-├─ HubRemoteEditing/
-│  ├─ Server/                 # Express-Server, Static Hosting, Uploads, Sound-API
-│  ├─ src/
-│  │  ├─ engine/              # Runtime-Logik, Game Loop, MQTT, SQLite
-│  │  └─ routes/              # API-Routen
-│  ├─ public/                 # Weboberflaeche, Editor, Screens, CSS, Vendor-Libs
-│  ├─ PuzzleTemplates/        # Templates fuer externe Puzzle-Clients
-│  ├─ MediaStorage/           # Hochgeladene Mediendateien
-│  ├─ SoundStorage/           # Hochgeladene Sounds
-│  ├─ rooms/                  # Raumbezogene Daten/Assets
-│  └─ escape.db               # SQLite-Datenbank
-├─ RadioRemoteEditing/        # separate/alte Radio-Puzzle-Codebasis
-└─ README.md
-Voraussetzungen
-Auf dem Hub-System, typischerweise Raspberry Pi:
+|
+|-- HubRemoteEditing/
+|   |-- Server/                 # Express Server, Static Hosting, Uploads, Sound API
+|   |-- src/
+|   |   |-- engine/             # Runtime-Logik, Game Loop, MQTT, SQLite
+|   |   |-- routes/             # API-Routen
+|   |
+|   |-- public/                 # Weboberflaeche, Editor, Screens, CSS, Vendor-Libs
+|   |-- PuzzleTemplates/        # Templates fuer externe Puzzle-Clients
+|   |-- MediaStorage/           # Hochgeladene Mediendateien
+|   |-- SoundStorage/           # Hochgeladene Sounds
+|   |-- rooms/                  # Raumbezogene Daten
+|   |-- escape.db               # SQLite-Datenbank
+|
+|-- RadioRemoteEditing/         # separate/alte Radio-Puzzle-Codebasis
+|-- README.md
+```
 
-Node.js
-npm oder pnpm
-Mosquitto MQTT Broker
-Zigbee2MQTT, falls Zigbee genutzt wird
-OLA (olad), falls DMX genutzt wird
-ALSA/Audio-Tools (amixer, optional ffplay, mpv, paplay, mpg123, aplay)
-USB-Geraete mit stabilen udev-Symlinks, z. B. /dev/zigbee und /dev/dmx
-Start
-Im Hub-Verzeichnis:
+---
 
+## Systemanforderungen
+
+Der Hub ist fuer den Betrieb auf einem Raspberry Pi ausgelegt.
+
+Benoetigte Komponenten:
+
+* Node.js
+* Mosquitto MQTT Broker
+* Zigbee2MQTT, falls Zigbee-Sensoren genutzt werden
+* OLA / `olad`, falls DMX genutzt wird
+* ALSA Audio Tools, z. B. `amixer` und `aplay`
+* Optional: `ffplay`, `mpv`, `paplay` oder `mpg123` fuer Sound-Wiedergabe
+* USB-DMX-Adapter, z. B. DMXking ultraDMX Micro
+* Zigbee-Dongle, z. B. Sonoff Zigbee 3.0 USB Dongle Plus V2
+
+---
+
+## Anwendung starten
+
+In das Server-Verzeichnis wechseln:
+
+```bash
 cd HubRemoteEditing/Server
+```
+
+Server starten:
+
+```bash
 node server.js
-Der Server laeuft standardmaessig auf Port 80.
+```
 
-Im Browser:
+Die Weboberflaeche ist danach erreichbar unter:
 
+```text
 http://escapehub.local
-oder direkt per IP:
+```
 
+oder direkt ueber die IP-Adresse des Raspberry Pi:
+
+```text
 http://<hub-ip>
-Wichtige Dienste
-Der Hub arbeitet mit externen Systemdiensten zusammen:
+```
 
+Der Server nutzt standardmaessig Port `80`.
+
+---
+
+## Wichtige Systemdienste
+
+EscapeHub arbeitet mit mehreren Linux-Diensten zusammen.
+
+Status pruefen:
+
+```bash
 sudo systemctl status md2-hub
 sudo systemctl status mosquitto
 sudo systemctl status zigbee2mqtt
 sudo systemctl status olad
-Typische Neustarts:
+```
 
+Dienste neu starten:
+
+```bash
 sudo systemctl restart md2-hub
 sudo systemctl restart zigbee2mqtt
 sudo systemctl restart olad
-USB-Zuordnung
-Zigbee und DMX sollten nicht ueber wechselnde ttyUSB0/ttyUSB1-Pfade konfiguriert werden. Stattdessen werden stabile Symlinks verwendet:
+```
 
-/dev/zigbee -> jeweiliger Zigbee-Dongle
-/dev/dmx    -> jeweiliger DMX-Adapter
-Zigbee2MQTT nutzt:
+---
 
+## USB-Zuordnung
+
+Zigbee und DMX sollten nicht direkt ueber wechselnde Pfade wie `ttyUSB0` oder `ttyUSB1` konfiguriert werden.
+
+Stattdessen werden stabile Symlinks genutzt:
+
+```text
+/dev/zigbee
+/dev/dmx
+```
+
+Beispiel fuer Zigbee2MQTT:
+
+```yaml
 serial:
   port: /dev/zigbee
   adapter: ember
-OLA nutzt fuer DMX:
+```
 
+Beispiel fuer OLA:
+
+```ini
 enabled = true
 device = /dev/dmx
 device_dir = /dev
 device_prefix = dmx
 ignore_device = /dev/zigbee
-Dadurch wird verhindert, dass OLA versehentlich den Zigbee-Dongle blockiert.
+```
 
-Weboberflaeche
-Die Hauptoberflaeche besteht aus mehreren Arbeitsbereichen:
+Damit wird verhindert, dass OLA versehentlich den Zigbee-Dongle blockiert.
 
-Room Editor: Puzzle-Graph und Raumstruktur
-Zigbee / Sensoren: Sensorliste, letzte Messages, Trigger-Konfiguration
-Sounds: Sound-Upload, Umbenennen, Lautstaerke, Test
-Room Scripting: Blockly-Regeln fuer Raumereignisse
-Puzzle Scripting: Blockly-Regeln fuer einzelne Puzzles
-Lighting / DMX: Lampen, Presets, Cues, Scenes und Effekte
-Running Room Screen: Laufender Raumstatus, Logs, Puzzle-Zustaende
-System Settings: Dienste, Screens, Autostart, Audio/DMX/Zigbee-Status
-Puzzle-Kommunikation
-Externe Raetsel kommunizieren ueber das bereitgestellte Communication-Agent-Template mit dem Hub.
+---
 
-Das Template nutzt intern MQTT fuer die laufende Kommunikation. Die Raetsel-Logik kann aber ueber einfache HTTP-Aufrufe mit dem lokalen Agent sprechen.
+## Weboberflaeche
+
+Die Hauptoberflaeche besteht aus mehreren Bereichen:
+
+* **Room Editor**: Puzzle-Graph und Raumstruktur
+* **Zigbee / Sensoren**: Sensorliste, letzte Messages und Trigger
+* **Sounds**: Upload, Test und Lautstaerke pro Sound
+* **Room Scripting**: Blockly-Regeln fuer Raumlogik
+* **Puzzle Scripting**: Blockly-Regeln fuer einzelne Puzzles
+* **Lighting / DMX**: Lampen, Presets, Cues und Scenes
+* **Running Room Screen**: Live-Status, Logs und Puzzle-Zustaende
+* **System Settings**: Dienste, Screens, Audio, DMX, Zigbee und Autostart
+
+---
+
+## Puzzle-Kommunikation
+
+Externe Raetsel kommunizieren ueber die mitgelieferten Communication-Agent-Templates mit dem Hub.
+
+Die Templates nutzen intern MQTT. Fuer die eigentliche Puzzle-Logik stehen einfache HTTP-Aufrufe zur Verfuegung.
 
 Typischer Ablauf eines digitalen Puzzles:
 
-State vom Hub lesen
-Auf reset, running, solved reagieren
-Outputs oder Custom Values setzen
-Bei geloestem Puzzle State auf solved setzen
-Regelmaessig bzw. bei State Changes Heartbeat/Status senden
-Templates liegen in:
+1. State vom Hub lesen
+2. Auf `reset`, `running` oder `solved` reagieren
+3. Outputs oder Custom Values setzen
+4. Wenn geloest, State auf `solved` setzen
+5. Heartbeat bzw. Status regelmaessig oder bei State Changes senden
 
+Templates liegen hier:
+
+```text
 HubRemoteEditing/PuzzleTemplates/
-├─ Mikrocontroller/
-└─ Windows, Linux, Pi/
-DMX und Lighting
-Das Lighting-System verwaltet:
+|-- Mikrocontroller/
+|-- Windows, Linux, Pi/
+```
 
-Lampen mit Presets oder Custom-Kanaelen
-Cues mit DMX-Werten und Effekten
-Scenes als Matrix aus Cues, parallelen Cues, Delays und verschachtelten Scenes
-Test Cue und Test Scene
-Script-Action Play Lighting Cue
-Cue-Effekte:
+---
 
-Delay
-Fade In
-Fade Out
-Duration
-Wichtig: duration = 0 bedeutet unendliche Dauer. Die Cue bleibt aktiv, bis sie durch eine andere Cue, einen Test-Stopp oder Room-Close beendet wird.
+## DMX und Lichtsteuerung
 
-Sounds
-Sounds werden im Sounds-Tab hochgeladen und koennen per Test-Button oder Script-Action Play Sound Cue abgespielt werden.
+Das Lighting-System verwaltet Lampen, Cues und Scenes.
 
-Systemlautstaerke wird beim Hub-Start auf 100 Prozent gesetzt
-Pro-Sound-Lautstaerke wird ueber den Slider gesteuert
-Neue Sounds starten standardmaessig mit 50 Prozent
-Beim Schliessen des Sounds-Fensters oder beim Schliessen des Raums wird laufendes Audio gestoppt
-Datenhaltung
-Die wichtigsten Daten liegen in SQLite:
+Unterstuetzt werden:
 
+* Lampen mit Presets oder Custom-Kanaelen
+* Cues mit DMX-Werten
+* Cue-Effekte wie Delay, Fade In, Fade Out und Duration
+* Scenes mit mehreren Cues, parallelen Cues und Delays
+* Verschachtelte Scenes
+* Test Cue und Test Scene
+* Script-Action `Play Lighting Cue`
+
+Wichtig:
+
+```text
+duration = 0
+```
+
+bedeutet, dass eine Cue unendlich lange aktiv bleibt. Sie endet erst, wenn sie durch eine andere Cue ersetzt, durch einen Test-Stopp beendet oder beim Schliessen des Raums gestoppt wird.
+
+---
+
+## Sounds
+
+Sounds koennen im Sounds-Tab hochgeladen und getestet werden.
+
+Eigenschaften:
+
+* Systemlautstaerke wird beim Hub-Start auf 100 Prozent gesetzt
+* Jeder Sound hat eine eigene Lautstaerke im Hub
+* Neue Sounds starten standardmaessig mit 50 Prozent
+* Sounds koennen ueber Blockly-Skripte mit `Play Sound Cue` abgespielt werden
+* Laufende Sounds werden beim Schliessen des Sound-Fensters oder beim Schliessen des Raums beendet
+
+---
+
+## Datenhaltung
+
+Die wichtigsten Projektdaten liegen in SQLite:
+
+```text
 HubRemoteEditing/escape.db
-Tabellen:
+```
 
-rooms
-devices
-config
-puzzle_solutions
+Wichtige Tabellen:
+
+* `rooms`
+* `devices`
+* `config`
+* `puzzle_solutions`
+
 Uploads liegen dateibasiert in:
 
+```text
 HubRemoteEditing/MediaStorage/
 HubRemoteEditing/SoundStorage/
 HubRemoteEditing/public/uploads/
-Debugging
-Systemlogs im Hub:
+```
 
+---
+
+## Diagnose und Debugging
+
+Hub-Logs:
+
+```bash
 journalctl -u md2-hub -f
+```
+
 Zigbee2MQTT:
 
+```bash
 journalctl -u zigbee2mqtt -f
 mosquitto_sub -h localhost -t 'zigbee2mqtt/#' -v
-DMX/OLA:
+```
 
+DMX / OLA:
+
+```bash
 journalctl -u olad -f
 ola_dev_info
 ola_set_dmx -u 0 -d 255,0,0,0
+```
+
 Audio:
 
+```bash
 cat /proc/asound/cards
 aplay -L
 amixer -c UC02 sget PCM
 speaker-test -D plughw:CARD=UC02,DEV=0 -c 2 -t wav -l 1
-USB-Zuordnung:
+```
 
+USB-Geraete:
+
+```bash
 ls -l /dev/zigbee /dev/dmx
 readlink -f /dev/zigbee
 readlink -f /dev/dmx
 sudo lsof /dev/zigbee /dev/dmx
-Betriebshinweise
-Zigbee-Dongle moeglichst direkt oder per kurzer USB-Verlaengerung am Pi betreiben
-DMX und Zigbee immer ueber /dev/dmx und /dev/zigbee konfigurieren
-OLA darf nur den DMX-Adapter scannen
-Zigbee2MQTT darf exklusiv den Zigbee-Dongle nutzen
-Systemlautstaerke bleibt auf 100 Prozent, Sound-Lautstaerke wird im Hub pro Sound geregelt
-Nach USB-Aenderungen immer pruefen, ob Symlinks korrekt zeigen
-Bekannte Stolperstellen
-Wenn Zigbee2MQTT Device or resource busy meldet, blockiert meist ein anderer Dienst den Zigbee-Port.
-Wenn OLA den falschen Port greift, ola-usbserial.conf und aktive Plugins pruefen.
-Wenn DMX nicht sendet, zuerst ola_dev_info und Patch auf Universe 0 pruefen.
-Wenn Audio beim ersten Abspielen anders laut ist, Systemmixer und verwendeten Player pruefen.
-Wenn escapehub.local nicht funktioniert, direkt die IP-Adresse verwenden.
-Kontext
-Dieses Projekt wurde fuer das Media-Design-2-Escape-Room-Projekt entwickelt. Es ist eine projektspezifische Steuerzentrale und nicht als generisches Produktpaket strukturiert.
+```
+
+---
+
+## Betriebshinweise
+
+* Zigbee-Dongle moeglichst direkt oder per kurzer USB-Verlaengerung am Raspberry Pi betreiben.
+* DMX und Zigbee immer ueber `/dev/dmx` und `/dev/zigbee` konfigurieren.
+* OLA darf nur den DMX-Adapter scannen.
+* Zigbee2MQTT darf exklusiv den Zigbee-Dongle nutzen.
+* Systemlautstaerke bleibt auf 100 Prozent, Sound-Lautstaerke wird im Hub geregelt.
+* Nach USB-Aenderungen immer pruefen, ob die Symlinks korrekt zeigen.
+
+---
+
+## Bekannte Stolperstellen
+
+* Wenn Zigbee2MQTT `Device or resource busy` meldet, blockiert meist ein anderer Dienst den Zigbee-Port.
+* Wenn OLA den falschen Port greift, `ola-usbserial.conf` und aktive OLA-Plugins pruefen.
+* Wenn DMX nicht sendet, zuerst `ola_dev_info` und Universe `0` pruefen.
+* Wenn Audio beim ersten Abspielen anders laut ist, Systemmixer und verwendeten Player pruefen.
+* Wenn `escapehub.local` nicht funktioniert, direkt die IP-Adresse verwenden.
+
+---
+
+## Kontext
+
+Dieses Projekt wurde fuer das Media-Design-2-Escape-Room-Projekt entwickelt.
+
+Es ist eine projektspezifische Steuerzentrale fuer Escape-Room-Installationen und nicht als generisches Produktpaket strukturiert.
