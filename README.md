@@ -321,4 +321,4 @@ sudo lsof /dev/zigbee /dev/dmx
 
 Dieses Projekt wurde für das Media-Design-2-Escape-Room-Projekt entwickelt.
 
-Es ist eine projektspezifische Steürzentrale für Escape-Room-Installationen und nicht als generisches Produktpaket strukturiert.
+Es ist eine projektspezifische Steuerzentrale für Escape-Room-Installationen und nicht als generisches Produktpaket strukturiert.
