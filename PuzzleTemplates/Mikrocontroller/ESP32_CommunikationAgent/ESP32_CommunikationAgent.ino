@@ -18,10 +18,10 @@
 // -------------------------
 // Project-specific settings
 // -------------------------
-static const char* WIFI_SSID = "YOUR_WIFI_SSID";
-static const char* WIFI_PASS = "YOUR_WIFI_PASSWORD";
+static const char* WIFI_SSID = "WIFI_SSID";
+static const char* WIFI_PASS = "WIFI_PASS";
 
-static const char* MQTT_HOST = "192.168.1.10";
+static const char* MQTT_HOST = "MQTT_HOST_IP";
 static const uint16_t MQTT_PORT = 1883;
 
 static const char* DEVICE_ID = "puzzle-esp32-1";
@@ -35,6 +35,7 @@ CommunikationAgentMCUCore agent;
 
 // Example puzzle logic flag
 bool solvedSent = false;
+bool customSent = false;
 
 const char* getLocalIpText() {
   static char ipText[24];
@@ -47,6 +48,29 @@ void mqttPublish(const char* topic, const char* payload) {
   mqttClient.publish(topic, payload);
 }
 
+bool isTrueText(const char* value) {
+  return value && (
+    strcmp(value, "true") == 0 ||
+    strcmp(value, "1") == 0 ||
+    strcmp(value, "TRUE") == 0 ||
+    strcmp(value, "yes") == 0
+  );
+}
+
+void sendCustomValueToHub(const char* value) {
+  // Publishes to puzzle/<deviceId>/custom with payload {"value": "...", "deviceId": "..."}.
+  agent.publishCustomFromPuzzle(value);
+}
+
+void handleCustomEvent(const char* value) {
+  // Placeholder: react to Custom values sent by the Hub.
+  // Example:
+  // if (strcmp(value, "button pressed") == 0) {
+  //   // Your own code here.
+  // }
+  (void)value;
+}
+
 void handlePuzzleLogicExample() {
   // Example: if Hub input Solve=true, set output VerifyCorrect=true and solved.
   const char* solve = agent.getInputValue("Solve");
@@ -56,6 +80,29 @@ void handlePuzzleLogicExample() {
     }
     agent.setState("solved");
     solvedSent = true;
+  }
+
+  // Example: react to a Custom value sent by the Hub.
+  const char* custom = agent.getCustomValue();
+  if (custom) {
+    Serial.print("Custom received from Hub: ");
+    Serial.println(custom);
+
+    handleCustomEvent(custom);
+    // Treat Custom as an event: clear it after processing so the same value can trigger again.
+    agent.clearCustomValue();
+  }
+
+  // Example: if Hub input SendCustom=true, send one Custom value back to the Hub.
+  // Replace this with your own button/sensor condition in the real puzzle logic.
+  const char* sendCustom = agent.getInputValue("SendCustom");
+  if (isTrueText(sendCustom)) {
+    if (!customSent) {
+      sendCustomValueToHub("esp32-custom-value");
+      customSent = true;
+    }
+  } else {
+    customSent = false;
   }
 }
 
@@ -127,6 +174,9 @@ void loop() {
   mqttClient.loop();
   agent.loop(millis());
 
-  // Optional puzzle logic in same firmware.
+  // Place your own non-blocking puzzle code here.
+  // Keep this loop fast: avoid long delay() calls so MQTT and heartbeat stay responsive.
+
+  // Optional example logic in same firmware. Remove or replace for production.
   handlePuzzleLogicExample();
 }

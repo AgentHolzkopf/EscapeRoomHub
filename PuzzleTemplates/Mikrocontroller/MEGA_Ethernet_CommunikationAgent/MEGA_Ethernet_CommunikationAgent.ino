@@ -40,6 +40,8 @@ PubSubClient mqttClient(netClient);
 CommunikationAgentMCUCore agent;
 
 bool solvedSent = false;
+bool customSent = false;
+char lastCustomValue[CommunikationAgentMCUCore::MAX_VALUE_LEN + 1] = "";
 
 const char* getLocalIpText() {
   static char ipText[24];
@@ -52,6 +54,20 @@ void mqttPublish(const char* topic, const char* payload) {
   mqttClient.publish(topic, payload);
 }
 
+bool isTrueText(const char* value) {
+  return value && (
+    strcmp(value, "true") == 0 ||
+    strcmp(value, "1") == 0 ||
+    strcmp(value, "TRUE") == 0 ||
+    strcmp(value, "yes") == 0
+  );
+}
+
+void sendCustomValueToHub(const char* value) {
+  // Publishes to puzzle/<deviceId>/custom with payload {"value": "...", "deviceId": "..."}.
+  agent.publishCustomFromPuzzle(value);
+}
+
 void handlePuzzleLogicExample() {
   // Example: if Hub input Solve=true, set output VerifyCorrect=true and solved.
   const char* solve = agent.getInputValue("Solve");
@@ -61,6 +77,27 @@ void handlePuzzleLogicExample() {
     }
     agent.setState("solved");
     solvedSent = true;
+  }
+
+  // Example: react to a Custom value sent by the Hub.
+  const char* custom = agent.getCustomValue();
+  if (custom && strcmp(custom, lastCustomValue) != 0) {
+    strncpy(lastCustomValue, custom, sizeof(lastCustomValue) - 1);
+    lastCustomValue[sizeof(lastCustomValue) - 1] = '\0';
+    Serial.print("Custom received from Hub: ");
+    Serial.println(lastCustomValue);
+  }
+
+  // Example: if Hub input SendCustom=true, send one Custom value back to the Hub.
+  // Replace this with your own button/sensor condition in the real puzzle logic.
+  const char* sendCustom = agent.getInputValue("SendCustom");
+  if (isTrueText(sendCustom)) {
+    if (!customSent) {
+      sendCustomValueToHub("mega-custom-value");
+      customSent = true;
+    }
+  } else {
+    customSent = false;
   }
 }
 

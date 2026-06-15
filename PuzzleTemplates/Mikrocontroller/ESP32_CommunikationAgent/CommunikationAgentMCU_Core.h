@@ -213,6 +213,11 @@ public:
     return customPresent_ ? customValue_ : NULL;
   }
 
+  void clearCustomValue() {
+    customValue_[0] = '\0';
+    customPresent_ = false;
+  }
+
   bool publishCustomFromPuzzle() {
     return publishCustomNow();
   }

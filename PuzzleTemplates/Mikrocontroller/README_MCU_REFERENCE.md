@@ -22,14 +22,48 @@ Both sketches use the same agent core behavior via:
   - subscribe `puzzle/<deviceId>/command`
   - publish `puzzle/<deviceId>/heartbeat`
   - publish `puzzle/<deviceId>/data`
+- Optional custom value helper:
+  - receive Hub command `sendCustom`
+  - publish `puzzle/<deviceId>/custom`
 - Optional external check publish helper:
   - `puzzle/<deviceId>/external-check`
 - Required command actions:
   - `initKeys`, `clearData`, `restart`, `setState`, `sendParam`, `requestData`
 - Optional alias support:
-  - `sendOutput`
+  - `sendOutput`, `sendCustom`, `custom`, `custom_event`, `custom-event`
 - Output rule:
   - outputs are accepted only if key exists from `initKeys`
+
+## Custom values
+
+Custom values are independent from normal configured inputs/outputs.
+
+Hub to MCU:
+
+```cpp
+const char* value = agent.getCustomValue();
+if (value) {
+  // react to value
+}
+```
+
+MCU to Hub:
+
+```cpp
+agent.publishCustomFromPuzzle("my-custom-value");
+```
+
+The MCU publishes this as:
+
+```text
+puzzle/<deviceId>/custom
+```
+
+with payload:
+
+```json
+{"value":"my-custom-value","deviceId":"<deviceId>"}
+```
 
 ## Not included in MCU reference
 
@@ -61,6 +95,7 @@ Mega sketch:
 ## Notes
 
 - Both sketches include a tiny example puzzle logic in `handlePuzzleLogicExample()`.
+- The examples also show how to receive a Custom value from the Hub and publish a Custom value back to the Hub.
 - Remove or replace it with your actual puzzle logic.
 
 ## Related docs

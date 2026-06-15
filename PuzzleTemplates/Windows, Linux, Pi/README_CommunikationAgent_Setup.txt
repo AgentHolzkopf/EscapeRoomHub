@@ -89,6 +89,37 @@ while True:
 2) Quickstart
 ------------------------------------------------------------
 
+Agent starten:
+
+```bash
+node CommunikationAgent.js --port 5001
+```
+
+Optionales Parallel-Skript fuer Custom -> Board-LED:
+
+```bash
+node CustomLedBridge.js
+```
+
+Das Skript fragt lokal `GET /getCustom` beim Agent ab und toggelt die LED,
+wenn der Custom-Wert exakt `button pressed` ist.
+
+Konfiguration:
+
+```bash
+AGENT_URL=http://127.0.0.1:5001 CUSTOM_TRIGGER="button pressed" LED_GPIO=17 node CustomLedBridge.js
+```
+
+Hinweise:
+- Der Agent startet standardmaessig HTTP, nicht HTTPS.
+- `CustomLedBridge.js` kann auch HTTPS nutzen, wenn `AGENT_URL` mit `https://` beginnt.
+- Auf einem Raspberry Pi wird `/sys/class/gpio` genutzt.
+- Auf Windows oder ohne GPIO wird der LED-Zustand nur im Terminal geloggt.
+
+------------------------------------------------------------
+3) Original Quickstart
+------------------------------------------------------------
+
 1. In den Ordner wechseln:
    `PuzzleTemplates/Windows, Linux, Pi`
 2. Abhaengigkeit installieren:
