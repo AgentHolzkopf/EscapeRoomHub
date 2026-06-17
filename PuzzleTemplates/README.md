@@ -1,33 +1,33 @@
 # Puzzle Templates
 
-Diese Vorlagen helfen beim schnellen Anbinden eigener Rätsel an den Hub.
+These templates help connect custom puzzles to EscapeHub quickly.
 
-## Welche Vorlage für wen?
+## Which Template Should I Use?
 
-- Node.js-Prozess auf Windows/Linux/Pi:
-  - Ordner: `PuzzleTemplates/Windows, Linux, Pi`
-  - Einstieg: `README_CommunikationAgent_Setup.txt`
-- Mikrocontroller (ESP32 / Arduino Mega):
-  - Ordner: `PuzzleTemplates/Mikrocontroller`
-  - Einstieg: `README_MCU_REFERENCE.md`
+- Node.js process on Windows, Linux, or Raspberry Pi:
+  - Folder: `PuzzleTemplates/Windows, Linux, Pi`
+  - Entry point: `README_CommunikationAgent_Setup.txt`
+- Microcontroller (ESP32 / Arduino Mega):
+  - Folder: `PuzzleTemplates/Mikrocontroller`
+  - Entry point: `README_MCU_REFERENCE.md`
 
 ## TL;DR (Node.js)
 
-1. In `PuzzleTemplates/Windows, Linux, Pi` wechseln.
-2. `npm install mqtt` ausführen.
-3. `CommunikationAgent.config.json` anpassen (`deviceId`, `mqttBroker`).
-4. Agent starten: `node CommunikationAgent.js --port 5001`.
-5. Im Hub dasselbe `deviceId` als Linked Device setzen und Room starten.
+1. Open `PuzzleTemplates/Windows, Linux, Pi`.
+2. Run `npm install mqtt`.
+3. Edit `CommunikationAgent.config.json` (`deviceId`, `mqttBroker`).
+4. Start the agent: `node CommunikationAgent.js --port 5001`.
+5. Set the same `deviceId` as Linked Device in the hub and start the room.
 
 ## TL;DR (MCU)
 
-1. Sketch (`ESP32_...` oder `MEGA_...`) öffnen.
-2. `MQTT_HOST` / `MQTT_SERVER`, `DEVICE_ID`, `PUZZLE_NAME` setzen.
-3. Flashen, Gerät mit Netzwerk verbinden.
-4. Im Hub dasselbe `deviceId` verknüpfen und Room starten.
-5. Prüfen, dass `initKeys` ankommt und Heartbeats gesendet werden.
+1. Open the sketch (`ESP32_...` or `MEGA_...`).
+2. Set `MQTT_HOST` / `MQTT_SERVER`, `DEVICE_ID`, and `PUZZLE_NAME`.
+3. Flash the board and connect it to the network.
+4. Set the same `deviceId` as Linked Device in the hub and start the room.
+5. Verify that `initKeys` arrives and heartbeats are sent.
 
-## Wichtige MQTT-Topics
+## Important MQTT Topics
 
 - Hub -> Puzzle: `puzzle/<deviceId>/command`
 - Puzzle -> Hub:
@@ -36,13 +36,12 @@ Diese Vorlagen helfen beim schnellen Anbinden eigener Rätsel an den Hub.
   - `puzzle/<deviceId>/custom`
   - `puzzle/<deviceId>/external-check`
 
-## Typische Fehler
+## Common Issues
 
-- Keine Reaktion im Hub:
-  - `deviceId` stimmt nicht zwischen Hub und Agent.
-  - MQTT-Broker nicht erreichbar.
-- Output kommt nicht an:
-  - Output-Key wurde nicht per `initKeys` vom Hub angelegt.
-- Werte verzögert:
-  - Prüfen, ob Heartbeats und `data` tatsächlich publiziert werden.
-
+- No reaction in the hub:
+  - `deviceId` does not match between hub and agent.
+  - MQTT broker is not reachable.
+- Output does not arrive:
+  - Output key was not created by the hub through `initKeys`.
+- Values are delayed:
+  - Verify that heartbeats and `data` messages are actually published.

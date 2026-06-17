@@ -1,41 +1,41 @@
-CommunikationAgent Setup (Node.js)
-==================================
+Communication Agent Setup (Node.js)
+===================================
 
-Diese Doku gilt fuer:
+This document applies to:
 `PuzzleTemplates/Windows, Linux, Pi`
 
 ------------------------------------------------------------
-Architektur: MQTT + HTTP (wichtig)
+Architecture: MQTT + HTTP
 ------------------------------------------------------------
 
-Das Template benutzt intern MQTT fuer die Hub-Kommunikation:
+The template uses MQTT internally for communication with the hub:
 - Sub: `puzzle/<deviceId>/command`
 - Pub: `puzzle/<deviceId>/heartbeat`, `.../data`, `.../custom`, `.../external-check`
 
-Du steuerst das Template lokal per HTTP-Aufrufen.
-Die HTTP-Calls sind die "API fuer dein Puzzle-Skript".
-Der Agent uebersetzt diese Aufrufe in MQTT-Nachrichten zum Hub.
+Your puzzle logic controls the template locally through HTTP calls.
+These HTTP calls are the API for your own puzzle script.
+The agent translates them into MQTT messages for the hub.
 
-Kurz:
+Short version:
 - Hub <-> Agent: MQTT
-- Puzzle-Logik <-> Agent: HTTP
+- Puzzle logic <-> Agent: HTTP
 
 ------------------------------------------------------------
-1) Beispielablauf: Puzzle Loop (empfohlener Start)
+1) Example Workflow: Puzzle Loop
 ------------------------------------------------------------
 
-Ziel dieses Beispielablaufs:
-- State vom Agent lesen
-- auf `reset` reagieren
-- Input lesen und Logik ausfuehren
-- Output setzen
-- bei Erfolg `solved` setzen
+Goal of this workflow:
+- Read state from the agent
+- React to `reset`
+- Read inputs and execute puzzle logic
+- Set outputs
+- Set state to `solved` when the puzzle is solved
 
-Hinweis:
-- Das Template nutzt intern MQTT.
-- Deine Puzzle-Logik spricht aber lokal per HTTP mit dem Agent.
+Note:
+- The template uses MQTT internally.
+- Your puzzle logic talks to the agent locally via HTTP.
 
-Python-Beispiel (nur Grundfunktionen):
+Python example with core functions:
 
 ```python
 import time
@@ -56,85 +56,81 @@ def set_output(key, value):
     body = {"key": key, "type": "string", "data": str(value)}
     return requests.post(f"{BASE}/setOutput", json=body, timeout=3).json()
 
-def send_custom(key, value):
-    body = {"key": key, "type": "string", "data": str(value)}
-    return requests.post(f"{BASE}/setOutput", json=body, timeout=3).json()
+def send_custom(value):
+    body = {"value": str(value)}
+    return requests.post(f"{BASE}/sendCustom", json=body, timeout=3).json()
 
-# Puzzle initial auf running setzen
 set_state("running")
 
 while True:
-    s = get_state().get("state")
+    state = get_state().get("state")
 
-    # Auf Reset reagieren
-    if s == "reset":
-        # Hier eigene Re-Init (Variablen, Aktoren, Anzeigen etc.)
+    if state == "reset":
+        # Re-initialize your own variables, actuators, displays, etc.
         continue
 
-    # Beispiel: Puzzle auf solved setzen
+    if state == "running":
+        own_parameters = get_input("Code")
+        # Execute your own puzzle logic here.
+
     if puzzle_state == "solved":
         set_state("solved")
-     
-    # Beispiel: auf sate = running reagieren
-    if get_state().get("state") == "running"
-        set_state("running")
-	own_parameters = getInput(key)
-	# Hier eigene Puzzle Logik ausführen
-   
-    # Beispiel: custom variable an Hub senden
-    send_custom("custom", "myvariable")
+
+    send_custom("myvariable")
+    time.sleep(0.1)
 ```
 
 ------------------------------------------------------------
 2) Quickstart
 ------------------------------------------------------------
 
-Agent starten:
+Start the agent:
 
 ```bash
 node CommunikationAgent.js --port 5001
 ```
 
-Optionales Parallel-Skript fuer Custom -> Board-LED:
+Optional companion script for Custom -> board LED:
 
 ```bash
 node CustomLedBridge.js
 ```
 
-Das Skript fragt lokal `GET /getCustom` beim Agent ab und toggelt die LED,
-wenn der Custom-Wert exakt `button pressed` ist.
+The script polls `GET /getCustom` from the agent and toggles the LED when the custom value is exactly `button pressed`.
 
-Konfiguration:
+Configuration:
 
 ```bash
 AGENT_URL=http://127.0.0.1:5001 CUSTOM_TRIGGER="button pressed" LED_GPIO=17 node CustomLedBridge.js
 ```
 
-Hinweise:
-- Der Agent startet standardmaessig HTTP, nicht HTTPS.
-- `CustomLedBridge.js` kann auch HTTPS nutzen, wenn `AGENT_URL` mit `https://` beginnt.
-- Auf einem Raspberry Pi wird `/sys/class/gpio` genutzt.
-- Auf Windows oder ohne GPIO wird der LED-Zustand nur im Terminal geloggt.
+Notes:
+- The agent starts HTTP by default, not HTTPS.
+- `CustomLedBridge.js` can use HTTPS if `AGENT_URL` starts with `https://`.
+- On a Raspberry Pi it uses `/sys/class/gpio`.
+- On Windows or without GPIO access, the LED state is only logged to the terminal.
 
 ------------------------------------------------------------
-3) Original Quickstart
+3) Basic Setup
 ------------------------------------------------------------
 
-1. In den Ordner wechseln:
+1. Change into the folder:
    `PuzzleTemplates/Windows, Linux, Pi`
-2. Abhaengigkeit installieren:
+2. Install dependency:
    `npm install mqtt`
-3. `CommunikationAgent.config.json` anpassen (mindestens `deviceId`, `mqttBroker`).
-4. Agent starten:
+3. Edit `CommunikationAgent.config.json` (at least `deviceId`, `mqttBroker`).
+4. Start the agent:
    `node CommunikationAgent.js --port 5001`
-5. Im Hub dasselbe `deviceId` als Linked Device eintragen.
-6. Room starten.
+5. Set the same `deviceId` as Linked Device in the hub.
+6. Start the room.
 
-3) Minimale Konfiguration
+------------------------------------------------------------
+4) Minimal Configuration
 ------------------------------------------------------------
 
-Beispiel `CommunikationAgent.config.json`:
+Example `CommunikationAgent.config.json`:
 
+```json
 {
   "hubHost": "escapehub.local",
   "mqttBroker": "escapehub.local",
@@ -144,39 +140,41 @@ Beispiel `CommunikationAgent.config.json`:
   "heartbeatIntervalMs": 2000,
   "needRestart": false
 }
+```
 
-Wichtig:
-- `deviceId` muss exakt dem Linked Device im Hub entsprechen.
-- Inputs/Outputs kommen vom Hub ueber `initKeys`.
-- Output-Keys muessen im Hub-I/O definiert sein.
+Important:
+- `deviceId` must exactly match the Linked Device in the hub.
+- Inputs and outputs are initialized by the hub through `initKeys`.
+- Output keys must be defined in the hub I/O configuration.
 
-4) HTTP API: Grundfunktionen (mit Beispielaufrufen)
+------------------------------------------------------------
+5) HTTP API: Core Functions
 ------------------------------------------------------------
 
-Basis:
+Base URL:
 - `BASE=http://127.0.0.1:5001`
 
-Status:
+State:
 - GET state:
   `curl "$BASE/getState"`
 - POST set state:
   `curl -X POST "$BASE/setState" -H "Content-Type: application/json" -d "{\"state\":\"running\"}"`
 
 Inputs:
-- GET input lesen:
+- GET input:
   `curl "$BASE/getParam?type=Code"`
 
 Outputs:
-- POST output setzen:
+- POST output:
   `curl -X POST "$BASE/setOutput" -H "Content-Type: application/json" -d "{\"key\":\"Result\",\"type\":\"string\",\"data\":\"OK\"}"`
 
 ------------------------------------------------------------
-5) MQTT-Fluss zum Hub
+6) MQTT Flow to the Hub
 ------------------------------------------------------------
 
-Hub -> Agent (eingehend):
+Hub -> Agent:
 - Topic: `puzzle/<deviceId>/command`
-- Typische actions:
+- Common actions:
   - `initKeys`
   - `clearData`
   - `restart`
@@ -186,74 +184,74 @@ Hub -> Agent (eingehend):
   - `sendCustom`
   - `sendOutput`
 
-Agent -> Hub (ausgehend):
+Agent -> Hub:
 - `puzzle/<deviceId>/heartbeat`
 - `puzzle/<deviceId>/data`
 - `puzzle/<deviceId>/custom`
 - `puzzle/<deviceId>/external-check`
 
 ------------------------------------------------------------
-6) Vollstaendige HTTP-Funktionsliste (mit Kurzbeschreibung)
+7) Full HTTP Function List
 ------------------------------------------------------------
 
-Status:
-- `GET /getState`  
-  Liest den aktuellen Puzzle-State (z. B. `locked`, `running`, `solved`, `reset`).
-- `POST /setState`  
-  Setzt den Puzzle-State und meldet ihn an den Hub.
+State:
+- `GET /getState`
+  Reads the current puzzle state, for example `locked`, `running`, `solved`, `reset`.
+- `POST /setState`
+  Sets the puzzle state and publishes it to the hub.
 
 Inputs:
-- `GET /getParam?type=<Key>`  
-  Liest den letzten bekannten Input-Wert eines Keys.
-- `POST /sendParam`  
-  Setzt lokal einen Input-Wert (hauptsaechlich fuer Tests/Simulation).
+- `GET /getParam?type=<Key>`
+  Reads the last known input value for a key.
+- `POST /sendParam`
+  Sets a local input value, mainly for tests and simulations.
 
 Outputs:
-- `POST /setOutput`  
-  Setzt einen Output-Wert (z. B. Relais, virtuelle Ausgabe) und publisht ihn.
-- `GET /getOutput?key=<Key>`  
-  Liest den zuletzt gesetzten Output-Wert.
+- `POST /setOutput`
+  Sets an output value, for example a relay or virtual output, and publishes it.
+- `GET /getOutput?key=<Key>`
+  Reads the last set output value.
 
 Heartbeat:
-- `POST /sendHeartbeat`  
-  Erzwingt sofortigen Heartbeat-Upload (nuetzlich fuer sofortige UI-Aktualisierung).
+- `POST /sendHeartbeat`
+  Forces an immediate heartbeat publish. Useful for immediate UI updates.
 
 Custom:
-- `POST /sendCustom`  
-  Sendet benutzerdefinierte Nachricht/Event an den Hub.
-- `GET /getCustom`  
-  Liest den zuletzt empfangenen/gesetzten Custom-Wert.
+- `POST /sendCustom`
+  Sends a custom message/event to the hub.
+- `GET /getCustom`
+  Reads the latest received or locally set custom value.
 
 External Check:
-- `POST /triggerExternalCheck`  
-  Meldet externen Input-Check (z. B. User-Eingabe pruefen lassen).
-- `GET /getExternalCheck`  
-  Liest den letzten External-Check-Zustand.
+- `POST /triggerExternalCheck`
+  Reports an external input check, for example a user input that should be verified by the hub.
+- `GET /getExternalCheck`
+  Reads the last external check state.
 
 Restart:
-- `POST /restartComplete`  
-  Meldet dem Hub, dass ein angeforderter Restart abgeschlossen ist.
-- `POST /restartConfig`  
-  Setzt zur Laufzeit, ob dieses Puzzle fuer Start/Reset `needRestart` verwendet.
+- `POST /restartComplete`
+  Tells the hub that a requested restart has completed.
+- `POST /restartConfig`
+  Sets at runtime whether this puzzle uses `needRestart` for start/reset handling.
 
 Media:
-- `POST /media/upload`  
-  Upload einer Datei in den Hub-Mediaspeicher.
-- `POST /media/download`  
-  Download einer Datei vom Hub.
+- `POST /media/upload`
+  Uploads a file to hub media storage.
+- `POST /media/download`
+  Downloads a file from the hub.
 
 Debug:
-- `GET /getAll`  
-  Gibt kompletten internen Agent-Zustand als Snapshot zur Diagnose zurueck.
+- `GET /getAll`
+  Returns the complete internal agent state snapshot for diagnostics.
 
 ------------------------------------------------------------
-7) Beispielaufrufe aller Funktionen (curl)
+8) Example Calls for All Functions (curl)
 ------------------------------------------------------------
 
-Basis:
+Base:
 - `BASE=http://127.0.0.1:5001`
 
-Status:
+State:
 - `curl "$BASE/getState"`
 - `curl -X POST "$BASE/setState" -H "Content-Type: application/json" -d "{\"state\":\"running\"}"`
 
@@ -288,26 +286,24 @@ Debug:
 - `curl "$BASE/getAll"`
 
 ------------------------------------------------------------
-8) Troubleshooting
+9) Troubleshooting
 ------------------------------------------------------------
 
-Problem: Hub sieht keine Daten.
-- Pruefen, ob `deviceId` in Hub und Config identisch ist.
-- Pruefen, ob `mqttBroker`/`mqttPort` korrekt sind.
-- Pruefen, ob beim Start "MQTT connected ..." erscheint.
+Problem: The hub sees no data.
+- Check that `deviceId` is identical in the hub and config.
+- Check `mqttBroker` and `mqttPort`.
+- Check whether startup logs show `MQTT connected ...`.
 
-Problem: Output wird ignoriert.
-- Output-Key ist nicht im Hub-I/O definiert (`initKeys`).
-- Key muss exakt gleich geschrieben sein.
+Problem: Output is ignored.
+- The output key is not defined in the hub I/O configuration through `initKeys`.
+- The key must match exactly.
 
-Problem: State-Wechsel kommt nicht im Hub an.
-- Nach `setState` ggf. `sendHeartbeat` aufrufen (fuer sofortigen Push).
+Problem: State changes do not appear in the hub.
+- After `setState`, call `sendHeartbeat` if an immediate push is required.
 
 ------------------------------------------------------------
-9) Weitere Doku
+10) Related Documentation
 ------------------------------------------------------------
 
-- Kurzfassung fuer Gruppen:
-  `README_CommunikationAgent_Groups.txt`
-- MCU-Referenz:
+- MCU reference:
   `../Mikrocontroller/README_MCU_REFERENCE.md`

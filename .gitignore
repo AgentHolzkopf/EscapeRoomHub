@@ -1,1 +1,61 @@
-node_modules
+# Dependencies
+node_modules/
+
+# Python / virtual environments
+.venv/
+venv/
+escape_env/
+__pycache__/
+*.py[cod]
+
+# Runtime databases and local state
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+*.sqlite-journal
+
+# EscapeHub runtime/user data
+rooms/
+MediaStorage/
+SoundStorage/
+public/uploads/
+uploads/
+
+# Generated archives/build artifacts
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+dist/
+build/
+coverage/
+
+# Logs and temporary files
+*.log
+logs/
+Server/temp_*.txt
+tmp/
+temp/
+*.tmp
+*.swp
+*.swo
+
+# Local environment/secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+
+# IDE/editor files
+.idea/
+.vscode/
+*.iml
+.DS_Store
+Thumbs.db
+
+# OS-specific metadata
+desktop.ini
