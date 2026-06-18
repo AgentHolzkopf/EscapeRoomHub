@@ -24,6 +24,32 @@ Supported features include:
 
 ---
 
+## Screenshots
+
+### Room Editor
+
+<img src="docs/screenshots/main-editor.png" alt="EscapeHub room editor with puzzle graph, branch flow, puzzle properties, and system log" width="100%">
+
+### Feature Views
+
+| Lighting / DMX | Zigbee / Sensors |
+| --- | --- |
+| <img src="docs/screenshots/lighting-dmx.png" alt="Lighting and DMX editor with fixtures, cues, scenes, channel values, and effects" width="100%"> | <img src="docs/screenshots/zigbee-sensors.png" alt="Zigbee sensor monitor with bridge status, devices, values, and MQTT messages" width="100%"> |
+
+| Sounds | Room Scripting |
+| --- | --- |
+| <img src="docs/screenshots/sounds.png" alt="Sound cue manager with uploaded sounds, volume control, and test playback" width="100%"> | <img src="docs/screenshots/room-scripting.png" alt="Blockly-based room scripting editor with triggers, conditions, and actions" width="100%"> |
+
+| Progress Screen | Player Input Screen |
+| --- | --- |
+| <img src="docs/screenshots/progress-screen.png" alt="Player-facing progress screen showing branches, stages, puzzle states, and solved count" width="100%"> | <img src="docs/screenshots/player-input-screen.png" alt="Player-facing input screen with letter tiles and check button" width="100%"> |
+
+| Hint Screen |
+| --- |
+| <img src="docs/screenshots/hint-screen.png" alt="Player-facing hint screen with triggered hints" width="100%"> |
+
+---
+
 ## Project Structure
 
 ```text
