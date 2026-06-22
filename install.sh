@@ -207,18 +207,18 @@ install_zigbee() {
   local zigbee_dev
   zigbee_dev="$(find_serial_device 'Sonoff|Itead|Zigbee|CP210|Silicon_Labs' || true)"
   if [[ -z "$zigbee_dev" ]]; then
-    echo "No likely Zigbee serial dongle found. Skipping Zigbee setup."
+    echo "No likely Zigbee serial dongle found. Installing Zigbee2MQTT service without a /dev/zigbee rule."
+    echo "Connect the adapter and rerun --full to create the stable /dev/zigbee mapping."
     echo "Detected serial devices:"
     list_serial_devices || true
-    return 0
+  else
+    echo "Detected likely Zigbee dongle: $zigbee_dev"
+    if confirm "Use this device as /dev/zigbee?" "y"; then
+      write_tty_udev_rule "zigbee" "$zigbee_dev"
+    else
+      echo "Continuing without creating a /dev/zigbee rule."
+    fi
   fi
-
-  echo "Detected likely Zigbee dongle: $zigbee_dev"
-  if ! confirm "Use this device as /dev/zigbee?" "y"; then
-    echo "Skipping Zigbee setup."
-    return 0
-  fi
-  write_tty_udev_rule "zigbee" "$zigbee_dev"
 
   if [[ ! -d /opt/zigbee2mqtt ]]; then
     log "Cloning Zigbee2MQTT to /opt/zigbee2mqtt"
@@ -283,7 +283,10 @@ RestartSec=5
 WantedBy=multi-user.target
 EOF
   systemctl daemon-reload
-  systemctl enable --now zigbee2mqtt
+  systemctl enable zigbee2mqtt
+  if ! systemctl restart zigbee2mqtt; then
+    echo "Zigbee2MQTT service is installed but did not start. This is expected if /dev/zigbee is missing or the dongle is not ready."
+  fi
 }
 
 configure_ola_plugins() {
@@ -313,22 +316,24 @@ install_dmx() {
   local dmx_dev
   dmx_dev="$(find_serial_device 'DMXking|DMX|FT232|FTDI' || true)"
   if [[ -z "$dmx_dev" ]]; then
-    echo "No likely USB-DMX serial adapter found. Skipping DMX setup."
+    echo "No likely USB-DMX serial adapter found. Installing OLA without a /dev/dmx rule."
+    echo "Connect the adapter and rerun --full to create the stable /dev/dmx mapping."
     echo "Detected serial devices:"
     list_serial_devices || true
-    return 0
+  else
+    echo "Detected likely DMX adapter: $dmx_dev"
+    if confirm "Use this device as /dev/dmx?" "y"; then
+      write_tty_udev_rule "dmx" "$dmx_dev"
+    else
+      echo "Continuing without creating a /dev/dmx rule."
+    fi
   fi
-
-  echo "Detected likely DMX adapter: $dmx_dev"
-  if ! confirm "Use this device as /dev/dmx?" "y"; then
-    echo "Skipping DMX setup."
-    return 0
-  fi
-  write_tty_udev_rule "dmx" "$dmx_dev"
 
   configure_ola_plugins
-  systemctl enable --now olad
-  systemctl restart olad
+  systemctl enable olad
+  if ! systemctl restart olad; then
+    echo "OLA service is installed but did not start. Check /dev/dmx and olad logs after connecting the adapter."
+  fi
 }
 
 install_audio() {
