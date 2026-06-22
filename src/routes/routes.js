@@ -304,6 +304,17 @@ module.exports = (dbWrapper, mqttClient) => {
             res.status(500).json({ success: false, error: 'DMX Service konnte nicht gesetzt werden.' });
         }
     });
+    router.post('/system/restart-all-services', async (req, res) => {
+        try {
+            const result = await gameEngine.restartAllManagedServices();
+            if (!result.success) {
+                return res.status(400).json(result);
+            }
+            res.json(result);
+        } catch (err) {
+            res.status(500).json({ success: false, error: err?.message || 'Service restart could not be scheduled.' });
+        }
+    });
     router.post('/system/mqtt-port', async (req, res) => {
         try {
             const result = await gameEngine.setMqttPort(req.body?.port);

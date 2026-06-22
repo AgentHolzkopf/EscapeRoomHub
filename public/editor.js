@@ -1038,7 +1038,14 @@ const soundsUI = {
     selectedName: document.getElementById("sounds-selected-name"),
     volumeSlider: document.getElementById("sounds-volume-slider"),
     volumeValue: document.getElementById("sounds-volume-value"),
-    testBtn: document.getElementById("sounds-test-btn")
+    testBtn: document.getElementById("sounds-test-btn"),
+    waveformWrap: document.getElementById("sounds-waveform-wrap"),
+    waveformCanvas: document.getElementById("sounds-waveform-canvas"),
+    waveformSelection: document.getElementById("sounds-waveform-selection"),
+    trimStartHandle: document.getElementById("sounds-trim-start-handle"),
+    trimEndHandle: document.getElementById("sounds-trim-end-handle"),
+    trimRange: document.getElementById("sounds-trim-range"),
+    waveformStatus: document.getElementById("sounds-waveform-status")
 };
 
 let selectedLightingFixtureId = null;
@@ -1065,6 +1072,11 @@ let soundsActiveAudio = null;
 let soundsListLoadPromise = null;
 let soundsPiTestActive = false;
 let soundsLiveVolumeTimer = null;
+let soundsAudioContext = null;
+let soundsWaveformBuffer = null;
+let soundsWaveformLoadToken = 0;
+let soundsTrimSaveTimer = null;
+let soundsTrimDragMode = null;
 
 function formatSoundFileSize(size) {
     const num = Number(size);
@@ -1288,6 +1300,187 @@ function getSoundVolumeNormalized(name) {
     return getSoundVolumePercent(name) / 100;
 }
 
+function normalizeSoundTrim(trim, durationMs = 0) {
+    const duration = Math.max(0, Math.floor(Number(durationMs || trim?.durationMs) || 0));
+    let startMs = Math.max(0, Math.floor(Number(trim?.startMs) || 0));
+    let endMs = Math.max(0, Math.floor(Number(trim?.endMs) || 0));
+    if (duration > 0) {
+        startMs = Math.min(startMs, duration);
+        endMs = endMs > 0 ? Math.min(endMs, duration) : duration;
+    }
+    if (endMs > 0 && endMs < startMs) endMs = startMs;
+    return { startMs, endMs, durationMs: duration };
+}
+
+function getSelectedSoundTrim() {
+    const selected = getSelectedSoundEntry();
+    if (!selected) return { startMs: 0, endMs: 0, durationMs: 0 };
+    return normalizeSoundTrim(selected.trim || {}, selected.trim?.durationMs || 0);
+}
+
+function setSelectedSoundTrim(trim) {
+    const selected = getSelectedSoundEntry();
+    if (!selected) return null;
+    selected.trim = normalizeSoundTrim(trim, trim?.durationMs || selected.trim?.durationMs || 0);
+    return selected.trim;
+}
+
+function formatSoundTime(ms) {
+    const seconds = Math.max(0, Number(ms) || 0) / 1000;
+    return `${seconds.toFixed(3)}s`;
+}
+
+function getSoundsAudioContext() {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtx) return null;
+    if (!soundsAudioContext) soundsAudioContext = new AudioCtx();
+    return soundsAudioContext;
+}
+
+function updateSoundTrimOverlay() {
+    const trim = getSelectedSoundTrim();
+    const duration = Math.max(0, Number(trim.durationMs) || 0);
+    const startPct = duration > 0 ? Math.max(0, Math.min(100, (trim.startMs / duration) * 100)) : 0;
+    const endPct = duration > 0 ? Math.max(startPct, Math.min(100, ((trim.endMs || duration) / duration) * 100)) : 100;
+    if (soundsUI.waveformSelection) {
+        soundsUI.waveformSelection.style.left = `${startPct}%`;
+        soundsUI.waveformSelection.style.width = `${Math.max(0, endPct - startPct)}%`;
+    }
+    if (soundsUI.trimStartHandle) soundsUI.trimStartHandle.style.left = `${startPct}%`;
+    if (soundsUI.trimEndHandle) soundsUI.trimEndHandle.style.left = `${endPct}%`;
+    if (soundsUI.trimRange) {
+        soundsUI.trimRange.textContent = duration > 0
+            ? `${formatSoundTime(trim.startMs)} - ${formatSoundTime(trim.endMs || duration)}`
+            : "0.000s - 0.000s";
+    }
+    if (soundsUI.waveformWrap) soundsUI.waveformWrap.classList.toggle("disabled", duration <= 0);
+}
+
+function drawSoundWaveform(buffer) {
+    const canvas = soundsUI.waveformCanvas;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const width = Math.max(1, Math.floor(rect.width || canvas.width || 640));
+    const height = Math.max(1, Math.floor(rect.height || canvas.height || 128));
+    if (canvas.width !== width) canvas.width = width;
+    if (canvas.height !== height) canvas.height = height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.clearRect(0, 0, width, height);
+    ctx.fillStyle = "#111";
+    ctx.fillRect(0, 0, width, height);
+    if (!buffer) {
+        ctx.strokeStyle = "#2c2c2c";
+        ctx.beginPath();
+        ctx.moveTo(0, height / 2);
+        ctx.lineTo(width, height / 2);
+        ctx.stroke();
+        updateSoundTrimOverlay();
+        return;
+    }
+    const channels = Math.max(1, buffer.numberOfChannels || 1);
+    const samples = buffer.getChannelData(0);
+    const step = Math.max(1, Math.floor(samples.length / width));
+    const amp = height / 2;
+    ctx.strokeStyle = "#6ea0ff";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let x = 0; x < width; x += 1) {
+        let min = 1;
+        let max = -1;
+        const start = x * step;
+        const end = Math.min(samples.length, start + step);
+        for (let i = start; i < end; i += 1) {
+            let value = 0;
+            for (let c = 0; c < channels; c += 1) {
+                value += buffer.getChannelData(c)[i] || 0;
+            }
+            value /= channels;
+            if (value < min) min = value;
+            if (value > max) max = value;
+        }
+        ctx.moveTo(x + 0.5, (1 + min) * amp);
+        ctx.lineTo(x + 0.5, (1 + max) * amp);
+    }
+    ctx.stroke();
+    updateSoundTrimOverlay();
+}
+
+async function loadSelectedSoundWaveform() {
+    const selected = getSelectedSoundEntry();
+    const token = ++soundsWaveformLoadToken;
+    soundsWaveformBuffer = null;
+    drawSoundWaveform(null);
+    if (!selected?.path) {
+        if (soundsUI.waveformStatus) soundsUI.waveformStatus.textContent = "Select a sound to edit its active range.";
+        return;
+    }
+    const ctx = getSoundsAudioContext();
+    if (!ctx) {
+        if (soundsUI.waveformStatus) soundsUI.waveformStatus.textContent = "Waveform is not supported in this browser.";
+        return;
+    }
+    if (soundsUI.waveformStatus) soundsUI.waveformStatus.textContent = "Loading waveform...";
+    try {
+        const res = await fetch(selected.path, { cache: "no-store" });
+        const data = await res.arrayBuffer();
+        const buffer = await ctx.decodeAudioData(data.slice(0));
+        if (token !== soundsWaveformLoadToken) return;
+        soundsWaveformBuffer = buffer;
+        const durationMs = Math.max(1, Math.round((buffer.duration || 0) * 1000));
+        selected.trim = normalizeSoundTrim(selected.trim || {}, durationMs);
+        drawSoundWaveform(buffer);
+        if (soundsUI.waveformStatus) soundsUI.waveformStatus.textContent = "Drag start or end to define the active sound range.";
+        scheduleSoundTrimSave();
+    } catch (err) {
+        if (token !== soundsWaveformLoadToken) return;
+        drawSoundWaveform(null);
+        if (soundsUI.waveformStatus) soundsUI.waveformStatus.textContent = "Could not load waveform for this file.";
+    }
+}
+
+function setSoundTrimFromPointer(event, mode) {
+    const selected = getSelectedSoundEntry();
+    const wrap = soundsUI.waveformWrap;
+    if (!selected || !wrap) return;
+    const duration = Math.max(0, Number(selected.trim?.durationMs) || 0);
+    if (duration <= 0) return;
+    const rect = wrap.getBoundingClientRect();
+    const ratio = Math.max(0, Math.min(1, ((event.clientX || 0) - rect.left) / Math.max(1, rect.width)));
+    const value = Math.round(ratio * duration);
+    const current = normalizeSoundTrim(selected.trim || {}, duration);
+    if (mode === "start") {
+        current.startMs = Math.min(value, current.endMs || duration);
+    } else {
+        current.endMs = Math.max(value, current.startMs);
+    }
+    selected.trim = normalizeSoundTrim(current, duration);
+    updateSoundTrimOverlay();
+    scheduleSoundTrimSave();
+}
+
+function scheduleSoundTrimSave() {
+    if (soundsTrimSaveTimer) clearTimeout(soundsTrimSaveTimer);
+    soundsTrimSaveTimer = setTimeout(async () => {
+        soundsTrimSaveTimer = null;
+        const selected = getSelectedSoundEntry();
+        if (!selected?.name) return;
+        const trim = normalizeSoundTrim(selected.trim || {}, selected.trim?.durationMs || 0);
+        try {
+            const res = await fetch(`/api/sounds/trim?name=${encodeURIComponent(selected.name)}`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(trim)
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok || data.success === false) throw new Error(data.error || "Could not save trim");
+            selected.trim = normalizeSoundTrim(data.trim || trim, trim.durationMs);
+        } catch (err) {
+            setSoundsUploadStatus(err?.message || "Could not save sound trim.", true);
+        }
+    }, 250);
+}
+
 function stopSoundPreview() {
     if (!soundsActiveAudio) return;
     try {
@@ -1299,6 +1492,7 @@ function stopSoundPreview() {
 
 function setSelectedSound(name, options = {}) {
     const rerenderList = options.rerenderList !== false;
+    const loadWaveform = options.loadWaveform !== false;
     selectedSoundName = name ? String(name) : null;
     if (rerenderList) {
         renderSoundsList();
@@ -1310,6 +1504,7 @@ function setSelectedSound(name, options = {}) {
         });
     }
     renderSoundDetails();
+    if (loadWaveform) loadSelectedSoundWaveform();
 }
 
 function renderSoundDetails() {
@@ -1325,6 +1520,7 @@ function renderSoundDetails() {
         soundsUI.volumeValue.textContent = `${volume}%`;
     }
     if (soundsUI.testBtn) soundsUI.testBtn.disabled = !selected;
+    updateSoundTrimOverlay();
 }
 
 function setSoundsUploadStatus(message, isError = false) {
@@ -1361,7 +1557,8 @@ async function testSelectedSound() {
     if (!selected?.name) return;
     const queryName = encodeURIComponent(selected.name);
     const volume = getSoundVolumePercent(selected.name);
-    const url = `/api/sounds/test?name=${queryName}&volume=${volume}`;
+    const trim = normalizeSoundTrim(selected.trim || {}, selected.trim?.durationMs || 0);
+    const url = `/api/sounds/test?name=${queryName}&volume=${volume}&startMs=${trim.startMs}&endMs=${trim.endMs}&durationMs=${trim.durationMs}`;
     try {
         const res = await fetch(url, { method: "POST" });
         const data = await res.json().catch(() => ({}));
@@ -1501,9 +1698,12 @@ function renderSoundsList() {
                     const renamed = await renameSound(currentName, nextName);
                     if (selectedSoundName === currentName) selectedSoundName = renamed;
                     const oldVolume = getSoundVolumePercent(currentName);
+                    const oldTrim = normalizeSoundTrim(sound.trim || {}, sound.trim?.durationMs || 0);
                     soundVolumeByName.delete(currentName);
                     soundVolumeByName.set(renamed, oldVolume);
                     await loadSoundsList({ silent: true });
+                    const renamedEntry = soundsListCache.find((entry) => entry.name === renamed);
+                    if (renamedEntry && oldTrim.durationMs) renamedEntry.trim = oldTrim;
                     setSoundsUploadStatus(`Renamed to ${renamed}`);
                 } catch (err) {
                     name.textContent = currentName;
@@ -1559,7 +1759,8 @@ async function loadSoundsList(options = {}) {
                 name: String(entry?.name || "").trim(),
                 size: Number(entry?.size || 0),
                 modifiedAt: Number(entry?.modifiedAt || 0),
-                path: String(entry?.path || "")
+                path: String(entry?.path || ""),
+                trim: normalizeSoundTrim(entry?.trim || {}, entry?.trim?.durationMs || 0)
             }))
             .filter((entry) => entry.name)
             .sort((a, b) => {
@@ -1578,6 +1779,7 @@ async function loadSoundsList(options = {}) {
 
         renderSoundsList();
         renderSoundDetails();
+        loadSelectedSoundWaveform();
         if (!silent) {
             const count = soundsListCache.length;
             setSoundsUploadStatus(count ? `${count} sound${count === 1 ? "" : "s"} loaded.` : "No sounds uploaded yet.");
@@ -1680,6 +1882,41 @@ soundsUI.volumeSlider?.addEventListener("input", () => {
 });
 soundsUI.testBtn?.addEventListener("click", () => {
     testSelectedSound();
+});
+soundsUI.trimStartHandle?.addEventListener("pointerdown", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    soundsTrimDragMode = "start";
+    soundsUI.trimStartHandle.setPointerCapture?.(event.pointerId);
+});
+soundsUI.trimEndHandle?.addEventListener("pointerdown", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    soundsTrimDragMode = "end";
+    soundsUI.trimEndHandle.setPointerCapture?.(event.pointerId);
+});
+soundsUI.waveformWrap?.addEventListener("pointerdown", (event) => {
+    if (event.target === soundsUI.trimStartHandle || event.target === soundsUI.trimEndHandle) return;
+    const selected = getSelectedSoundEntry();
+    if (!selected?.trim?.durationMs) return;
+    const trim = getSelectedSoundTrim();
+    const rect = soundsUI.waveformWrap.getBoundingClientRect();
+    const ratio = Math.max(0, Math.min(1, ((event.clientX || 0) - rect.left) / Math.max(1, rect.width)));
+    const value = Math.round(ratio * trim.durationMs);
+    const distStart = Math.abs(value - trim.startMs);
+    const distEnd = Math.abs(value - (trim.endMs || trim.durationMs));
+    soundsTrimDragMode = distStart <= distEnd ? "start" : "end";
+    setSoundTrimFromPointer(event, soundsTrimDragMode);
+});
+window.addEventListener("pointermove", (event) => {
+    if (!soundsTrimDragMode) return;
+    setSoundTrimFromPointer(event, soundsTrimDragMode);
+});
+window.addEventListener("pointerup", () => {
+    soundsTrimDragMode = null;
+});
+window.addEventListener("resize", () => {
+    if (soundsUI.overlay?.style.display === "flex") drawSoundWaveform(soundsWaveformBuffer);
 });
 
 

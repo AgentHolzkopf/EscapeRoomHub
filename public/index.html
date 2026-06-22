@@ -137,6 +137,14 @@
                     </div>
                     <div class="settings-sub" id="autostart-status"></div>
                 </div>
+                <div class="settings-section">
+                    <div class="settings-title">Service Control</div>
+                    <div class="settings-sub">Restart hub, MQTT, Zigbee, DMX/OLA, and sound setup. The page will disconnect briefly.</div>
+                    <div class="settings-field">
+                        <button class="btn-secondary" id="restart-all-services-btn" type="button">Restart all services</button>
+                    </div>
+                    <div class="settings-sub" id="restart-all-services-status"></div>
+                </div>
             </div>
         </div>
     </div>
@@ -328,6 +336,19 @@
                             <input type="range" id="sounds-volume-slider" min="0" max="100" step="1" value="100">
                             <span id="sounds-volume-value">100%</span>
                             <button type="button" id="sounds-test-btn" class="btn-secondary">Test</button>
+                        </div>
+                        <div class="sounds-trim-panel">
+                            <div class="sounds-trim-header">
+                                <span>Trim</span>
+                                <span id="sounds-trim-range">0.000s - 0.000s</span>
+                            </div>
+                            <div id="sounds-waveform-wrap" class="sounds-waveform-wrap">
+                                <canvas id="sounds-waveform-canvas" width="640" height="128"></canvas>
+                                <div id="sounds-waveform-selection" class="sounds-waveform-selection"></div>
+                                <div id="sounds-trim-start-handle" class="sounds-trim-handle start" title="Trim start"></div>
+                                <div id="sounds-trim-end-handle" class="sounds-trim-handle end" title="Trim end"></div>
+                            </div>
+                            <div id="sounds-waveform-status" class="sounds-waveform-status">Select a sound to edit its active range.</div>
                         </div>
                     </div>
                 </div>
@@ -786,6 +807,8 @@
             const zigbeeBridgeToggle = document.getElementById('zigbee-bridge-toggle');
             const zigbeeBridgeStatus = document.getElementById('zigbee-bridge-status');
             const soundOutputStatus = document.getElementById('sound-output-status');
+            const restartAllServicesBtn = document.getElementById('restart-all-services-btn');
+            const restartAllServicesStatus = document.getElementById('restart-all-services-status');
             let systemSettings = {
                 screenSaverImage: null,
                 victoryScreen: null,
@@ -1209,6 +1232,29 @@
                 }
             }
 
+            async function restartAllServices() {
+                if (!restartAllServicesBtn) return;
+                const confirmed = confirm('Restart all services now? The hub page will disconnect briefly.');
+                if (!confirmed) return;
+                restartAllServicesBtn.disabled = true;
+                if (restartAllServicesStatus) restartAllServicesStatus.textContent = 'Restart scheduled...';
+                try {
+                    const res = await fetch('/api/system/restart-all-services', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({})
+                    });
+                    const data = await res.json().catch(() => ({}));
+                    if (!res.ok || data.success === false) throw new Error(data.error || 'Restart failed');
+                    if (restartAllServicesStatus) restartAllServicesStatus.textContent = 'Restarting services. Reconnect in a few seconds...';
+                    setTimeout(() => window.location.reload(), 8000);
+                } catch (err) {
+                    restartAllServicesBtn.disabled = false;
+                    if (restartAllServicesStatus) restartAllServicesStatus.textContent = 'Restart failed';
+                    alert('Restart all services failed: ' + err.message);
+                }
+            }
+
             startBtn.addEventListener('click', function () {
                 preflightStart();
             });
@@ -1242,6 +1288,7 @@
             autostartToggle?.addEventListener('change', persistAutostartSetting);
             dmxServiceToggle?.addEventListener('change', persistDmxServiceSetting);
             zigbeeBridgeToggle?.addEventListener('change', persistZigbeeBridgeSetting);
+            restartAllServicesBtn?.addEventListener('click', restartAllServices);
 
             pollRoomStatus();
             connectRuntimeEvents();

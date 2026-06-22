@@ -11,6 +11,7 @@ const ROOT_DIR = path.resolve(__dirname, '..');
 const PUBLIC_DIR = path.join(ROOT_DIR, 'public');
 const MEDIA_DIR = path.join(ROOT_DIR, 'MediaStorage');
 const SOUNDS_DIR = path.join(ROOT_DIR, 'SoundStorage');
+const SOUNDS_META_PATH = path.join(SOUNDS_DIR, '.sound-metadata.json');
 
 // Engine modules live outside /Server but dependencies are installed in /Server/node_modules.
 const SERVER_NODE_MODULES = path.join(__dirname, 'node_modules');
@@ -83,6 +84,52 @@ function sanitizeSoundName(name) {
     const safeExt = parsed.ext.replace(/[^a-z0-9.]/gi, '').slice(0, 12);
     if (!safeBase) return null;
     return `${safeBase}${safeExt}`;
+}
+
+function loadSoundMetadata() {
+    try {
+        ensureSoundsStorage();
+        if (!fs.existsSync(SOUNDS_META_PATH)) return {};
+        const parsed = JSON.parse(fs.readFileSync(SOUNDS_META_PATH, 'utf8'));
+        return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch (err) {
+        return {};
+    }
+}
+
+function saveSoundMetadata(metadata) {
+    ensureSoundsStorage();
+    fs.writeFileSync(SOUNDS_META_PATH, JSON.stringify(metadata || {}, null, 2));
+}
+
+function normalizeSoundTrim(trim) {
+    const startMs = Math.max(0, Math.floor(Number(trim?.startMs) || 0));
+    const rawEnd = Number(trim?.endMs);
+    const rawDuration = Number(trim?.durationMs);
+    const durationMs = Number.isFinite(rawDuration) && rawDuration > 0 ? Math.floor(rawDuration) : 0;
+    let endMs = Number.isFinite(rawEnd) && rawEnd > 0 ? Math.floor(rawEnd) : 0;
+    if (durationMs > 0) endMs = endMs > 0 ? Math.min(endMs, durationMs) : durationMs;
+    if (endMs > 0 && endMs < startMs) endMs = startMs;
+    return { startMs, endMs, durationMs };
+}
+
+function getSoundTrim(name) {
+    const safeName = sanitizeSoundName(name);
+    if (!safeName) return { startMs: 0, endMs: 0, durationMs: 0 };
+    const metadata = loadSoundMetadata();
+    return normalizeSoundTrim(metadata[safeName]?.trim || {});
+}
+
+function setSoundTrim(name, trim) {
+    const safeName = sanitizeSoundName(name);
+    if (!safeName) return null;
+    const metadata = loadSoundMetadata();
+    metadata[safeName] = {
+        ...(metadata[safeName] || {}),
+        trim: normalizeSoundTrim(trim)
+    };
+    saveSoundMetadata(metadata);
+    return metadata[safeName].trim;
 }
 
 let activeSoundTestProcess = null;
@@ -179,18 +226,37 @@ function trySpawnSoundPlayer(cmd, args) {
     });
 }
 
-async function playSoundTestOnPi(filePath, volumePercent) {
-    await ensureSystemAudioMax();
+function buildTrimmedSoundCandidates(filePath, volumePercent, trim = {}) {
     const vol = clampSoundVolumePercent(volumePercent);
     const paplayVolume = Math.round((vol / 100) * 65536);
     const mpg123Scale = Math.max(0, Math.min(32768, Math.round((vol / 100) * 32768)));
-    const baseCandidates = [
-        { cmd: 'ffplay', args: ['-nodisp', '-autoexit', '-loglevel', 'quiet', '-volume', String(vol), filePath] },
-        { cmd: 'paplay', args: [`--volume=${paplayVolume}`, filePath] },
-        { cmd: 'mpv', args: ['--no-video', '--really-quiet', `--volume=${vol}`, filePath] },
-        { cmd: 'mpg123', args: ['-q', '-f', String(mpg123Scale), filePath] },
-        { cmd: 'aplay', args: [filePath] }
+    const normalizedTrim = normalizeSoundTrim(trim);
+    const startSec = normalizedTrim.startMs > 0 ? (normalizedTrim.startMs / 1000).toFixed(3) : null;
+    const lengthMs = normalizedTrim.endMs > normalizedTrim.startMs ? normalizedTrim.endMs - normalizedTrim.startMs : 0;
+    const lengthSec = lengthMs > 0 ? (lengthMs / 1000).toFixed(3) : null;
+    const ffplayArgs = ['-nodisp', '-autoexit', '-loglevel', 'quiet', '-volume', String(vol)];
+    if (startSec) ffplayArgs.push('-ss', startSec);
+    if (lengthSec) ffplayArgs.push('-t', lengthSec);
+    ffplayArgs.push(filePath);
+    const mpvArgs = ['--no-video', '--really-quiet', `--volume=${vol}`];
+    if (startSec) mpvArgs.push(`--start=${startSec}`);
+    if (lengthSec) mpvArgs.push(`--length=${lengthSec}`);
+    mpvArgs.push(filePath);
+    return [
+        { cmd: 'ffplay', args: ffplayArgs },
+        { cmd: 'mpv', args: mpvArgs },
+        // The remaining players do not support reliable start/end trimming; they are fallbacks for untrimmed playback.
+        ...((normalizedTrim.startMs || lengthSec) ? [] : [
+            { cmd: 'paplay', args: [`--volume=${paplayVolume}`, filePath] },
+            { cmd: 'mpg123', args: ['-q', '-f', String(mpg123Scale), filePath] },
+            { cmd: 'aplay', args: [filePath] }
+        ])
     ];
+}
+
+async function playSoundTestOnPi(filePath, volumePercent, trim = {}) {
+    await ensureSystemAudioMax();
+    const baseCandidates = buildTrimmedSoundCandidates(filePath, volumePercent, trim);
     const candidates = preferredSoundPlayer
         ? [
             ...baseCandidates.filter((c) => c.cmd === preferredSoundPlayer),
@@ -213,8 +279,10 @@ async function playSoundTestOnPi(filePath, volumePercent) {
 app.get('/api/sounds/list', (req, res) => {
     try {
         ensureSoundsStorage();
+        const metadata = loadSoundMetadata();
         const files = fs.readdirSync(SOUNDS_DIR)
             .map((name) => {
+                if (name.startsWith('.')) return null;
                 const abs = path.join(SOUNDS_DIR, name);
                 const stat = fs.statSync(abs);
                 if (!stat.isFile()) return null;
@@ -222,7 +290,8 @@ app.get('/api/sounds/list', (req, res) => {
                     name,
                     size: stat.size,
                     modifiedAt: stat.mtimeMs,
-                    path: `/sounds/${encodeURIComponent(name)}`
+                    path: `/sounds/${encodeURIComponent(name)}`,
+                    trim: normalizeSoundTrim(metadata[name]?.trim || {})
                 };
             })
             .filter(Boolean)
@@ -308,6 +377,11 @@ app.post('/api/sounds/delete', (req, res) => {
     }
     try {
         fs.unlinkSync(targetPath);
+        const metadata = loadSoundMetadata();
+        if (metadata[safeName]) {
+            delete metadata[safeName];
+            saveSoundMetadata(metadata);
+        }
         return res.json({ success: true, name: safeName });
     } catch (err) {
         return res.status(500).json({ success: false, error: 'Could not delete sound' });
@@ -338,9 +412,41 @@ app.post('/api/sounds/rename', (req, res) => {
     }
     try {
         fs.renameSync(oldPath, newPath);
+        const metadata = loadSoundMetadata();
+        if (metadata[oldName]) {
+            metadata[newName] = metadata[oldName];
+            delete metadata[oldName];
+            saveSoundMetadata(metadata);
+        }
         return res.json({ success: true, name: newName, oldName });
     } catch (err) {
         return res.status(500).json({ success: false, error: 'Could not rename sound' });
+    }
+});
+
+app.post('/api/sounds/trim', bodyParser.json({ limit: '32kb' }), (req, res) => {
+    try {
+        ensureSoundsStorage();
+    } catch (err) {
+        return res.status(500).json({ success: false, error: 'Sound storage unavailable' });
+    }
+    const safeName = sanitizeSoundName(req.query?.name || req.body?.name);
+    if (!safeName) {
+        return res.status(400).json({ success: false, error: 'Missing or invalid sound name' });
+    }
+    const targetPath = path.join(SOUNDS_DIR, safeName);
+    if (!fs.existsSync(targetPath)) {
+        return res.status(404).json({ success: false, error: 'Sound not found' });
+    }
+    try {
+        const trim = setSoundTrim(safeName, {
+            startMs: req.body?.startMs,
+            endMs: req.body?.endMs,
+            durationMs: req.body?.durationMs
+        });
+        return res.json({ success: true, name: safeName, trim });
+    } catch (err) {
+        return res.status(500).json({ success: false, error: 'Could not save sound trim' });
     }
 });
 
@@ -361,7 +467,14 @@ app.post('/api/sounds/test', async (req, res) => {
 
     stopActiveSoundTestProcess();
     const volume = clampSoundVolumePercent(req.query?.volume);
-    const result = await playSoundTestOnPi(targetPath, volume);
+    const savedTrim = getSoundTrim(safeName);
+    const trim = normalizeSoundTrim({
+        ...savedTrim,
+        startMs: req.query?.startMs ?? savedTrim.startMs,
+        endMs: req.query?.endMs ?? savedTrim.endMs,
+        durationMs: req.query?.durationMs ?? savedTrim.durationMs
+    });
+    const result = await playSoundTestOnPi(targetPath, volume, trim);
     if (!result.ok) {
         return res.status(500).json({ success: false, error: `Could not play sound (${result.error || 'unknown'})` });
     }

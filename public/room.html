@@ -686,6 +686,14 @@
                     <div class="settings-sub">Selected audio playback device.</div>
                     <div class="settings-sub" id="sound-output-status">Unknown</div>
                 </div>
+                <div class="settings-section">
+                    <div class="settings-title">Service Control</div>
+                    <div class="settings-sub">Restart hub, MQTT, Zigbee, DMX/OLA, and sound setup. The page will disconnect briefly.</div>
+                    <div class="settings-field">
+                        <button class="monitor-btn" id="restart-all-services-btn" type="button">Restart all services</button>
+                    </div>
+                    <div class="settings-sub" id="restart-all-services-status"></div>
+                </div>
             </div>
         </div>
     </div>
@@ -780,6 +788,8 @@
         const dmxServiceToggle = document.getElementById('dmx-service-toggle');
         const dmxServiceStatus = document.getElementById('dmx-service-status');
         const soundOutputStatus = document.getElementById('sound-output-status');
+        const restartAllServicesBtn = document.getElementById('restart-all-services-btn');
+        const restartAllServicesStatus = document.getElementById('restart-all-services-status');
         let systemSettings = {
             screenSaverImage: null,
             victoryScreen: null,
@@ -1425,6 +1435,29 @@
                 if (dmxServiceToggle && systemSettings.dmxServiceAvailable !== false) {
                     dmxServiceToggle.disabled = false;
                 }
+            }
+        }
+
+        async function restartAllServices() {
+            if (!restartAllServicesBtn) return;
+            const confirmed = confirm('Restart all services now? The hub page will disconnect briefly.');
+            if (!confirmed) return;
+            restartAllServicesBtn.disabled = true;
+            if (restartAllServicesStatus) restartAllServicesStatus.textContent = 'Restart scheduled...';
+            try {
+                const res = await fetch('/api/system/restart-all-services', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({})
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok || data.success === false) throw new Error(data.error || 'Restart failed');
+                if (restartAllServicesStatus) restartAllServicesStatus.textContent = 'Restarting services. Reconnect in a few seconds...';
+                setTimeout(() => window.location.reload(), 8000);
+            } catch (err) {
+                restartAllServicesBtn.disabled = false;
+                if (restartAllServicesStatus) restartAllServicesStatus.textContent = 'Restart failed';
+                alert('Restart all services failed: ' + err.message);
             }
         }
 
@@ -2192,6 +2225,7 @@
             victoryInput?.addEventListener('change', ()=> uploadVictoryScreen(victoryInput.files[0]));
             mediaServerToggle?.addEventListener('change', persistMediaServerSetting);
             dmxServiceToggle?.addEventListener('change', persistDmxServiceSetting);
+            restartAllServicesBtn?.addEventListener('click', restartAllServices);
         }
         hintModalCancel.addEventListener('click', closeHintModal);
         hintModal.addEventListener('click', (e)=>{ if (e.target === hintModal) e.stopPropagation(); });

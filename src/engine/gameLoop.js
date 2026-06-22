@@ -94,6 +94,7 @@ const DMX_SERVICE_NAME = 'olad.service';
 const UPLOAD_DIR = path.join(__dirname, '../../public/uploads');
 const MEDIA_DIR = path.join(__dirname, '../../MediaStorage');
 const SOUNDS_DIR = path.join(__dirname, '../../SoundStorage');
+const SOUNDS_META_PATH = path.join(SOUNDS_DIR, '.sound-metadata.json');
 const DMX_ADAPTER_CACHE_MS = 10000;
 const DMX_KEYWORDS = ['dmx', 'enttec', 'dmxking', 'ultradmx', 'opendmx', 'eurolite', 'daslight', 'sunlite', 'mydmx'];
 const ZIGBEE_ADAPTER_CACHE_MS = 3000;
@@ -2201,6 +2202,29 @@ function resolveSoundCueFilePath(soundName) {
     }
 }
 
+function normalizeSoundCueTrim(trim) {
+    const startMs = Math.max(0, Math.floor(Number(trim?.startMs) || 0));
+    const rawEnd = Number(trim?.endMs);
+    const rawDuration = Number(trim?.durationMs);
+    const durationMs = Number.isFinite(rawDuration) && rawDuration > 0 ? Math.floor(rawDuration) : 0;
+    let endMs = Number.isFinite(rawEnd) && rawEnd > 0 ? Math.floor(rawEnd) : 0;
+    if (durationMs > 0) endMs = endMs > 0 ? Math.min(endMs, durationMs) : durationMs;
+    if (endMs > 0 && endMs < startMs) endMs = startMs;
+    return { startMs, endMs, durationMs };
+}
+
+function getSoundCueTrim(soundName) {
+    const safeName = sanitizeSoundCueName(soundName);
+    if (!safeName) return { startMs: 0, endMs: 0, durationMs: 0 };
+    try {
+        if (!fs.existsSync(SOUNDS_META_PATH)) return { startMs: 0, endMs: 0, durationMs: 0 };
+        const parsed = JSON.parse(fs.readFileSync(SOUNDS_META_PATH, 'utf8'));
+        return normalizeSoundCueTrim(parsed?.[safeName]?.trim || {});
+    } catch (e) {
+        return { startMs: 0, endMs: 0, durationMs: 0 };
+    }
+}
+
 function clampSoundVolumePercent(value) {
     const parsed = parseInt(value, 10);
     if (!Number.isFinite(parsed)) return 100;
@@ -2303,7 +2327,7 @@ async function processSoundCueQueue() {
             stopAllSoundCuePlayback();
             // Give ALSA/pulseaudio a brief moment to release the previous process.
             await waitMs(70);
-            const result = await playSoundCueOnPi(request.filePath, request.volume || 100);
+            const result = await playSoundCueOnPi(request.filePath, request.volume || 100, request.trim || {});
             if (result?.success) {
                 logSystem(
                     `Sound Cue played: ${request.rawName} (${request.triggerType})`,
@@ -2319,17 +2343,31 @@ async function processSoundCueQueue() {
     }
 }
 
-async function playSoundCueOnPi(filePath, volumePercent = 100) {
+async function playSoundCueOnPi(filePath, volumePercent = 100, trim = {}) {
     await ensureSoundSystemMixerMax();
     const vol = clampSoundVolumePercent(volumePercent);
     const paplayVolume = Math.round((vol / 100) * 65536);
     const mpg123Scale = Math.max(0, Math.min(32768, Math.round((vol / 100) * 32768)));
+    const normalizedTrim = normalizeSoundCueTrim(trim);
+    const startSec = normalizedTrim.startMs > 0 ? (normalizedTrim.startMs / 1000).toFixed(3) : null;
+    const lengthMs = normalizedTrim.endMs > normalizedTrim.startMs ? normalizedTrim.endMs - normalizedTrim.startMs : 0;
+    const lengthSec = lengthMs > 0 ? (lengthMs / 1000).toFixed(3) : null;
+    const ffplayArgs = ['-nodisp', '-autoexit', '-loglevel', 'quiet', '-volume', String(vol)];
+    if (startSec) ffplayArgs.push('-ss', startSec);
+    if (lengthSec) ffplayArgs.push('-t', lengthSec);
+    ffplayArgs.push(filePath);
+    const mpvArgs = ['--no-video', '--really-quiet', `--volume=${vol}`];
+    if (startSec) mpvArgs.push(`--start=${startSec}`);
+    if (lengthSec) mpvArgs.push(`--length=${lengthSec}`);
+    mpvArgs.push(filePath);
     const baseCandidates = [
-        { cmd: 'ffplay', args: ['-nodisp', '-autoexit', '-loglevel', 'quiet', '-volume', String(vol), filePath] },
-        { cmd: 'paplay', args: [`--volume=${paplayVolume}`, filePath] },
-        { cmd: 'mpv', args: ['--no-video', '--really-quiet', `--volume=${vol}`, filePath] },
-        { cmd: 'mpg123', args: ['-q', '-f', String(mpg123Scale), filePath] },
-        { cmd: 'aplay', args: [filePath] }
+        { cmd: 'ffplay', args: ffplayArgs },
+        { cmd: 'mpv', args: mpvArgs },
+        ...((normalizedTrim.startMs || lengthSec) ? [] : [
+            { cmd: 'paplay', args: [`--volume=${paplayVolume}`, filePath] },
+            { cmd: 'mpg123', args: ['-q', '-f', String(mpg123Scale), filePath] },
+            { cmd: 'aplay', args: [filePath] }
+        ])
     ];
     const candidates = preferredSoundCuePlayer
         ? [
@@ -2361,7 +2399,7 @@ function runSoundCueAction(soundName, context = {}) {
         return { success: false, error: 'sound-not-found' };
     }
     const triggerType = String(context?.triggerType || 'event');
-    soundCuePendingRequest = { rawName, filePath, triggerType, volume: 100 };
+    soundCuePendingRequest = { rawName, filePath, triggerType, volume: 100, trim: getSoundCueTrim(rawName) };
     processSoundCueQueue().catch((err) => {
         logSystem(`Sound Cue worker failed: ${err?.message || 'unknown-error'}`, 'error');
     });
@@ -3705,13 +3743,22 @@ function isLinuxSystem() {
     return process.platform === 'linux';
 }
 
+function getSystemctlSpawnArgs(args) {
+    const normalizedArgs = Array.isArray(args) ? args : [];
+    if (typeof process.getuid === 'function' && process.getuid() !== 0) {
+        return { command: 'sudo', args: ['-n', 'systemctl', ...normalizedArgs] };
+    }
+    return { command: 'systemctl', args: normalizedArgs };
+}
+
 function runSystemctlAsync(args) {
     return new Promise((resolve, reject) => {
         let stdout = '';
         let stderr = '';
         let child = null;
         try {
-            child = spawn('systemctl', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+            const spawnArgs = getSystemctlSpawnArgs(args);
+            child = spawn(spawnArgs.command, spawnArgs.args, { stdio: ['ignore', 'pipe', 'pipe'] });
         } catch (err) {
             reject(err);
             return;
@@ -3960,6 +4007,65 @@ async function reconcileManagedServiceStateOnStartup() {
         }
     } catch (err) {
         logSystem(`DMX Service startup reconcile failed: ${err?.message || err}`, 'warn');
+    }
+}
+
+async function restartAllManagedServices() {
+    if (!isLinuxSystem()) {
+        return { success: false, error: 'Service restart is only supported on Linux.' };
+    }
+    try {
+        try {
+            await ensureSoundSystemMixerMax();
+        } catch (err) {
+            // Mixer setup is best-effort; service restart should still proceed.
+        }
+
+        const serviceNames = ['mosquitto.service', 'zigbee2mqtt.service', 'olad.service'];
+        const results = [];
+
+        for (const serviceName of serviceNames) {
+            const loadRes = await querySystemctlAsync(['show', serviceName, '--property=LoadState', '--value']);
+            const loadState = String(loadRes.output || '').trim();
+            if (loadState === 'not-found' || !loadState) {
+                results.push({ service: serviceName, skipped: true, reason: 'not-installed' });
+                continue;
+            }
+            try {
+                await runSystemctlAsync(['restart', serviceName]);
+                results.push({ service: serviceName, restarted: true });
+            } catch (err) {
+                results.push({ service: serviceName, restarted: false, error: err?.message || 'restart failed' });
+            }
+        }
+
+        const failed = results.filter((entry) => entry.restarted === false);
+        if (failed.length) {
+            const details = failed.map((entry) => `${entry.service}: ${entry.error}`).join('; ');
+            logSystem(`Restart all services failed before hub restart: ${details}`, 'error');
+            return { success: false, error: `One or more services could not be restarted: ${details}`, results };
+        }
+
+        const restartHubCommand = (typeof process.getuid === 'function' && process.getuid() !== 0)
+            ? 'sudo -n systemctl restart md2-hub.service'
+            : 'systemctl restart md2-hub.service';
+        const script = `sleep 1; ${restartHubCommand}`;
+        const child = spawn('sh', ['-c', script], {
+            detached: true,
+            stdio: 'ignore'
+        });
+        child.unref();
+        logSystem('Restart all services requested. Hub restart scheduled.', 'warn');
+        return {
+            success: true,
+            scheduled: true,
+            results,
+            services: [...serviceNames, 'md2-hub.service']
+        };
+    } catch (err) {
+        const message = err?.message || 'Could not schedule service restart.';
+        logSystem(`Restart all services failed: ${message}`, 'error');
+        return { success: false, error: message };
     }
 }
 
@@ -6860,6 +6966,7 @@ module.exports = {
     setAutostartEnabled,
     setZigbeeBridgeEnabled,
     setDmxServiceEnabled,
+    restartAllManagedServices,
     setScreenSaverImage,
     setVictoryScreen,
     getHintsForScreen: (screenKey) => {
