@@ -4,12 +4,18 @@ const bodyParser = require('body-parser');
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
+const Module = require('module');
 
 // Base paths so imports still work after moving this file into /Server
 const ROOT_DIR = path.resolve(__dirname, '..');
 const PUBLIC_DIR = path.join(ROOT_DIR, 'public');
 const MEDIA_DIR = path.join(ROOT_DIR, 'MediaStorage');
 const SOUNDS_DIR = path.join(ROOT_DIR, 'SoundStorage');
+
+// Engine modules live outside /Server but dependencies are installed in /Server/node_modules.
+const SERVER_NODE_MODULES = path.join(__dirname, 'node_modules');
+process.env.NODE_PATH = [SERVER_NODE_MODULES, process.env.NODE_PATH].filter(Boolean).join(path.delimiter);
+Module._initPaths();
 
 function ensureMediaStorage() {
     if (!fs.existsSync(MEDIA_DIR)) {

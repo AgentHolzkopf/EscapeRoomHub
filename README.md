@@ -91,18 +91,114 @@ Required components:
 
 ---
 
-## Starting the Application
+## Installation on Raspberry Pi
 
-Go to the server directory:
+These steps describe a fresh Raspberry Pi OS installation on a real Raspberry Pi.
+
+### Automatic Setup
+
+Clone the repository:
 
 ```bash
-cd HubRemoteEditing/Server
+git clone https://github.com/<your-user>/<your-repo>.git
+cd <your-repo>
 ```
 
-Start the server:
+If your checkout contains the `HubRemoteEditing` folder as a subdirectory, enter it:
 
 ```bash
-node server.js
+cd HubRemoteEditing
+```
+
+Run the installer:
+
+```bash
+sudo bash install.sh
+```
+
+Choose `Install core hub` in the menu.
+
+For a non-interactive install, run:
+
+```bash
+sudo bash install.sh --core
+```
+
+The installer installs system dependencies, Node.js 20 LTS, Node.js packages, Mosquitto MQTT, runtime folders, and a `md2-hub` systemd service.
+
+It also configures Mosquitto for local-network puzzle clients:
+
+```conf
+listener 1883 0.0.0.0
+allow_anonymous true
+```
+
+This is intended for a trusted local escape-room network. Do not expose this MQTT port to the public internet.
+
+After setup, open:
+
+```text
+http://<raspberry-pi-ip>
+```
+
+Useful service commands:
+
+```bash
+sudo systemctl status md2-hub --no-pager
+sudo journalctl -u md2-hub -f
+sudo systemctl restart md2-hub
+bash install.sh --doctor
+```
+
+Hardware-specific services such as Zigbee2MQTT and OLA/DMX still need device-specific configuration.
+
+### Manual Setup
+
+Install the required base packages:
+
+```bash
+sudo apt update
+sudo apt install -y git curl ca-certificates python3 make g++ build-essential
+```
+
+Install a current Node.js LTS version. This also installs `npm`:
+
+```bash
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt install -y nodejs
+```
+
+Check installed versions:
+
+```bash
+node -v
+npm -v
+```
+
+Clone the repository:
+
+```bash
+git clone https://github.com/<your-user>/<your-repo>.git
+cd <your-repo>
+```
+
+If your checkout contains the `HubRemoteEditing` folder as a subdirectory, enter it:
+
+```bash
+cd HubRemoteEditing
+```
+
+Enter the server directory and install Node.js dependencies:
+
+```bash
+cd Server
+npm install
+```
+
+Start the hub:
+
+```bash
+sudo node server.js
 ```
 
 The web interface is then available at:
@@ -118,6 +214,29 @@ http://<hub-ip>
 ```
 
 The server uses port `80` by default.
+
+If `npm` is not available, Node.js was not installed correctly. Re-run:
+
+```bash
+sudo apt install -y curl ca-certificates
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt install -y nodejs
+```
+
+Check installed versions:
+
+```bash
+node -v
+npm -v
+```
+
+For production use on the Pi, run EscapeHub as a systemd service instead of starting it manually. The service should execute:
+
+```bash
+/usr/bin/node /home/admin/md2-hub/Server/server.js
+```
+
+Adjust the path to match your installation directory.
 
 ---
 
