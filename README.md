@@ -124,6 +124,18 @@ For a non-interactive install, run:
 sudo bash install.sh --core
 ```
 
+Use `--core` for development, demos, VMs, or installations where Zigbee/DMX/audio hardware is not configured yet.
+
+For the full installer path, run:
+
+```bash
+sudo bash install.sh --full
+```
+
+At the moment `--full` installs the same automated components as `--core`. Hardware-specific setup for Zigbee2MQTT, OLA/DMX, USB rules, and audio remains manual because it depends on the connected devices and should be confirmed per installation.
+
+Use `--full` when you want the intended production install entry point and plan to add hardware setup afterwards. Use `--core` when you only need the hub server and MQTT.
+
 The installer installs system dependencies, Node.js 20 LTS, Node.js packages, Mosquitto MQTT, runtime folders, and a `md2-hub` systemd service.
 
 It also configures Mosquitto for local-network puzzle clients:

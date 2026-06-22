@@ -32,12 +32,14 @@ EscapeHub Installer
 Usage:
   sudo bash install.sh
   sudo bash install.sh --core
+  sudo bash install.sh --full
   bash install.sh --doctor
 
 Options:
   --core      Install the core hub service, Node.js, npm packages, and Mosquitto.
+  --full      Install everything currently automated. At the moment this is the
+              same as --core; hardware setup is still intentionally manual.
   --doctor    Run diagnostics only. Does not change system state.
-  --all       Same as --core for now. Hardware setup remains manual.
   --help      Show this help.
 
 Hardware-specific setup for Zigbee, DMX/OLA, and audio is intentionally not
@@ -295,7 +297,7 @@ EOF
 
 case "${1:-}" in
   --core) install_core ;;
-  --all) install_core ;;
+  --full) install_core ;;
   --doctor) run_doctor ;;
   --help|-h) print_help ;;
   "") run_menu ;;
