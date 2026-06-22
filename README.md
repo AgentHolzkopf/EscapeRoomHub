@@ -101,7 +101,7 @@ Clone the repository:
 
 ```bash
 git clone https://github.com/<your-user>/<your-repo>.git
-cd <your-repo>
+cd EscapeRoomHub
 ```
 
 If your checkout contains the `HubRemoteEditing` folder as a subdirectory, enter it:
@@ -116,7 +116,7 @@ Run the installer:
 sudo bash install.sh
 ```
 
-Choose `Install core hub` in the menu.
+Choose `Install core hub` for a hub-only setup or `Install full setup` for guided hardware setup.
 
 For a non-interactive install, run:
 
@@ -132,9 +132,17 @@ For the full installer path, run:
 sudo bash install.sh --full
 ```
 
-At the moment `--full` installs the same automated components as `--core`. Hardware-specific setup for Zigbee2MQTT, OLA/DMX, USB rules, and audio remains manual because it depends on the connected devices and should be confirmed per installation.
+Use `--full` for a Raspberry Pi that should run the complete room setup. It runs the core install and then performs guided setup for:
 
-Use `--full` when you want the intended production install entry point and plan to add hardware setup afterwards. Use `--core` when you only need the hub server and MQTT.
+* Zigbee2MQTT
+* stable `/dev/zigbee` udev rule
+* OLA / DMX
+* stable `/dev/dmx` udev rule
+* USB audio default device and mixer volume
+
+The hardware steps are interactive. The installer asks before binding detected USB serial devices to `/dev/zigbee` or `/dev/dmx`.
+
+Use `--core` when you only need the hub server and MQTT. Use `--full` for production-like Pi installations where the Zigbee dongle, DMX adapter, and audio device are connected.
 
 The installer installs system dependencies, Node.js 20 LTS, Node.js packages, Mosquitto MQTT, runtime folders, and a `md2-hub` systemd service.
 
@@ -162,7 +170,7 @@ sudo systemctl restart md2-hub
 bash install.sh --doctor
 ```
 
-Hardware-specific services such as Zigbee2MQTT and OLA/DMX still need device-specific configuration.
+For hardware setup, run `sudo bash install.sh --full` with the Zigbee dongle, DMX adapter, and audio device connected.
 
 ### Manual Setup
 
@@ -191,7 +199,7 @@ Clone the repository:
 
 ```bash
 git clone https://github.com/<your-user>/<your-repo>.git
-cd <your-repo>
+cd EscapeRoomHub
 ```
 
 If your checkout contains the `HubRemoteEditing` folder as a subdirectory, enter it:

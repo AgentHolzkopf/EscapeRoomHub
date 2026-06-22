@@ -8,21 +8,20 @@ PROJECT_ROOT="$SCRIPT_DIR"
 SERVER_DIR="$PROJECT_ROOT/Server"
 RUN_USER="${SUDO_USER:-$USER}"
 
-log() {
-  printf '\n[installer] %s\n' "$*"
-}
+log() { printf '\n[installer] %s\n' "$*"; }
+fail() { printf '\n[installer] ERROR: %s\n' "$*" >&2; exit 1; }
+section() { printf '\n== %s ==\n' "$*"; }
+require_command() { command -v "$1" >/dev/null 2>&1 || fail "Missing required command: $1"; }
 
-fail() {
-  printf '\n[installer] ERROR: %s\n' "$*" >&2
-  exit 1
-}
-
-section() {
-  printf '\n== %s ==\n' "$*"
-}
-
-require_command() {
-  command -v "$1" >/dev/null 2>&1 || fail "Missing required command: $1"
+confirm() {
+  local prompt="$1"
+  local default="${2:-n}"
+  local suffix="[y/N]"
+  [[ "$default" == "y" ]] && suffix="[Y/n]"
+  printf "%s %s " "$prompt" "$suffix"
+  read -r answer
+  answer="${answer:-$default}"
+  [[ "$answer" =~ ^[Yy]$ ]]
 }
 
 print_help() {
@@ -36,14 +35,12 @@ Usage:
   bash install.sh --doctor
 
 Options:
-  --core      Install the core hub service, Node.js, npm packages, and Mosquitto.
-  --full      Install everything currently automated. At the moment this is the
-              same as --core; hardware setup is still intentionally manual.
+  --core      Install the hub service, Node.js, npm packages, and Mosquitto.
+  --full      Run --core and guided setup for Zigbee2MQTT, OLA/DMX, and audio.
   --doctor    Run diagnostics only. Does not change system state.
   --help      Show this help.
 
-Hardware-specific setup for Zigbee, DMX/OLA, and audio is intentionally not
-fully automated yet because it depends on the connected USB devices.
+The full setup asks before binding detected USB devices to /dev/zigbee or /dev/dmx.
 EOF
 }
 
@@ -52,20 +49,23 @@ validate_project() {
   [[ -f "$SERVER_DIR/package.json" ]] || fail "Cannot find Server/package.json."
 }
 
+ensure_root_for_install() {
+  if [[ "$(id -u)" -ne 0 ]]; then
+    log "Installation needs root privileges. Re-running through sudo."
+    exec sudo bash "$0" "$1"
+  fi
+}
+
 install_core() {
   validate_project
-
-  if [[ "$(id -u)" -ne 0 ]]; then
-    log "Core installation needs root privileges. Re-running through sudo."
-    exec sudo bash "$0" --core
-  fi
+  ensure_root_for_install --core
 
   log "Project root: $PROJECT_ROOT"
   log "Install user: $RUN_USER"
 
   log "Installing base packages"
   apt-get update
-  apt-get install -y git curl ca-certificates python3 make g++ build-essential mosquitto mosquitto-clients
+  apt-get install -y git curl ca-certificates python3 make g++ build-essential mosquitto mosquitto-clients lsof
 
   local needs_node=1
   if command -v node >/dev/null 2>&1; then
@@ -86,7 +86,6 @@ install_core() {
 
   require_command node
   require_command npm
-
   log "Node version: $(node -v)"
   log "npm version: $(npm -v)"
 
@@ -98,13 +97,13 @@ install_core() {
   install -d -o "$RUN_USER" -g "$RUN_USER" "$PROJECT_ROOT/MediaStorage" "$PROJECT_ROOT/SoundStorage" "$PROJECT_ROOT/public/uploads"
 
   log "Configuring Mosquitto MQTT broker for local network puzzle clients"
+  install -d /etc/mosquitto/conf.d
   cat >"/etc/mosquitto/conf.d/escapehub.conf" <<EOF
 # EscapeHub local puzzle network listener.
 # This allows puzzle clients on the same trusted LAN to connect to MQTT.
 listener 1883 0.0.0.0
 allow_anonymous true
 EOF
-
   systemctl enable --now mosquitto
   systemctl restart mosquitto
 
@@ -146,26 +145,234 @@ EOF
     systemctl restart "$SERVICE_NAME"
   fi
 
-  log "Service status"
-  systemctl --no-pager --full status "$SERVICE_NAME" || true
+  log "Core install complete"
+}
 
-  cat <<EOF
+list_serial_devices() {
+  [[ -d /dev/serial/by-id ]] || return 0
+  for link in /dev/serial/by-id/*; do
+    [[ -e "$link" ]] || continue
+    printf '%s -> %s\n' "$(basename "$link")" "$(readlink -f "$link")"
+  done
+}
 
-[installer] Done.
+find_serial_device() {
+  local pattern="$1"
+  [[ -d /dev/serial/by-id ]] || return 1
+  for link in /dev/serial/by-id/*; do
+    [[ -e "$link" ]] || continue
+    if basename "$link" | grep -Eiq "$pattern"; then
+      readlink -f "$link"
+      return 0
+    fi
+  done
+  return 1
+}
 
-Open EscapeHub:
-  http://localhost
-  http://<raspberry-pi-ip>
+write_tty_udev_rule() {
+  local alias="$1"
+  local dev="$2"
+  local rule_file="/etc/udev/rules.d/99-escapehub-usb.rules"
+  local serial_short serial vendor model
 
-Useful commands:
-  sudo systemctl status ${SERVICE_NAME} --no-pager
-  sudo journalctl -u ${SERVICE_NAME} -f
-  sudo systemctl restart ${SERVICE_NAME}
-  systemctl status mosquitto --no-pager
-  bash install.sh --doctor
+  [[ -e "$dev" ]] || fail "Device does not exist: $dev"
+  serial_short="$(udevadm info -q property -n "$dev" | awk -F= '/^ID_SERIAL_SHORT=/{print $2; exit}')"
+  serial="$(udevadm info -q property -n "$dev" | awk -F= '/^ID_SERIAL=/{print $2; exit}')"
+  vendor="$(udevadm info -q property -n "$dev" | awk -F= '/^ID_VENDOR_ID=/{print $2; exit}')"
+  model="$(udevadm info -q property -n "$dev" | awk -F= '/^ID_MODEL_ID=/{print $2; exit}')"
 
-Hardware-specific services such as Zigbee2MQTT and OLA/DMX still need device-specific configuration.
+  install -d "$(dirname "$rule_file")"
+  touch "$rule_file"
+  sed -i "/SYMLINK+=\"$alias\"/d" "$rule_file"
+
+  if [[ -n "$serial_short" ]]; then
+    printf 'SUBSYSTEM=="tty", ENV{ID_SERIAL_SHORT}=="%s", SYMLINK+="%s"\n' "$serial_short" "$alias" >> "$rule_file"
+  elif [[ -n "$serial" ]]; then
+    printf 'SUBSYSTEM=="tty", ENV{ID_SERIAL}=="%s", SYMLINK+="%s"\n' "$serial" "$alias" >> "$rule_file"
+  elif [[ -n "$vendor" && -n "$model" ]]; then
+    printf 'SUBSYSTEM=="tty", ATTRS{idVendor}=="%s", ATTRS{idProduct}=="%s", SYMLINK+="%s"\n' "$vendor" "$model" "$alias" >> "$rule_file"
+  else
+    fail "Could not derive a stable udev rule for $dev"
+  fi
+
+  udevadm control --reload-rules
+  udevadm trigger
+  sleep 1
+}
+
+install_zigbee() {
+  section "Zigbee2MQTT setup"
+  apt-get install -y git curl ca-certificates
+
+  local zigbee_dev
+  zigbee_dev="$(find_serial_device 'Sonoff|Itead|Zigbee|CP210|Silicon_Labs' || true)"
+  if [[ -z "$zigbee_dev" ]]; then
+    echo "No likely Zigbee serial dongle found. Skipping Zigbee setup."
+    echo "Detected serial devices:"
+    list_serial_devices || true
+    return 0
+  fi
+
+  echo "Detected likely Zigbee dongle: $zigbee_dev"
+  if ! confirm "Use this device as /dev/zigbee?" "y"; then
+    echo "Skipping Zigbee setup."
+    return 0
+  fi
+  write_tty_udev_rule "zigbee" "$zigbee_dev"
+
+  if [[ ! -d /opt/zigbee2mqtt ]]; then
+    log "Cloning Zigbee2MQTT to /opt/zigbee2mqtt"
+    git clone --depth 1 https://github.com/Koenkk/zigbee2mqtt.git /opt/zigbee2mqtt
+  else
+    log "/opt/zigbee2mqtt already exists; keeping existing checkout"
+  fi
+  chown -R "$RUN_USER:$RUN_USER" /opt/zigbee2mqtt
+
+  log "Installing Zigbee2MQTT dependencies"
+  if [[ -f /opt/zigbee2mqtt/pnpm-lock.yaml ]]; then
+    corepack enable || true
+    sudo -u "$RUN_USER" bash -lc "cd /opt/zigbee2mqtt && corepack enable || true && pnpm install --frozen-lockfile"
+  else
+    sudo -u "$RUN_USER" bash -lc "cd /opt/zigbee2mqtt && npm ci"
+  fi
+
+  install -d -o "$RUN_USER" -g "$RUN_USER" /opt/zigbee2mqtt/data
+  local adapter="ember"
+  printf "Zigbee adapter type [ember]: "
+  read -r adapter_input
+  adapter="${adapter_input:-ember}"
+
+  if [[ -f /opt/zigbee2mqtt/data/configuration.yaml ]]; then
+    cp -a /opt/zigbee2mqtt/data/configuration.yaml "/opt/zigbee2mqtt/data/configuration.yaml.bak.$(date +%Y%m%d-%H%M%S)"
+  fi
+
+  cat >/opt/zigbee2mqtt/data/configuration.yaml <<EOF
+version: 5
+mqtt:
+  base_topic: zigbee2mqtt
+  server: mqtt://localhost:1883
+serial:
+  port: /dev/zigbee
+  adapter: ${adapter}
+  baudrate: 115200
+  rtscts: false
+advanced:
+  log_level: info
+frontend:
+  enabled: true
+  port: 8080
 EOF
+  chown "$RUN_USER:$RUN_USER" /opt/zigbee2mqtt/data/configuration.yaml
+
+  cat >/etc/systemd/system/zigbee2mqtt.service <<EOF
+[Unit]
+Description=Zigbee2MQTT
+After=network-online.target mosquitto.service dev-zigbee.device
+Wants=network-online.target mosquitto.service
+Requires=dev-zigbee.device
+
+[Service]
+Type=simple
+User=${RUN_USER}
+WorkingDirectory=/opt/zigbee2mqtt
+ExecStart=/usr/bin/env npm start
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl daemon-reload
+  systemctl enable --now zigbee2mqtt
+}
+
+configure_ola_plugins() {
+  local conf_dir="/etc/ola"
+  [[ -d "$conf_dir" ]] || return 0
+  for conf in "$conf_dir"/ola-*.conf; do
+    [[ -f "$conf" ]] || continue
+    if [[ "$(basename "$conf")" == "ola-usbserial.conf" ]]; then
+      sed -i 's/^enabled = .*/enabled = true/' "$conf" || true
+    else
+      sed -i 's/^enabled = .*/enabled = false/' "$conf" || true
+    fi
+  done
+  cat >"$conf_dir/ola-usbserial.conf" <<EOF
+enabled = true
+device = /dev/dmx
+device_dir = /dev
+device_prefix = dmx
+ignore_device = /dev/zigbee
+EOF
+}
+
+install_dmx() {
+  section "DMX / OLA setup"
+  apt-get install -y ola
+
+  local dmx_dev
+  dmx_dev="$(find_serial_device 'DMXking|DMX|FT232|FTDI' || true)"
+  if [[ -z "$dmx_dev" ]]; then
+    echo "No likely USB-DMX serial adapter found. Skipping DMX setup."
+    echo "Detected serial devices:"
+    list_serial_devices || true
+    return 0
+  fi
+
+  echo "Detected likely DMX adapter: $dmx_dev"
+  if ! confirm "Use this device as /dev/dmx?" "y"; then
+    echo "Skipping DMX setup."
+    return 0
+  fi
+  write_tty_udev_rule "dmx" "$dmx_dev"
+
+  configure_ola_plugins
+  systemctl enable --now olad
+  systemctl restart olad
+}
+
+install_audio() {
+  section "Audio setup"
+  apt-get install -y alsa-utils ffmpeg mpg123
+
+  if [[ ! -f /proc/asound/cards ]]; then
+    echo "No ALSA sound card list found. Skipping audio setup."
+    return 0
+  fi
+  cat /proc/asound/cards
+
+  local card_id
+  card_id="$(awk -F'[][]' '/USB-Audio|UC02|USB Audio/{print $2; exit}' /proc/asound/cards)"
+  if [[ -z "$card_id" ]]; then
+    echo "No USB audio card auto-detected. Skipping default audio setup."
+    return 0
+  fi
+
+  echo "Detected likely USB audio card: $card_id"
+  if confirm "Use this card as default audio output?" "y"; then
+    cat >/etc/asound.conf <<EOF
+pcm.!default {
+  type plug
+  slave.pcm "hw:CARD=${card_id},DEV=0"
+}
+
+ctl.!default {
+  type hw
+  card ${card_id}
+}
+EOF
+    amixer -c "$card_id" set PCM 100% unmute || true
+  fi
+}
+
+install_full() {
+  validate_project
+  ensure_root_for_install --full
+  install_core
+  install_zigbee
+  install_dmx
+  install_audio
+  run_doctor
 }
 
 show_command() {
@@ -181,7 +388,6 @@ show_command() {
 
 run_doctor() {
   validate_project
-
   section "Project"
   echo "Project root: $PROJECT_ROOT"
   echo "Server dir:   $SERVER_DIR"
@@ -264,11 +470,11 @@ show_hardware_notes() {
   cat <<EOF
 
 Hardware setup notes:
-- Zigbee2MQTT requires a configured Zigbee dongle and a stable /dev/zigbee symlink.
-- OLA/DMX requires a configured DMX adapter and a stable /dev/dmx symlink.
-- Audio output depends on the selected ALSA/PulseAudio device.
+- --full now performs guided setup for Zigbee2MQTT, OLA/DMX, and audio.
+- Keep the Zigbee dongle, DMX adapter, and USB audio adapter connected before running --full.
+- The installer asks before binding detected serial devices to /dev/zigbee or /dev/dmx.
 
-Use diagnostics first:
+Use diagnostics:
   bash install.sh --doctor
 
 EOF
@@ -279,25 +485,26 @@ run_menu() {
 EscapeHub Installer
 
 1. Install core hub
-2. Run diagnostics
-3. Show hardware setup notes
-4. Exit
+2. Install full setup
+3. Run diagnostics
+4. Show hardware setup notes
+5. Exit
 EOF
-
-  printf "\nSelect option [1-4]: "
+  printf "\nSelect option [1-5]: "
   read -r choice
   case "$choice" in
     1) install_core ;;
-    2) run_doctor ;;
-    3) show_hardware_notes ;;
-    4) exit 0 ;;
+    2) install_full ;;
+    3) run_doctor ;;
+    4) show_hardware_notes ;;
+    5) exit 0 ;;
     *) echo "Invalid option: $choice" >&2; exit 1 ;;
   esac
 }
 
 case "${1:-}" in
   --core) install_core ;;
-  --full) install_core ;;
+  --full) install_full ;;
   --doctor) run_doctor ;;
   --help|-h) print_help ;;
   "") run_menu ;;
