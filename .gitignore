@@ -45,6 +45,7 @@ temp/
 .env
 .env.*
 !.env.example
+.agent-device-id
 *.pem
 *.key
 *.crt

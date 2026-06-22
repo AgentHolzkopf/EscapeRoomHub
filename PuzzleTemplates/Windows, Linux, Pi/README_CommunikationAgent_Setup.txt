@@ -84,6 +84,32 @@ while True:
 2) Quickstart
 ------------------------------------------------------------
 
+Windows installer:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install-agent.ps1
+```
+
+If Node.js is not installed, the installer can install Node.js LTS through `winget`:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install-agent.ps1 -InstallNode
+```
+
+After Node.js was installed, close PowerShell, open a new PowerShell window, and run the installer again. This is required because Windows updates `PATH` only for new terminal sessions.
+
+Non-interactive example:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install-agent.ps1 -HubHost 192.168.101.96 -PuzzleName TestPuzzle
+```
+
+Install and start immediately:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install-agent.ps1 -HubHost 192.168.101.96 -PuzzleName TestPuzzle -Start
+```
+
 Start the agent:
 
 ```bash
@@ -114,14 +140,32 @@ Notes:
 3) Basic Setup
 ------------------------------------------------------------
 
+Recommended on Windows:
+
+1. Open PowerShell in this folder:
+   `PuzzleTemplates/Windows, Linux, Pi`
+2. Run:
+   `powershell -ExecutionPolicy Bypass -File .\install-agent.ps1`
+   If Node.js is missing, either confirm the winget install prompt or run:
+   `powershell -ExecutionPolicy Bypass -File .\install-agent.ps1 -InstallNode`
+   Then reopen PowerShell and run the installer again.
+3. Enter the hub IP/hostname and puzzle name.
+   The installer requires a real hub IP/hostname. It will not silently keep the template placeholder.
+4. Start the agent:
+   `node CommunikationAgent.js --port 5001`
+5. Select the detected agent as Linked Device in the hub.
+6. Start the room.
+
+Manual setup:
+
 1. Change into the folder:
    `PuzzleTemplates/Windows, Linux, Pi`
 2. Install dependency:
    `npm install mqtt`
-3. Edit `CommunikationAgent.config.json` (at least `deviceId`, `mqttBroker`).
+3. Edit `CommunikationAgent.config.json` (at least `mqttBroker` and `puzzleName`).
 4. Start the agent:
    `node CommunikationAgent.js --port 5001`
-5. Set the same `deviceId` as Linked Device in the hub.
+5. Select the detected agent as Linked Device in the hub.
 6. Start the room.
 
 ------------------------------------------------------------
@@ -132,10 +176,9 @@ Example `CommunikationAgent.config.json`:
 
 ```json
 {
-  "hubHost": "escapehub.local",
-  "mqttBroker": "escapehub.local",
+  "hubHost": "192.168.101.96",
+  "mqttBroker": "192.168.101.96",
   "mqttPort": 1883,
-  "deviceId": "puzzle-1",
   "puzzleName": "Radio_Puzzle",
   "heartbeatIntervalMs": 2000,
   "needRestart": false
@@ -143,7 +186,10 @@ Example `CommunikationAgent.config.json`:
 ```
 
 Important:
-- `deviceId` must exactly match the Linked Device in the hub.
+- The installer generates a stable local agent ID in `.agent-device-id` if none exists yet.
+- `CommunikationAgent.config.json` does not need a `deviceId` entry.
+- Without the installer or `.agent-device-id`, the agent falls back to the local IP address as device ID.
+- Select the detected agent as Linked Device in the hub.
 - Inputs and outputs are initialized by the hub through `initKeys`.
 - Output keys must be defined in the hub I/O configuration.
 
@@ -290,7 +336,7 @@ Debug:
 ------------------------------------------------------------
 
 Problem: The hub sees no data.
-- Check that `deviceId` is identical in the hub and config.
+- Check that the detected agent is selected as Linked Device in the hub.
 - Check `mqttBroker` and `mqttPort`.
 - Check whether startup logs show `MQTT connected ...`.
 

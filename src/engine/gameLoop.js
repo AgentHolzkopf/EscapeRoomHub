@@ -949,7 +949,7 @@ function deleteZigbeeMessageTrigger(triggerIdRaw) {
         return { success: false, error: 'Trigger not found' };
     }
     syncZigbeeTriggerConfigToGraph();
-    return { success: true };
+    return { success: false, error: 'agent-puzzle-missing' };
 }
 
 function publishZigbeeBridgeRequest(pathSuffix, payload = {}) {
@@ -1129,6 +1129,7 @@ function normalizeScriptingRules(node) {
         triggerValue: String(rule?.triggerValue || ''),
         triggerField: String(rule?.triggerField || ''),
         triggerExpected: String(rule?.triggerExpected || ''),
+        triggerAgentDeviceId: String(rule?.triggerAgentDeviceId || rule?.agentDeviceId || ''),
         conditionType: String(rule?.conditionType || 'none').trim().toLowerCase(),
         conditionVar: String(rule?.conditionVar || ''),
         conditionField: String(rule?.conditionField || ''),
@@ -1140,6 +1141,7 @@ function normalizeScriptingRules(node) {
         actionType: String(rule?.actionType || '').trim().toLowerCase(),
         actionValue: String(rule?.actionValue || ''),
         actionTargetPuzzle: String(rule?.actionTargetPuzzle || ''),
+        actionAgentDeviceId: String(rule?.actionAgentDeviceId || rule?.agentDeviceId || ''),
         actionExpr: (rule?.actionExpr && typeof rule.actionExpr === 'object' && !Array.isArray(rule.actionExpr))
             ? rule.actionExpr
             : null,
@@ -2408,19 +2410,139 @@ function runSoundCueAction(soundName, context = {}) {
 
 function runSendCustomAction(node, customText) {
     if (!node) return { success: false, error: 'puzzle-missing' };
-    const deviceId = getDeviceIdForPuzzle(node);
+    const deviceIds = getCommandDeviceIdsForPuzzle(node);
     const value = String(customText || '');
-    const topic = deviceId ? `puzzle/${deviceId}/command` : '';
-    if (!canSendToDevice(node, deviceId)) {
+    const topic = deviceIds.length ? deviceIds.map(id => `puzzle/${id}/command`).join(", ") : '';
+    if (!deviceIds.length) {
         logSystem(
-            `MQTT sendCustom blocked for ${deviceId || 'unknown-device'} (offline/missing)`,
+            `MQTT sendCustom blocked for ${getPuzzleName(node, node.id)} (no device/agent)`,
             "warn",
             { topic, payload: { action: "sendCustom", value }, direction: "outbound", command: "sendCustom", blocked: true }
         );
         return { success: false, error: 'device-offline-or-missing' };
     }
-    publishCommand(deviceId, { action: 'sendCustom', value });
+    deviceIds.forEach(deviceId => publishCommand(deviceId, { action: 'sendCustom', value }));
     return { success: true };
+}
+
+function getPuzzleNodeByDeviceId(deviceId) {
+    const safeId = String(deviceId || '').trim();
+    if (!safeId || !graph || typeof graph.findNodesByType !== 'function') return null;
+    const puzzleNodes = graph.findNodesByType("escape/Puzzle") || [];
+    return puzzleNodes.find((node) => String(node?.properties?.selectedDeviceID || '').trim() === safeId) || null;
+}
+
+function getAgentDeviceIdsForPuzzle(node) {
+    if (!node || node.type !== 'escape/Puzzle') return [];
+    const hostId = String(node.properties?.selectedDeviceID || '').trim();
+    const raw = Array.isArray(node.properties?.agentDeviceIDs) ? node.properties.agentDeviceIDs : [];
+    const seen = new Set();
+    const ids = raw
+        .map(id => String(id || '').trim())
+        .filter(id => id && id !== hostId && !seen.has(id) && (seen.add(id), true));
+    if (!Array.isArray(node.properties?.agentDeviceIDs)
+        || ids.length !== raw.length
+        || ids.some((id, idx) => id !== raw[idx])) {
+        node.properties.agentDeviceIDs = ids;
+    }
+    return ids;
+}
+
+function getCommandDeviceIdsForPuzzle(node) {
+    if (!node || node.type !== 'escape/Puzzle') return [];
+    const ids = [];
+    const hostId = getDeviceIdForPuzzle(node);
+    if (hostId && !node.properties?.isAnalog) ids.push(hostId);
+    getAgentDeviceIdsForPuzzle(node).forEach(id => ids.push(id));
+    return Array.from(new Set(ids.map(id => String(id || '').trim()).filter(Boolean)));
+}
+
+function getPuzzleNodeByAgentDeviceId(deviceId) {
+    const safeId = String(deviceId || '').trim();
+    if (!safeId || !graph || typeof graph.findNodesByType !== 'function') return null;
+    const puzzleNodes = graph.findNodesByType("escape/Puzzle") || [];
+    return puzzleNodes.find((node) => getAgentDeviceIdsForPuzzle(node).includes(safeId)) || null;
+}
+
+function getPuzzleNodeForDeviceOrAgent(deviceId) {
+    return getPuzzleNodeByDeviceId(deviceId) || getPuzzleNodeByAgentDeviceId(deviceId);
+}
+
+function resolveAgentDeviceId(ruleOrExpr, fallbackNode = null) {
+    const explicit = String(ruleOrExpr?.actionAgentDeviceId || ruleOrExpr?.triggerAgentDeviceId || ruleOrExpr?.agentDeviceId || '').trim();
+    if (explicit) return explicit;
+    return fallbackNode ? getDeviceIdForPuzzle(fallbackNode) : '';
+}
+
+function runSendCustomToDevice(deviceId, customText) {
+    const safeDeviceId = String(deviceId || '').trim();
+    const value = String(customText || '');
+    const topic = safeDeviceId ? `puzzle/${safeDeviceId}/command` : '';
+    if (!safeDeviceId || !knownDevices[safeDeviceId]) {
+        logSystem(
+            `MQTT sendCustom blocked for ${safeDeviceId || 'unknown-agent'} (offline/missing)`,
+            "warn",
+            { topic, payload: { action: "sendCustom", value }, direction: "outbound", command: "sendCustom", blocked: true }
+        );
+        return { success: false, error: 'agent-offline-or-missing' };
+    }
+    publishCommand(safeDeviceId, { action: 'sendCustom', value });
+    return { success: true };
+}
+
+function getAgentPuzzleState(deviceId, fallbackNode = null) {
+    const safeDeviceId = String(deviceId || '').trim();
+    if (!safeDeviceId) return fallbackNode ? getPuzzleStateKey(fallbackNode.id) : '';
+    const agentNode = getPuzzleNodeByDeviceId(safeDeviceId);
+    if (agentNode) return getPuzzleStateKey(agentNode.id);
+    const deviceState = String(knownDevices[safeDeviceId]?.state || '').trim().toLowerCase();
+    if (isValidPuzzleState(deviceState)) return normalizePuzzleState(deviceState);
+    return knownDevices[safeDeviceId] ? 'online' : '';
+}
+
+function setAgentPuzzleState(deviceId, targetState, fallbackNode = null) {
+    const safeDeviceId = String(deviceId || '').trim();
+    const targetNode = safeDeviceId ? getPuzzleNodeForDeviceOrAgent(safeDeviceId) : fallbackNode;
+    if (targetNode) {
+        applyPuzzleState(targetNode.id, targetState);
+        return { success: true };
+    }
+    if (safeDeviceId && knownDevices[safeDeviceId]) {
+        publishCommand(safeDeviceId, { action: "setState", state: normalizePuzzleState(targetState) });
+        return { success: true };
+    }
+    return { success: true };
+}
+
+function getScriptingTriggerForPuzzleState(state) {
+    const normalized = normalizePuzzleState(state);
+    if (['active', 'starting', 'running'].includes(normalized)) return 'on_running';
+    if (normalized === 'solved') return 'on_solved';
+    if (normalized === 'locked') return 'on_reset';
+    return '';
+}
+
+function nodeHasAgentTriggerRule(node, triggerType, deviceId) {
+    const safeTrigger = String(triggerType || '').trim().toLowerCase();
+    const safeDeviceId = String(deviceId || '').trim();
+    if (!node || !safeTrigger || !safeDeviceId) return false;
+    return normalizeScriptingRules(node).some((rule) =>
+        rule.triggerType === safeTrigger && String(rule.triggerAgentDeviceId || '').trim() === safeDeviceId
+    );
+}
+
+function dispatchAgentPuzzleScriptingEvent(deviceId, triggerType, eventPayload = {}) {
+    const safeDeviceId = String(deviceId || '').trim();
+    const safeTrigger = String(triggerType || '').trim().toLowerCase();
+    if (!safeDeviceId || !safeTrigger) return;
+    const payload = {
+        ...(eventPayload && typeof eventPayload === 'object' ? eventPayload : {}),
+        agentDeviceId: safeDeviceId
+    };
+    getAllPuzzleNodes().forEach((node) => {
+        if (!nodeHasAgentTriggerRule(node, safeTrigger, safeDeviceId)) return;
+        runPuzzleScriptingEvent(node, safeTrigger, payload);
+    });
 }
 
 function evaluateScriptingCondition(rule, customValue) {
@@ -2482,7 +2604,9 @@ function evaluateDataExpressionNode(expr, eventPayload = {}) {
         : {};
     if (type === 'field') {
         const source = String(expr.source || '').trim().toLowerCase();
+        const agentDeviceId = String(expr.agentDeviceId || '').trim();
         if (source === 'custom') {
+            if (agentDeviceId && agentDeviceId !== String(eventPayload?.agentDeviceId || '').trim()) return '';
             return String(eventPayload?.customValue ?? '');
         }
         if (source === 'player_input') {
@@ -2496,6 +2620,7 @@ function evaluateDataExpressionNode(expr, eventPayload = {}) {
             return String(eventPayload?.submittedValue ?? '');
         }
         if (source === 'state') {
+            if (agentDeviceId) return getAgentPuzzleState(agentDeviceId, null);
             const explicitTarget = String(expr.puzzle || expr.field || '').trim().toLowerCase();
             if (explicitTarget === 'room') {
                 return getRoomStateKey();
@@ -2791,6 +2916,7 @@ async function runPuzzleScriptingEvent(node, triggerType, eventPayload = {}) {
     if (!normalizedTrigger) return [];
 
     const customValue = String(eventPayload?.customValue || '');
+    const eventAgentDeviceId = String(eventPayload?.agentDeviceId || '').trim();
     const sensorDeviceId = String(eventPayload?.sensorDeviceId || '');
     const sensorData = (eventPayload && typeof eventPayload.sensorData === 'object' && !Array.isArray(eventPayload.sensorData))
         ? eventPayload.sensorData
@@ -2799,6 +2925,10 @@ async function runPuzzleScriptingEvent(node, triggerType, eventPayload = {}) {
     const puzzleVarMap = getPuzzleVariableMap(node.id);
     const rules = normalizeScriptingRules(node)
         .filter(rule => rule.triggerType === normalizedTrigger)
+        .filter(rule => {
+            const ruleAgent = String(rule?.triggerAgentDeviceId || '').trim();
+            return ruleAgent ? ruleAgent === eventAgentDeviceId : !eventAgentDeviceId;
+        })
         .filter(rule => normalizedTrigger !== 'on_sensor_data' || !rule.triggerValue || String(rule.triggerValue) === sensorDeviceId)
         .filter((rule) => {
             if (normalizedTrigger !== 'on_sensor_match') return true;
@@ -2966,7 +3096,7 @@ async function runPuzzleScriptingEvent(node, triggerType, eventPayload = {}) {
             if (!varName) continue;
             const execute = () => {
                 if (!evaluateRuleNow(rule)) return;
-                puzzleVarMap[varName] = getPuzzleStateKey(node.id);
+                puzzleVarMap[varName] = getAgentPuzzleState(rule.actionAgentDeviceId, node);
                 logScripting(`${rulePrefix} read state -> "${varName}" = ${puzzleVarMap[varName]}`);
                 return { success: true };
             };
@@ -2982,9 +3112,9 @@ async function runPuzzleScriptingEvent(node, triggerType, eventPayload = {}) {
             const targetState = resolveScriptingStateTarget(rule.actionValue);
             const execute = () => {
                 if (!evaluateRuleNow(rule)) return;
-                applyPuzzleState(node.id, targetState);
+                const result = setAgentPuzzleState(rule.actionAgentDeviceId, targetState, node);
                 logScripting(`${rulePrefix} set puzzle state to "${targetState}".`);
-                return { success: true };
+                return result;
             };
             if (isForeverRule) {
                 registerForeverEntry(rule, { kind: 'action', execute, rulePrefix });
@@ -3036,7 +3166,9 @@ async function runPuzzleScriptingEvent(node, triggerType, eventPayload = {}) {
                 if (!evaluateRuleNow(rule)) return;
                 const payload = resolveSendCustomPayload(rule, runtimePayload);
                 logScripting(`${rulePrefix} send custom "${payload}".`);
-                return runSendCustomAction(node, payload);
+                return rule.actionAgentDeviceId
+                    ? runSendCustomToDevice(rule.actionAgentDeviceId, payload)
+                    : runSendCustomAction(node, payload);
             };
             if (isForeverRule) {
                 registerForeverEntry(rule, { kind: 'action', execute, rulePrefix });
@@ -3099,7 +3231,9 @@ async function runPuzzleScriptingEvent(node, triggerType, eventPayload = {}) {
                 const varName = String(rule.actionValue || '').trim();
                 const value = Object.prototype.hasOwnProperty.call(puzzleVarMap, varName) ? puzzleVarMap[varName] : '';
                 logScripting(`${rulePrefix} send custom variable "${varName}" = ${JSON.stringify(value)}`);
-                return runSendCustomAction(node, String(value ?? ''));
+                return rule.actionAgentDeviceId
+                    ? runSendCustomToDevice(rule.actionAgentDeviceId, String(value ?? ''))
+                    : runSendCustomAction(node, String(value ?? ''));
             };
             if (isForeverRule) {
                 registerForeverEntry(rule, { kind: 'action', execute, rulePrefix });
@@ -4933,14 +5067,16 @@ function scheduleMediaInputFallback(targetNode, inputName, type, data) {
         clearPendingMediaFallback(puzzleId, inputName);
         if (!isPuzzleStateActive(getPuzzleStateKey(puzzleId))) return;
         if (hasLinkedOutputData(targetNode, inputName)) return;
-        const targetDevId = getDeviceIdForPuzzle(targetNode);
-        if (!canSendToDevice(targetNode, targetDevId)) return;
-        publishCommand(targetDevId, {
-            action: "sendParam",
-            key: inputName,
-            type: normalizeDataType(type),
-            data,
-            fallback: true
+        const targetDeviceIds = getCommandDeviceIdsForPuzzle(targetNode);
+        if (!targetDeviceIds.length) return;
+        targetDeviceIds.forEach(targetDevId => {
+            publishCommand(targetDevId, {
+                action: "sendParam",
+                key: inputName,
+                type: normalizeDataType(type),
+                data,
+                fallback: true
+            });
         });
         logSystem(
             `Data sent to "${getPuzzleName(targetNode, targetNode.id)}" (${inputName}): ${JSON.stringify(data)}`,
@@ -4952,9 +5088,7 @@ function scheduleMediaInputFallback(targetNode, inputName, type, data) {
 
 function schedulePendingOutputErrors(node) {
     if (!node || node.type !== "escape/Puzzle") return;
-    if (node.properties?.isAnalog) return;
-    const devId = getDeviceIdForPuzzle(node);
-    if (!devId) return;
+    if (!getCommandDeviceIdsForPuzzle(node).length) return;
     const outputs = node.outputs || [];
     outputs.forEach((out, idx) => {
         const outName = out.name || `Output ${idx + 1}`;
@@ -5019,26 +5153,26 @@ function checkHeartbeatErrors() {
     const now = Date.now();
     const puzzles = getAllPuzzleNodes();
     puzzles.forEach(node => {
-        if (!node || node.properties?.isAnalog) return;
-        const deviceId = getDeviceIdForPuzzle(node);
-        if (!deviceId) return;
-        const lastSeen = knownDevices[deviceId]?.lastSeen;
-        if (!lastSeen) return;
-        const isOnline = (now - lastSeen) < ONLINE_THRESHOLD_MS;
-        const key = `${node.id}:${deviceId}`;
-        if (!isOnline) {
-            const entry = offlineErrorState[key] || { lastLoggedAt: 0 };
-            if (!entry.lastLoggedAt || now - entry.lastLoggedAt >= 2000) {
-                const name = getPuzzleName(node, node.id);
-                const seconds = Math.max(0, Math.floor((now - lastSeen) / 1000));
-                logSystem(`Heartbeat missing for "${name}" (${deviceId}) for ${seconds}s.`, "error");
-                entry.lastLoggedAt = now;
+        if (!node) return;
+        getCommandDeviceIdsForPuzzle(node).forEach((deviceId) => {
+            const lastSeen = knownDevices[deviceId]?.lastSeen;
+            if (!lastSeen) return;
+            const isOnline = (now - lastSeen) < ONLINE_THRESHOLD_MS;
+            const key = `${node.id}:${deviceId}`;
+            if (!isOnline) {
+                const entry = offlineErrorState[key] || { lastLoggedAt: 0 };
+                if (!entry.lastLoggedAt || now - entry.lastLoggedAt >= 2000) {
+                    const name = getPuzzleName(node, node.id);
+                    const seconds = Math.max(0, Math.floor((now - lastSeen) / 1000));
+                    logSystem(`Heartbeat missing for "${name}" (${deviceId}) for ${seconds}s.`, "error");
+                    entry.lastLoggedAt = now;
+                }
+                offlineErrorState[key] = entry;
+            } else if (offlineErrorState[key]) {
+                delete offlineErrorState[key];
+                logSystem(`Heartbeat restored for "${getPuzzleName(node, node.id)}" (${deviceId}).`, "info");
             }
-            offlineErrorState[key] = entry;
-        } else if (offlineErrorState[key]) {
-            delete offlineErrorState[key];
-            logSystem(`Heartbeat restored for "${getPuzzleName(node, node.id)}" (${deviceId}).`, "info");
-        }
+        });
     });
 }
 
@@ -5057,10 +5191,11 @@ function forwardOutputToTargets(sourceNode, key, type, data) {
             if (!link) return;
               const targetNode = getPuzzleNodeById(link.target_id);
               if (!targetNode || targetNode.type !== "escape/Puzzle") return;
-              if (targetNode.properties?.isAnalog) return; // analog puzzles are not device-driven
-              const targetDevId = getDeviceIdForPuzzle(targetNode);
-              if (!targetDevId) return;
-              publishCommand(targetDevId, { action: "sendParam", key: key || outName, type: type || out.type || "string", data });
+              const targetDeviceIds = getCommandDeviceIdsForPuzzle(targetNode);
+              if (!targetDeviceIds.length) return;
+              targetDeviceIds.forEach(targetDevId => {
+                  publishCommand(targetDevId, { action: "sendParam", key: key || outName, type: type || out.type || "string", data });
+              });
               logSystem(
                   `Data sent to "${getPuzzleName(targetNode, targetNode.id)}" (${key || outName}): ${JSON.stringify(data)}`,
                   "system"
@@ -5073,9 +5208,8 @@ function forwardOutputToTargets(sourceNode, key, type, data) {
 
 function seedInputsForPuzzle(targetNode) {
     if (!targetNode || targetNode.type !== "escape/Puzzle") return;
-    if (targetNode.properties?.isAnalog) return;
-    const targetDevId = getDeviceIdForPuzzle(targetNode);
-    if (!targetDevId) return;
+    const targetDeviceIds = getCommandDeviceIdsForPuzzle(targetNode);
+    if (!targetDeviceIds.length) return;
 
     const links = graph.links || {};
     const inputs = targetNode.inputs || [];
@@ -5101,11 +5235,13 @@ function seedInputsForPuzzle(targetNode) {
             const outName = out.name || `Output ${link.origin_slot + 1}`;
             const stored = puzzleDataStore[originNode.id]?.outputs?.[outName];
               if (stored && stored.data !== null && stored.data !== undefined) {
-                  publishCommand(targetDevId, {
-                      action: "sendParam",
-                      key: outName,
-                      type: stored.type || normalizeDataType(out.type),
-                      data: stored.data
+                  targetDeviceIds.forEach(targetDevId => {
+                      publishCommand(targetDevId, {
+                          action: "sendParam",
+                          key: outName,
+                          type: stored.type || normalizeDataType(out.type),
+                          data: stored.data
+                      });
                   });
                   logSystem(
                       `Data sent to "${getPuzzleName(targetNode, targetNode.id)}" (${outName}): ${JSON.stringify(stored.data)}`,
@@ -5126,12 +5262,14 @@ function seedInputsForPuzzle(targetNode) {
                     if (!isUpstreamSolvedForInput(targetNode, input.name)) return;
                     scheduleMediaInputFallback(targetNode, input.name, input.type, parsed.value);
                 } else {
-                    publishCommand(targetDevId, {
-                        action: "sendParam",
-                        key: input.name,
-                        type: inputType,
-                        data: parsed.value,
-                        fallback: true
+                    targetDeviceIds.forEach(targetDevId => {
+                        publishCommand(targetDevId, {
+                            action: "sendParam",
+                            key: input.name,
+                            type: inputType,
+                            data: parsed.value,
+                            fallback: true
+                        });
                     });
                     logSystem(
                         `Data sent to "${getPuzzleName(targetNode, targetNode.id)}" (${input.name}): ${JSON.stringify(parsed.value)}`,
@@ -5354,12 +5492,13 @@ function sendQueuePayloadToTargets(queueNode, payload) {
             if (!link) return;
             const targetNode = getPuzzleNodeById(link.target_id);
             if (!targetNode || targetNode.type !== "escape/Puzzle") return;
-            if (targetNode.properties?.isAnalog) return;
-            const targetDevId = getDeviceIdForPuzzle(targetNode);
-            if (!targetDevId) return;
+            const targetDeviceIds = getCommandDeviceIdsForPuzzle(targetNode);
+            if (!targetDeviceIds.length) return;
             const targetInput = targetNode.inputs && targetNode.inputs[link.target_slot];
             const key = targetInput?.name || out.name || `Input ${link.target_slot + 1}`;
-            publishCommand(targetDevId, { action: "sendParam", key, type: entry.type || out.type || "string", data: entry.data });
+            targetDeviceIds.forEach(targetDevId => {
+                publishCommand(targetDevId, { action: "sendParam", key, type: entry.type || out.type || "string", data: entry.data });
+            });
             logSystem(
                 `Queue data sent to "${getPuzzleName(targetNode, targetNode.id)}" (${key}): ${JSON.stringify(entry.data)}`,
                 "system"
@@ -5730,15 +5869,14 @@ function applyPuzzleState(puzzleId, desiredState, note = null, options = { outbo
     const prevState = puzzleStateDetails[puzzleId]?.state || 'locked';
     const node = getPuzzleNodeById(puzzleId);
     const externalWasActive = node ? isExternalCheckActive(node, prevState) : false;
-    const deviceId = node ? getDeviceIdForPuzzle(node) : null;
+    const commandDeviceIds = node ? getCommandDeviceIdsForPuzzle(node) : [];
     const isAnalog = !!node?.properties?.isAnalog;
     const normalizedDesired = (isAnalog && desired === 'active') ? 'running' : desired;
     const canRestartDevice = node
         && options.outbound
         && ['active', 'running'].includes(normalizedDesired)
         && !['active', 'starting', 'running'].includes(prevState)
-        && !isAnalog
-        && canSendToDevice(node, deviceId);
+        && commandDeviceIds.length > 0;
     const waitingForRestartHeartbeat = !isAnalog
         && !!restartRequestedAt[puzzleId]
         && !restartFreshStateSeen[puzzleId];
@@ -5908,13 +6046,13 @@ function applyPuzzleState(puzzleId, desiredState, note = null, options = { outbo
     }
 
     if (options.outbound && node) {
-        if (canSendToDevice(node, deviceId)) {
+        if (commandDeviceIds.length) {
             if (canRestartDevice) {
                 restartRequestedAt[puzzleId] = Date.now();
                 restartFreshStateSeen[puzzleId] = false;
-                publishCommand(deviceId, { action: "restart" });
+                commandDeviceIds.forEach(id => publishCommand(id, { action: "restart" }));
             } else if (!['active', 'starting', 'running'].includes(state)) {
-                publishCommand(deviceId, { action: "setState", state });
+                commandDeviceIds.forEach(id => publishCommand(id, { action: "setState", state }));
             }
         }
     }
@@ -5981,9 +6119,9 @@ function resetAllPuzzleStates(defaultState = 'locked', options = {}) {
     clearAllAutoRestartTimers();
     getAllPuzzleNodes().forEach(node => {
         resetPuzzleScriptSensorInstanceByPolicy(node.id);
-        const devId = getDeviceIdForPuzzle(node);
-        if (resetDevices && canSendToDevice(node, devId)) {
-            publishCommand(devId, { action: "clearData" });
+        const deviceIds = getCommandDeviceIdsForPuzzle(node);
+        if (resetDevices && deviceIds.length) {
+            deviceIds.forEach(devId => publishCommand(devId, { action: "clearData" }));
         }
         removeHintsForPuzzle(node.id);
         applyPuzzleState(node.id, defaultState, null, { outbound });
@@ -6095,14 +6233,17 @@ function buildPuzzleStatusPayload(puzzleId) {
     if (!node) return null;
     const stateRecord = getPuzzleStateRecord(puzzleId);
     const deviceId = getDeviceIdForPuzzle(node);
+    const agentDeviceIds = getAgentDeviceIdsForPuzzle(node);
+    const commandDeviceIds = getCommandDeviceIdsForPuzzle(node);
     return {
         puzzleId,
         name: node.properties?.Name || node.title || `Puzzle ${puzzleId}`,
         state: stateRecord.state,
         note: stateRecord.note,
         lastUpdate: stateRecord.updatedAt,
-        online: isDeviceOnline(deviceId),
+        online: commandDeviceIds.length ? commandDeviceIds.every(isDeviceOnline) : isDeviceOnline(deviceId),
         deviceId,
+        agentDeviceIds,
         telemetry: puzzleTelemetry[puzzleId] || null
     };
 }
@@ -6115,16 +6256,17 @@ function getPuzzleName(node, fallbackId) {
 function collectDeviceWarnings() {
     const warnings = [];
     getAllPuzzleNodes().forEach(node => {
-        if (!node || node.properties?.isAnalog) return;
+        if (!node) return;
         const deviceId = getDeviceIdForPuzzle(node);
         const puzzleName = getPuzzleName(node, node?.id);
-        if (!deviceId) {
+        const commandDeviceIds = getCommandDeviceIdsForPuzzle(node);
+        if (!node.properties?.isAnalog && !deviceId && !commandDeviceIds.length) {
             warnings.push(`${puzzleName}: no device assigned`);
             return;
         }
-        if (!isDeviceOnline(deviceId)) {
-            warnings.push(`${puzzleName}: device offline`);
-        }
+        commandDeviceIds.forEach(id => {
+            if (!isDeviceOnline(id)) warnings.push(`${puzzleName}: device offline (${id})`);
+        });
     });
     return warnings;
 }
@@ -6133,11 +6275,15 @@ function collectDuplicateDeviceWarnings() {
     const warnings = [];
     const byDevice = {};
     getAllPuzzleNodes().forEach(node => {
-        if (!node || node.properties?.isAnalog) return;
-        const deviceId = getDeviceIdForPuzzle(node);
-        if (!deviceId) return;
-        if (!byDevice[deviceId]) byDevice[deviceId] = [];
-        byDevice[deviceId].push(getPuzzleName(node, node?.id));
+        if (!node) return;
+        const hostId = getDeviceIdForPuzzle(node);
+        const entries = [];
+        if (hostId && !node.properties?.isAnalog) entries.push({ id: hostId, role: 'host' });
+        getAgentDeviceIdsForPuzzle(node).forEach(id => entries.push({ id, role: 'agent' }));
+        entries.forEach(({ id, role }) => {
+            if (!byDevice[id]) byDevice[id] = [];
+            byDevice[id].push(`${getPuzzleName(node, node?.id)} (${role})`);
+        });
     });
     Object.entries(byDevice).forEach(([deviceId, puzzles]) => {
         if (puzzles.length > 1) {
@@ -6330,6 +6476,7 @@ function createPuzzleFlowEntry(node, depth) {
     const externalScreen = externalScreenId ? findScreenById(externalScreenId) : null;
     const deviceId = node.properties.selectedDeviceID || null;
     const deviceInfo = deviceId ? knownDevices[deviceId] : null;
+    const agentDeviceIds = getAgentDeviceIdsForPuzzle(node);
     return {
         id: node.id,
         name: node.properties.Name || node.title || "Unnamed Puzzle",
@@ -6339,6 +6486,11 @@ function createPuzzleFlowEntry(node, depth) {
         isAnalog: node.properties.isAnalog || false,
         device: deviceId,
         deviceName: deviceInfo?.name || deviceInfo?.ip || deviceId,
+        agents: agentDeviceIds.map(id => ({
+            id,
+            name: knownDevices[id]?.name || knownDevices[id]?.ip || id,
+            online: isDeviceOnline(id)
+        })),
         hintAvailable: !!(hintScreen && queue.length > 0),
         hintRemaining: queue.map(h => ({
             text: h.text || "",
@@ -6703,8 +6855,8 @@ function buildInitialPuzzleStates(options = {}) {
     puzzles.forEach(puzzle => {
         const node = getPuzzleNodeById(puzzle.id);
         if (!node) return;
-        const devId = getDeviceIdForPuzzle(node);
-        const isOnline = node.properties?.isAnalog || isDeviceOnline(devId);
+        const commandDeviceIds = getCommandDeviceIdsForPuzzle(node);
+        const isOnline = node.properties?.isAnalog || (commandDeviceIds.length > 0 && commandDeviceIds.every(isDeviceOnline));
 
         if (!isOnline) {
             result[puzzle.id] = 'locked';
@@ -6750,11 +6902,13 @@ function beginRoomRestart(options = {}) {
 
     primeDataStoreWithOutputs();
     getAllPuzzleNodes().forEach(node => {
-        const devId = getDeviceIdForPuzzle(node);
+        const deviceIds = getCommandDeviceIdsForPuzzle(node);
         const io = collectIOKeys(node);
-        if (canSendToDevice(node, devId)) {
-            publishCommand(devId, { action: "clearData" });
-            publishCommand(devId, { action: "initKeys", inputs: io.inputs, outputs: io.outputs });
+        if (deviceIds.length) {
+            deviceIds.forEach(devId => {
+                publishCommand(devId, { action: "clearData" });
+                publishCommand(devId, { action: "initKeys", inputs: io.inputs, outputs: io.outputs });
+            });
         }
     });
 
@@ -7292,11 +7446,13 @@ module.exports = {
           }
           resetPuzzleRuntimeState(puzzleId);
           if (node) {
-              const devId = getDeviceIdForPuzzle(node);
+              const deviceIds = getCommandDeviceIdsForPuzzle(node);
               const io = collectIOKeys(node);
-              if (canSendToDevice(node, devId)) {
-                  publishCommand(devId, { action: "clearData" });
-                  publishCommand(devId, { action: "initKeys", inputs: io.inputs, outputs: io.outputs });
+              if (deviceIds.length) {
+                  deviceIds.forEach(devId => {
+                      publishCommand(devId, { action: "clearData" });
+                      publishCommand(devId, { action: "initKeys", inputs: io.inputs, outputs: io.outputs });
+                  });
               }
           }
       });
@@ -7325,7 +7481,7 @@ module.exports = {
         const statusList = {};
         const puzzleNodes = getAllPuzzleNodes();
         puzzleNodes.forEach(node => {
-            const devId = getDeviceIdForPuzzle(node);
+            const commandDeviceIds = getCommandDeviceIdsForPuzzle(node);
             const stateRecord = getPuzzleStateRecord(node.id);
             const stateKey = getPuzzleStateKey(node.id);
             const checking = isExternalCheckActive(node, stateKey);
@@ -7334,7 +7490,7 @@ module.exports = {
             const restartAgeMs = restartAt > 0 ? Math.max(0, Date.now() - restartAt) : null;
             const restartPending = !!restartAt && !restartFreshStateSeen[node.id];
             statusList[node.id] = { 
-                online: isDeviceOnline(devId),
+                online: commandDeviceIds.length ? commandDeviceIds.every(isDeviceOnline) : node.properties?.isAnalog === true,
                 solved: stateRecord.state === 'solved' || !!puzzleSolvedState[node.id],
                 active: isActive || !!puzzleActivationState[node.id],
                 state: stateRecord.state,
@@ -7792,11 +7948,13 @@ module.exports = {
         primeDataStoreWithOutputs();
         clearAllAutoRestartTimers();
         getAllPuzzleNodes().forEach(node => {
-            const devId = getDeviceIdForPuzzle(node);
+            const deviceIds = getCommandDeviceIdsForPuzzle(node);
             const io = collectIOKeys(node);
-            if (canSendToDevice(node, devId)) {
-                publishCommand(devId, { action: "clearData" });
-                publishCommand(devId, { action: "initKeys", inputs: io.inputs, outputs: io.outputs });
+            if (deviceIds.length) {
+                deviceIds.forEach(devId => {
+                    publishCommand(devId, { action: "clearData" });
+                    publishCommand(devId, { action: "initKeys", inputs: io.inputs, outputs: io.outputs });
+                });
             }
         });
         logSystem("Room reset.", "info");
@@ -7842,27 +8000,34 @@ module.exports = {
             const deviceName = payload.name || "Unknown";
             const deviceIp = payload.ip || "?.?.?.?";
             const now = Date.now();
+            const incomingState = String(payload?.state || '').trim().toLowerCase();
+            const previousDeviceState = String(knownDevices[deviceId]?.state || '').trim().toLowerCase();
 
             if (!knownDevices[deviceId] || knownDevices[deviceId].name !== deviceName) {
                 logSystem(`Device detected: ${deviceName}`, "success");
                 await db.run(`INSERT OR REPLACE INTO devices (id, name, ip, last_seen) VALUES (?, ?, ?, ?)`, [deviceId, deviceName, deviceIp, now]);
             }
-            knownDevices[deviceId] = { id: deviceId, name: deviceName, ip: deviceIp, lastSeen: now };
+            knownDevices[deviceId] = { id: deviceId, name: deviceName, ip: deviceIp, lastSeen: now, state: incomingState || previousDeviceState || '' };
             logSystem(`Heartbeat: ${deviceName} (${deviceId})`, "heartbeat", { topic, payload });
-            if (payload.state && !shouldIgnoreInboundState()) {
+            if (incomingState && isValidPuzzleState(incomingState) && !shouldIgnoreInboundState()) {
                 const puzzleNodes = graph.findNodesByType("escape/Puzzle");
-                const targetNode = puzzleNodes.find(n => n.properties.selectedDeviceID === deviceId);
+                const directNode = puzzleNodes.find(n => n.properties.selectedDeviceID === deviceId);
+                const targetNode = directNode || getPuzzleNodeByAgentDeviceId(deviceId);
                 if (targetNode) {
-                    if (shouldApplyDeviceState(targetNode.id, payload.state)) {
-                        applyPuzzleState(targetNode.id, payload.state, null, { outbound: false });
+                    if (shouldApplyDeviceState(targetNode.id, incomingState)) {
+                        applyPuzzleState(targetNode.id, incomingState, null, { outbound: false });
                     }
+                }
+                if (incomingState !== previousDeviceState) {
+                    const stateTrigger = getScriptingTriggerForPuzzleState(incomingState);
+                    dispatchAgentPuzzleScriptingEvent(deviceId, stateTrigger, { agentState: incomingState });
                 }
             }
         }
 
         if (action === 'data') {
             const puzzleNodes = graph.findNodesByType("escape/Puzzle");
-            const targetNode = puzzleNodes.find(n => n.properties.selectedDeviceID === deviceId);
+            const targetNode = puzzleNodes.find(n => n.properties.selectedDeviceID === deviceId) || getPuzzleNodeByAgentDeviceId(deviceId);
             const key = payload.key || payload.type;
             const type = payload.type;
             if (targetNode && key && isDataKeyAllowed(key, type)) {
@@ -7876,18 +8041,28 @@ module.exports = {
 
         if (action === 'custom' || action === 'custom-event' || action === 'custom_event') {
             const puzzleNodes = graph.findNodesByType("escape/Puzzle");
-            const targetNode = puzzleNodes.find(n => n.properties.selectedDeviceID === deviceId);
-            if (targetNode) {
-                const customValueRaw = payload?.value ?? payload?.data ?? payload?.text ?? payload?.custom ?? '';
-                const customValue = String(customValueRaw ?? '');
+            const directNode = puzzleNodes.find(n => n.properties.selectedDeviceID === deviceId);
+            const agentOwnerNode = directNode ? null : getPuzzleNodeByAgentDeviceId(deviceId);
+            const targetNode = directNode || agentOwnerNode;
+            const customValueRaw = payload?.value ?? payload?.data ?? payload?.text ?? payload?.custom ?? '';
+            const customValue = String(customValueRaw ?? '');
+            if (directNode) {
                 runPuzzleScriptingEvent(targetNode, 'on_custom', { customValue });
                 logSystem(`Custom event from "${getPuzzleName(targetNode, targetNode.id)}": ${customValue}`, "system");
+            } else if (agentOwnerNode) {
+                runPuzzleScriptingEvent(agentOwnerNode, 'on_custom', { customValue, agentDeviceId: deviceId });
+                logSystem(`Custom event from agent "${deviceId}" for "${getPuzzleName(agentOwnerNode, agentOwnerNode.id)}": ${customValue}`, "system");
+            } else {
+                logSystem(`Custom event from agent "${deviceId}": ${customValue}`, "system");
+                dispatchAgentPuzzleScriptingEvent(deviceId, 'on_custom', { customValue });
             }
         }
 
         if (action === 'external-check' || action === 'external_check' || action === 'externalCheck') {
             const puzzleNodes = graph.findNodesByType("escape/Puzzle");
-            const targetNode = puzzleNodes.find(n => n.properties.selectedDeviceID === deviceId);
+            const directNode = puzzleNodes.find(n => n.properties.selectedDeviceID === deviceId);
+            const agentOwnerNode = directNode ? null : getPuzzleNodeByAgentDeviceId(deviceId);
+            const targetNode = directNode || agentOwnerNode;
             if (!targetNode) return;
             const active = payload?.active === false || payload?.enabled === false ? false : true;
             if (!active) {
@@ -7896,7 +8071,10 @@ module.exports = {
             }
             const value = payload?.variable ?? payload?.value ?? payload?.solution ?? payload?.expected ?? payload?.data ?? null;
             setExternalCheckRuntime(targetNode.id, { active: true, value });
-            runPuzzleScriptingEvent(targetNode, 'on_external_input_activated', { expectedValue: value });
+            runPuzzleScriptingEvent(targetNode, 'on_external_input_activated', {
+                expectedValue: value,
+                ...(agentOwnerNode ? { agentDeviceId: deviceId } : {})
+            });
             logSystem(`External check activated for "${getPuzzleName(targetNode, targetNode.id)}"`, "system");
         }
     }

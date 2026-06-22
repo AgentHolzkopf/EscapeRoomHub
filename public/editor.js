@@ -346,6 +346,7 @@ function normalizeRoomScriptingConfigData(rawConfig) {
         const triggerValue = String(rawRule?.triggerValue || "");
         const triggerField = String(rawRule?.triggerField || "");
         const triggerExpected = String(rawRule?.triggerExpected || "");
+        const triggerAgentDeviceId = String(rawRule?.triggerAgentDeviceId || rawRule?.agentDeviceId || "");
         const conditionType = String(rawRule?.conditionType || "none");
         const conditionVar = String(rawRule?.conditionVar || "");
         const conditionField = String(rawRule?.conditionField || "");
@@ -393,7 +394,7 @@ function updateStatus(msg, color = "#fff") {
 }
 
 function saveGraphToBackend() {
-    if(!currentRoomName) return; 
+    if(!currentRoomName) return Promise.resolve(false);
     graph.config = Object.assign({}, graph.config, {
         screens,
         lighting: {
@@ -403,16 +404,23 @@ function saveGraphToBackend() {
         roomScripting: roomScriptingConfig
     });
     updateStatus("Saving...", "#ffff00"); const json = graph.serialize();
-    fetch('/api/room', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(json) })
+    return fetch('/api/room', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(json) })
     .then(res => { if(!res.ok) throw new Error(); return res.json(); })
-    .then(() => { updateStatus("Saved", "#fff"); setTimeout(() => updateStatus("Ready", "#fff"), 2000); })
-    .catch(() => updateStatus("Offline", "#ff0000"));
+    .then(() => { updateStatus("Saved", "#fff"); setTimeout(() => updateStatus("Ready", "#fff"), 2000); return true; })
+    .catch((err) => { updateStatus("Offline", "#ff0000"); throw err; });
 }
 
 let saveTimeout;
 const autoSave = () => {
     if(!currentRoomName) return; 
-    updateStatus("Change...", "#aaa"); clearTimeout(saveTimeout); saveTimeout = setTimeout(saveGraphToBackend, 1000);
+    updateStatus("Change...", "#aaa"); clearTimeout(saveTimeout); saveTimeout = setTimeout(() => {
+        saveGraphToBackend().catch(() => {});
+    }, 1000);
+};
+
+window.flushEditorSave = function flushEditorSave() {
+    clearTimeout(saveTimeout);
+    return saveGraphToBackend();
 };
 
 function getPuzzleDisplayName(node, baseName) {
@@ -674,7 +682,7 @@ function puzzleHasScripting(node){
 function PuzzleNode() { 
     this.addInput("Trigger", LiteGraph.ACTION); 
     this.addOutput("Done", LiteGraph.ACTION); 
-    this.properties={Name:"New Puzzle", selectedDeviceID:"", isStartNode:false, isAnalog: false, externalCheck: false, externalScreenId:"", externalCheckVariable:"", externalShowAssignment:true, hintEnabled:false, hintScreenId:"", hints: [], manualHintTrigger:false, automaticHintTrigger:true, showHintAssignment:true, scriptingRules: [], scriptingNextRuleId: 1, scriptingBlocklyState: null}; 
+    this.properties={Name:"New Puzzle", selectedDeviceID:"", agentDeviceIDs: [], isStartNode:false, isAnalog: false, externalCheck: false, externalScreenId:"", externalCheckVariable:"", externalShowAssignment:true, hintEnabled:false, hintScreenId:"", hints: [], manualHintTrigger:false, automaticHintTrigger:true, showHintAssignment:true, scriptingRules: [], scriptingNextRuleId: 1, scriptingBlocklyState: null};
     this.title="Puzzle"; 
     this.size = [LiteGraph.NODE_WIDTH, this.size ? this.size[1] : 60];
     updateSlotLabels(this);
@@ -5670,7 +5678,7 @@ canvas.deleteSelectedNodes = function() {
     originalDeleteSelectedNodes();
 };
 
-let selectedNode=null; let selectedScreenId=null; let suppressSelectionChange=false; let lastKnownDevicesStr="";
+let selectedNode=null; let selectedScreenId=null; let suppressSelectionChange=false; let lastKnownDevicesStr=""; let knownDevicesLoaded=false;
 let hintModalNode=null;
 const ui={ 
     name:document.getElementById("prop-name"), 
@@ -5736,7 +5744,8 @@ const ui={
     addInternalBtn:document.getElementById("add-internal-btn"),
     internalType:document.getElementById("add-internal-type"),
     openScriptingBtn:document.getElementById("open-scripting-btn"),
-    openRoomScriptingBtn:document.getElementById("open-room-scripting-btn")
+    openRoomScriptingBtn:document.getElementById("open-room-scripting-btn"),
+    agentsList:document.getElementById("agents-list")
 };
 
 const scriptingUI = {
@@ -5902,7 +5911,8 @@ const SCRIPTING_BLOCKLY_TOOLBOX = {
                 { kind: "block", type: "hub_when_external_input" },
                 { kind: "block", type: "hub_when_hint" },
                 { kind: "block", type: "hub_when_sensor_data" },
-                { kind: "block", type: "hub_when_room_started" }
+                { kind: "block", type: "hub_when_room_started" },
+                { kind: "block", type: "hub_agent_statement" }
             ]
         },
         {
@@ -5912,7 +5922,8 @@ const SCRIPTING_BLOCKLY_TOOLBOX = {
             contents: [
                 { kind: "block", type: "data_topic" },
                 { kind: "block", type: "data_math" },
-                { kind: "block", type: "data_text" }
+                { kind: "block", type: "data_text" },
+                { kind: "block", type: "hub_agent_data" }
             ]
         },
         {
@@ -5943,7 +5954,8 @@ const SCRIPTING_BLOCKLY_TOOLBOX = {
                 { kind: "block", type: "hub_action_break" },
                 { kind: "block", type: "hub_action_break_all_loops" },
                 { kind: "block", type: "script_repeat_times" },
-                { kind: "block", type: "script_forever" }
+                { kind: "block", type: "script_forever" },
+                { kind: "block", type: "hub_agent_statement" }
             ]
         }
     ]
@@ -6030,6 +6042,67 @@ let roomScriptingBlocklyDefinitionsReady = false;
 let roomScriptingBlocklySyncGuard = false;
 let roomScriptingBlocklyLoadedStateHash = "";
 
+const BLOCKLY_AGENT_CONTEXT_INPUT = "AGENT_CONTEXT";
+const BLOCKLY_AGENT_CONTEXT_COLOUR = "#8b5cf6";
+const BLOCKLY_AGENT_CONTEXT_SUPPORTED_BLOCKS = new Set([
+    "hub_when_state",
+    "hub_when_event",
+    "hub_when_external_input",
+    "hub_when_hint",
+    "hub_when_sensor_data",
+    "hub_when_sensor_match",
+    "hub_when_room_started",
+    "data_topic",
+    "data_number",
+    "data_text",
+    "data_compare",
+    "data_logic",
+    "data_not",
+    "data_math",
+    "hub_action_play_cue",
+    "hub_action_play_sound",
+    "hub_action_send_custom",
+    "hub_action_print_system",
+    "hub_action_give_hint",
+    "hub_action_send_custom_var",
+    "hub_var_set_sensor",
+    "hub_action_get_state",
+    "hub_action_set_state",
+    "hub_action_wait",
+    "hub_action_break",
+    "hub_action_break_all_loops"
+]);
+const BLOCKLY_AGENT_STATEMENT_WRAPPER_BLOCKS = new Set(["hub_agent_statement", "hub_agent_trigger", "hub_agent_action"]);
+const BLOCKLY_AGENT_WRAPPER_BLOCKS = new Set(["hub_agent_statement", "hub_agent_trigger", "hub_agent_action", "hub_agent_data"]);
+const BLOCKLY_AGENT_CONTEXT_BASE_COLOURS = {
+    hub_when_state: "#f59e0b",
+    hub_when_event: "#f59e0b",
+    hub_when_external_input: "#f59e0b",
+    hub_when_hint: "#f59e0b",
+    hub_when_sensor_data: "#f59e0b",
+    hub_when_sensor_match: "#f59e0b",
+    hub_when_room_started: "#f59e0b",
+    data_topic: "#ef4444",
+    data_number: "#ef4444",
+    data_text: "#ef4444",
+    data_compare: "#22c55e",
+    data_logic: "#22c55e",
+    data_not: "#22c55e",
+    data_math: "#ef4444",
+    hub_action_play_cue: "#3b82f6",
+    hub_action_play_sound: "#3b82f6",
+    hub_action_send_custom: "#3b82f6",
+    hub_action_print_system: "#3b82f6",
+    hub_action_give_hint: "#3b82f6",
+    hub_action_send_custom_var: "#3b82f6",
+    hub_var_set_sensor: "#ef4444",
+    hub_action_get_state: "#3b82f6",
+    hub_action_set_state: "#3b82f6",
+    hub_action_wait: "#3b82f6",
+    hub_action_break: "#3b82f6",
+    hub_action_break_all_loops: "#3b82f6"
+};
+
 function getLightingCueActionOptions() {
     const options = [];
     (lightingFixtures || []).forEach((fixture) => {
@@ -6085,6 +6158,7 @@ function ensureScriptingRules(node) {
         const triggerValue = String(rawRule?.triggerValue || "");
         const triggerField = String(rawRule?.triggerField || "");
         const triggerExpected = String(rawRule?.triggerExpected || "");
+        const triggerAgentDeviceId = String(rawRule?.triggerAgentDeviceId || rawRule?.agentDeviceId || "");
         const conditionValue = String(rawRule?.conditionValue || "");
         const conditionVar = String(rawRule?.conditionVar || "");
         const conditionField = String(rawRule?.conditionField || "");
@@ -6109,6 +6183,7 @@ function ensureScriptingRules(node) {
             triggerValue: (triggerType === "on_custom" || triggerType === "on_sensor_data" || triggerType === "on_sensor_match") ? triggerValue : "",
             triggerField: triggerType === "on_sensor_match" ? triggerField : "",
             triggerExpected: triggerType === "on_sensor_match" ? triggerExpected : "",
+            triggerAgentDeviceId,
             conditionType,
             conditionValue: conditionType === "none" ? "" : conditionValue,
             conditionVar: conditionType === "var_compare" ? conditionVar : "",
@@ -6117,6 +6192,7 @@ function ensureScriptingRules(node) {
             conditionExpr: conditionType === "expr" ? conditionExpr : null,
             actionType,
             actionValue: normalizedActionValue,
+            actionAgentDeviceId: String(rawRule?.actionAgentDeviceId || rawRule?.agentDeviceId || ""),
             actionExpr: (actionType === "send_custom" || actionType === "print_system") ? actionExpr : null,
             actionSourceDevice: String(rawRule?.actionSourceDevice || ""),
             actionSourceField: String(rawRule?.actionSourceField || ""),
@@ -6211,6 +6287,98 @@ function getBlocklyPuzzleDropdownOptions() {
     return options.length ? options : [["- No Puzzle -", ""]];
 }
 
+function getBlocklyAgentDropdownOptions() {
+    const options = [];
+    const assignedAgentIds = normalizePuzzleAgentDeviceIds(selectedNode);
+    const devices = getKnownDeviceMapFromCache();
+    assignedAgentIds.forEach((id) => {
+        const entry = devices[id] || {};
+        const name = String(entry?.name || id).trim() || id;
+        options.push([name, id]);
+    });
+    options.sort((a, b) => String(a?.[0] || "").localeCompare(String(b?.[0] || "")));
+    return options.length ? options : [["- No Agent -", ""]];
+}
+
+function getBlocklyAgentContextDevice(block) {
+    if (!block) return "";
+    const getPreviousSourceBlock = (entry) => {
+        try {
+            const connection = entry?.previousConnection?.targetConnection;
+            return connection?.getSourceBlock ? connection.getSourceBlock() : null;
+        } catch (e) {
+            return null;
+        }
+    };
+    let stackHead = block;
+    while (stackHead) {
+        const previous = getPreviousSourceBlock(stackHead);
+        if (!previous || BLOCKLY_AGENT_WRAPPER_BLOCKS.has(previous.type)) break;
+        const surroundParent = typeof stackHead.getSurroundParent === "function" ? stackHead.getSurroundParent() : null;
+        const previousSurroundParent = typeof previous.getSurroundParent === "function" ? previous.getSurroundParent() : null;
+        if (surroundParent && previousSurroundParent && surroundParent !== previousSurroundParent) break;
+        stackHead = previous;
+    }
+
+    const candidates = [];
+    if (typeof stackHead?.getSurroundParent === "function") candidates.push(stackHead.getSurroundParent());
+    if (typeof stackHead?.getParent === "function") candidates.push(stackHead.getParent());
+    for (const parent of candidates) {
+        if (!parent) continue;
+        if (parent.type === "hub_agent_context") return String(parent.getFieldValue("AGENT") || "").trim();
+        if (parent.type === "hub_agent_statement" && parent.getInputTargetBlock("DO") === stackHead) {
+            return String(parent.getFieldValue("AGENT") || "").trim();
+        }
+        if (parent.type === "hub_agent_trigger" && parent.getInputTargetBlock("TRIGGER") === stackHead) {
+            return String(parent.getFieldValue("AGENT") || "").trim();
+        }
+        if (parent.type === "hub_agent_action" && parent.getInputTargetBlock("ACTION") === stackHead) {
+            return String(parent.getFieldValue("AGENT") || "").trim();
+        }
+        if (parent.type === "hub_agent_data" && parent.getInputTargetBlock("DATA") === stackHead) {
+            return String(parent.getFieldValue("AGENT") || "").trim();
+        }
+    }
+    const target = block?.getInputTargetBlock ? block.getInputTargetBlock(BLOCKLY_AGENT_CONTEXT_INPUT) : null;
+    if (!target || target.type !== "hub_agent_context") return "";
+    return String(target.getFieldValue("AGENT") || "").trim();
+}
+
+function addBlocklyAgentContextInput(block, BlocklyRef) {
+    // Agent context is now provided by the surrounding hub_agent_context container.
+}
+
+function refreshBlocklyAgentContextStyle(block) {
+    if (!block || block.isInFlyout || block.type === "hub_agent_context") return;
+    if (!BLOCKLY_AGENT_CONTEXT_SUPPORTED_BLOCKS.has(block.type)) return;
+    const baseColour = block.__md2BaseColour || BLOCKLY_AGENT_CONTEXT_BASE_COLOURS[block.type] || block.colour_ || "#3b82f6";
+    const hasAgentContext = !!getBlocklyAgentContextDevice(block);
+    try {
+        block.setColour(hasAgentContext ? BLOCKLY_AGENT_CONTEXT_COLOUR : baseColour);
+    } catch (e) {}
+}
+
+function refreshBlocklyAgentContextStyles(workspace) {
+    if (!workspace || typeof workspace.getAllBlocks !== "function") return;
+    (workspace.getAllBlocks(false) || []).forEach(refreshBlocklyAgentContextStyle);
+}
+
+function forceRenderBlocklyWorkspace(workspace) {
+    if (!workspace || !window.Blockly) return;
+    const renderAllBlocks = () => {
+        try {
+            refreshBlocklyAgentContextStyles(workspace);
+            (workspace.getAllBlocks(false) || []).forEach((block) => {
+                if (block && typeof block.render === "function") block.render();
+            });
+            window.Blockly.svgResize(workspace);
+            if (typeof workspace.resizeContents === "function") workspace.resizeContents();
+        } catch (e) {}
+    };
+    renderAllBlocks();
+    requestAnimationFrame(renderAllBlocks);
+}
+
 function getBlocklyRoomStateTargetDropdownOptions() {
     const options = [["Room", "room"], ...getRoomBranchDropdownOptions().map(([label, value]) => [label, `branch:${value}`])];
     const puzzleOptions = getBlocklyPuzzleDropdownOptions().map(([label, value]) => [`Puzzle: ${label}`, value]);
@@ -6284,32 +6452,54 @@ function composeElseGuardExpr(previousExprs = []) {
     return anyPrevious ? composeExprNot(anyPrevious) : null;
 }
 
+function applyAgentDeviceToDataExpression(expr, agentDeviceId) {
+    const safeAgent = String(agentDeviceId || "").trim();
+    const safeExpr = cloneDataExpression(expr);
+    if (!safeExpr || !safeAgent) return safeExpr;
+    const visit = (node) => {
+        if (!node || typeof node !== "object" || Array.isArray(node)) return;
+        if (String(node.type || "").trim().toLowerCase() === "field" && !String(node.agentDeviceId || "").trim()) {
+            node.agentDeviceId = safeAgent;
+        }
+        visit(node.left);
+        visit(node.right);
+        visit(node.value);
+    };
+    visit(safeExpr);
+    return safeExpr;
+}
+
 function buildDataExprFromBlocklyBlock(block) {
     if (!block) return null;
     const type = String(block.type || "");
     const getChild = (inputName) => buildDataExprFromBlocklyBlock(block.getInputTargetBlock(inputName));
 
+    if (type === "hub_agent_data") {
+        return applyAgentDeviceToDataExpression(getChild("DATA"), String(block.getFieldValue("AGENT") || ""));
+    }
     if (type === "data_topic") {
         const workspaceMode = String(block.workspace?.__md2ScriptingMode || "").trim().toLowerCase();
         const fallbackSource = workspaceMode === "puzzle" ? BLOCKLY_DATA_SOURCE_CUSTOM : BLOCKLY_DATA_SOURCE_STATE;
         const sourceRaw = String(block.getFieldValue("SOURCE") || fallbackSource).trim();
+        const agentDeviceId = getBlocklyAgentContextDevice(block);
         if (sourceRaw === BLOCKLY_DATA_SOURCE_CUSTOM) {
-            return { type: "field", source: "custom" };
+            return { type: "field", source: "custom", agentDeviceId };
         }
         if (sourceRaw === BLOCKLY_DATA_SOURCE_PLAYER_INPUT) {
-            return { type: "field", source: "player_input", field: String(block.getFieldValue("FIELD") || "submitted") };
+            return { type: "field", source: "player_input", field: String(block.getFieldValue("FIELD") || "submitted"), agentDeviceId };
         }
         if (sourceRaw === BLOCKLY_DATA_SOURCE_STATE) {
             const stateTarget = String(block.getFieldValue("FIELD") || "").trim();
             return (workspaceMode === "room" && stateTarget)
-                ? { type: "field", source: "state", puzzle: stateTarget }
-                : { type: "field", source: "state" };
+                ? { type: "field", source: "state", puzzle: stateTarget, agentDeviceId }
+                : { type: "field", source: "state", agentDeviceId };
         }
         return {
             type: "field",
             source: "sensor",
             device: sourceRaw,
-            field: String(block.getFieldValue("FIELD") || "")
+            field: String(block.getFieldValue("FIELD") || ""),
+            agentDeviceId
         };
     }
     if (type === "data_number") {
@@ -6351,6 +6541,7 @@ function buildDataExprFromBlocklyBlock(block) {
 function createBlocklyDataExprBlock(workspace, expr) {
     if (!workspace || !expr || typeof expr !== "object") return null;
     const type = String(expr.type || "");
+    const agentDeviceId = String(expr.agentDeviceId || "").trim();
     let block = null;
     if (type === "field") {
         block = workspace.newBlock("data_topic");
@@ -6409,6 +6600,17 @@ function createBlocklyDataExprBlock(workspace, expr) {
         connectChild("B", expr.right);
     } else if (type === "not") {
         connectChild("A", expr.value);
+    }
+    if (agentDeviceId && block.outputConnection && workspace?.__md2ScriptingMode === "puzzle") {
+        const wrapper = workspace.newBlock("hub_agent_data");
+        wrapper.setFieldValue(agentDeviceId, "AGENT");
+        wrapper.initSvg();
+        wrapper.render();
+        const input = wrapper.getInput("DATA");
+        if (input?.connection) {
+            input.connection.connect(block.outputConnection);
+            return wrapper;
+        }
     }
     return block;
 }
@@ -6544,6 +6746,36 @@ function ensureBlocklyDataExpressionBlocks(BlocklyRef) {
     const ensureCurrentOption = (options, currentValue, fallbackLabel) => {
         return Array.isArray(options) ? options : [];
     };
+    if (!BlocklyRef.Blocks["hub_agent_context"]) {
+        BlocklyRef.Blocks["hub_agent_context"] = {
+            init: function() {
+                this.appendDummyInput()
+                    .appendField("Agent")
+                    .appendField(new BlocklyRef.FieldDropdown(() => getBlocklyAgentDropdownOptions()), "AGENT");
+                this.appendStatementInput("DO")
+                    .setCheck(null)
+                    .appendField("do");
+                this.setPreviousStatement(true, null);
+                this.setNextStatement(true, null);
+                this.setColour(BLOCKLY_AGENT_CONTEXT_COLOUR);
+            }
+        };
+    }
+    if (!BlocklyRef.Blocks["hub_agent_data"]) {
+        BlocklyRef.Blocks["hub_agent_data"] = {
+            init: function() {
+                this.appendDummyInput()
+                    .appendField("Agent")
+                    .appendField(new BlocklyRef.FieldDropdown(() => getBlocklyAgentDropdownOptions()), "AGENT");
+                this.appendValueInput("DATA")
+                    .setCheck(null)
+                    .appendField("Data");
+                this.setInputsInline(true);
+                this.setOutput(true, null);
+                this.setColour(BLOCKLY_AGENT_CONTEXT_COLOUR);
+            }
+        };
+    }
     const getDataSourceOptions = (workspaceMode = "") => {
         const sensorOptions = getBlocklySensorDeviceDropdownOptions().filter((entry) => String(entry?.[1] || "").trim());
         const mode = String(workspaceMode || "").trim().toLowerCase();
@@ -6642,6 +6874,8 @@ function ensureBlocklyDataExpressionBlocks(BlocklyRef) {
                     return newSource;
                 }), "SOURCE");
             this.setOutput(true, null);
+            this.__md2BaseColour = red;
+            addBlocklyAgentContextInput(this, BlocklyRef);
             this.setColour(red);
             this.setOnChange(() => {
                 if (!this.workspace || this.isInFlyout) return;
@@ -6650,6 +6884,7 @@ function ensureBlocklyDataExpressionBlocks(BlocklyRef) {
                 if (currentSource) this.__md2PreferredSource = currentSource;
                 if (currentField) this.__md2PreferredField = currentField;
                 ensureDataTopicFieldControl(this);
+                refreshBlocklyAgentContextStyle(this);
             });
             ensureDataTopicFieldControl(this);
         },
@@ -7484,7 +7719,7 @@ function renderRoomScriptingRules() {
         setRoomScriptingStatus(formatRuleCountStatus((roomScriptingConfig.rules || []).length));
     }
 
-    window.Blockly.svgResize(roomScriptingBlocklyWorkspace);
+    forceRenderBlocklyWorkspace(roomScriptingBlocklyWorkspace);
 }
 
 function ensureScriptingBlocklyTheme(BlocklyRef) {
@@ -7506,6 +7741,7 @@ function ensureScriptingBlocklyTheme(BlocklyRef) {
             cursorColour: "#d9e2ef"
         },
         categoryStyles: {
+            agent_category: { colour: BLOCKLY_AGENT_CONTEXT_COLOUR },
             trigger_category: { colour: "#f59e0b" },
             data_category: { colour: "#ef4444" },
             condition_category: { colour: "#22c55e" },
@@ -7522,14 +7758,58 @@ function ensureScriptingBlocklyDefinitions() {
     ensureBlocklyDataExpressionBlocks(BlocklyRef);
 
     if (!BlocklyRef.Blocks["hub_when_state"]) {
+        BlocklyRef.Blocks["hub_agent_statement"] = {
+            init: function() {
+                this.appendDummyInput()
+                    .appendField("Agent")
+                    .appendField(new BlocklyRef.FieldDropdown(() => getBlocklyAgentDropdownOptions()), "AGENT");
+                this.appendStatementInput("DO")
+                    .setCheck(null)
+                    .appendField("do");
+                this.setPreviousStatement(true, null);
+                this.setNextStatement(true, null);
+                this.setColour(BLOCKLY_AGENT_CONTEXT_COLOUR);
+            }
+        };
+
+        BlocklyRef.Blocks["hub_agent_trigger"] = {
+            init: function() {
+                this.appendDummyInput()
+                    .appendField("Agent")
+                    .appendField(new BlocklyRef.FieldDropdown(() => getBlocklyAgentDropdownOptions()), "AGENT");
+                this.appendStatementInput("TRIGGER")
+                    .setCheck(null)
+                    .appendField("Trigger");
+                this.setNextStatement(true, null);
+                this.setColour(BLOCKLY_AGENT_CONTEXT_COLOUR);
+            }
+        };
+
+        BlocklyRef.Blocks["hub_agent_action"] = {
+            init: function() {
+                this.appendDummyInput()
+                    .appendField("Agent")
+                    .appendField(new BlocklyRef.FieldDropdown(() => getBlocklyAgentDropdownOptions()), "AGENT");
+                this.appendStatementInput("ACTION")
+                    .setCheck(null)
+                    .appendField("Action");
+                this.setPreviousStatement(true, null);
+                this.setNextStatement(true, null);
+                this.setColour(BLOCKLY_AGENT_CONTEXT_COLOUR);
+            }
+        };
+
         BlocklyRef.Blocks["hub_when_state"] = {
             init: function() {
+                this.__md2BaseColour = "#f59e0b";
+                addBlocklyAgentContextInput(this, BlocklyRef);
                 this.appendDummyInput()
                     .appendField("When State changes to")
                     .appendField(new BlocklyRef.FieldDropdown([
                         ["Running", "on_running"],
                         ["Solved", "on_solved"]
                     ]), "STATE");
+                this.setPreviousStatement(true, null);
                 this.setNextStatement(true, null);
                 this.setColour("#f59e0b");
             }
@@ -7537,6 +7817,8 @@ function ensureScriptingBlocklyDefinitions() {
 
         BlocklyRef.Blocks["hub_when_event"] = {
             init: function() {
+                this.__md2BaseColour = "#f59e0b";
+                addBlocklyAgentContextInput(this, BlocklyRef);
                 this.appendDummyInput()
                     .appendField("When event")
                     .appendField(new BlocklyRef.FieldDropdown([
@@ -7544,6 +7826,7 @@ function ensureScriptingBlocklyDefinitions() {
                         ["Custom", "on_custom"]
                     ]), "EVENT")
                     .appendField("triggers");
+                this.setPreviousStatement(true, null);
                 this.setNextStatement(true, null);
                 this.setColour("#f59e0b");
             }
@@ -7551,6 +7834,8 @@ function ensureScriptingBlocklyDefinitions() {
 
         BlocklyRef.Blocks["hub_when_external_input"] = {
             init: function() {
+                this.__md2BaseColour = "#f59e0b";
+                addBlocklyAgentContextInput(this, BlocklyRef);
                 this.appendDummyInput()
                     .appendField("When External Input")
                     .appendField(new BlocklyRef.FieldDropdown([
@@ -7558,6 +7843,7 @@ function ensureScriptingBlocklyDefinitions() {
                         ["returns false Input", "on_external_input_false"],
                         ["returns right Input", "on_external_input_right"]
                     ]), "EXT_EVENT");
+                this.setPreviousStatement(true, null);
                 this.setNextStatement(true, null);
                 this.setColour("#f59e0b");
             }
@@ -7565,8 +7851,11 @@ function ensureScriptingBlocklyDefinitions() {
 
         BlocklyRef.Blocks["hub_when_hint"] = {
             init: function() {
+                this.__md2BaseColour = "#f59e0b";
+                addBlocklyAgentContextInput(this, BlocklyRef);
                 this.appendDummyInput()
                     .appendField("When Hint gets Triggered");
+                this.setPreviousStatement(true, null);
                 this.setNextStatement(true, null);
                 this.setColour("#f59e0b");
             }
@@ -7738,6 +8027,8 @@ function ensureScriptingBlocklyDefinitions() {
 
         BlocklyRef.Blocks["hub_action_send_custom"] = {
             init: function() {
+                this.__md2BaseColour = "#3b82f6";
+                addBlocklyAgentContextInput(this, BlocklyRef);
                 this.appendDummyInput().appendField("Send Custom");
                 this.appendValueInput("DATA").setCheck(null);
                 this.setInputsInline(true);
@@ -7797,6 +8088,8 @@ function ensureScriptingBlocklyDefinitions() {
 
         BlocklyRef.Blocks["hub_action_get_state"] = {
             init: function() {
+                this.__md2BaseColour = "#3b82f6";
+                addBlocklyAgentContextInput(this, BlocklyRef);
                 this.appendDummyInput()
                     .appendField("Get State in variable")
                     .appendField(new BlocklyRef.FieldTextInput("puzzleState"), "VAR");
@@ -7808,6 +8101,8 @@ function ensureScriptingBlocklyDefinitions() {
 
         BlocklyRef.Blocks["hub_action_set_state"] = {
             init: function() {
+                this.__md2BaseColour = "#3b82f6";
+                addBlocklyAgentContextInput(this, BlocklyRef);
                 this.appendDummyInput()
                     .appendField("Set State to")
                     .appendField(new BlocklyRef.FieldDropdown(BLOCKLY_PUZZLE_STATE_OPTIONS), "STATE");
@@ -7819,6 +8114,8 @@ function ensureScriptingBlocklyDefinitions() {
 
         BlocklyRef.Blocks["hub_action_send_custom_var"] = {
             init: function() {
+                this.__md2BaseColour = "#3b82f6";
+                addBlocklyAgentContextInput(this, BlocklyRef);
                 this.appendDummyInput()
                     .appendField("Send Custom Variable")
                     .appendField(new BlocklyRef.FieldTextInput("sensorValue"), "VAR_NAME");
@@ -7905,6 +8202,7 @@ function ensureScriptingBlocklyWorkspace() {
     ensureScriptingCenterButton();
 
     scriptingBlocklyWorkspace.addChangeListener((event) => {
+        refreshBlocklyAgentContextStyles(scriptingBlocklyWorkspace);
         if (scriptingBlocklySyncGuard) return;
         if (!selectedNode || selectedNode.type !== "escape/Puzzle") return;
         if (event?.type === BlocklyRef.Events.UI || event?.type === BlocklyRef.Events.VIEWPORT_CHANGE) {
@@ -7921,6 +8219,36 @@ function populateWorkspaceFromLegacyScriptingRules(workspace, node) {
     if (!BlocklyRef || !workspace || !node) return;
     ensureScriptingRules(node);
     const rules = node.properties.scriptingRules || [];
+    const wrapTriggerWithAgentContext = (block, agentDeviceId) => {
+        const deviceId = String(agentDeviceId || "").trim();
+        if (!deviceId || !block || !block.previousConnection) return null;
+        const agentBlock = workspace.newBlock("hub_agent_statement");
+        agentBlock.setFieldValue(deviceId, "AGENT");
+        agentBlock.initSvg();
+        agentBlock.render();
+        const input = agentBlock.getInput("DO");
+        if (input?.connection) {
+            input.connection.connect(block.previousConnection);
+            refreshBlocklyAgentContextStyle(block);
+            return agentBlock;
+        }
+        return null;
+    };
+    const wrapActionWithAgentContext = (block, agentDeviceId) => {
+        const deviceId = String(agentDeviceId || "").trim();
+        if (!deviceId || !block || !block.previousConnection) return null;
+        const agentBlock = workspace.newBlock("hub_agent_statement");
+        agentBlock.setFieldValue(deviceId, "AGENT");
+        agentBlock.initSvg();
+        agentBlock.render();
+        const input = agentBlock.getInput("DO");
+        if (input?.connection) {
+            input.connection.connect(block.previousConnection);
+            refreshBlocklyAgentContextStyle(block);
+            return agentBlock;
+        }
+        return null;
+    };
     rules.forEach((rule, index) => {
         const isStateTrigger = rule.triggerType === "on_running" || rule.triggerType === "on_activate" || rule.triggerType === "on_solved";
         const isRoomStartedTrigger = rule.triggerType === "on_room_started";
@@ -7963,7 +8291,8 @@ function populateWorkspaceFromLegacyScriptingRules(workspace, node) {
         }
         whenBlock.initSvg();
         whenBlock.render();
-        whenBlock.moveBy(80 + ((index % 3) * 260), 60 + (Math.floor(index / 3) * 120));
+        const wrappedWhenBlock = wrapTriggerWithAgentContext(whenBlock, rule.triggerAgentDeviceId);
+        (wrappedWhenBlock || whenBlock).moveBy(80 + ((index % 3) * 260), 60 + (Math.floor(index / 3) * 120));
 
         let previous = whenBlock;
         if (rule.conditionType && rule.conditionType !== "none") {
@@ -8048,7 +8377,8 @@ function populateWorkspaceFromLegacyScriptingRules(workspace, node) {
         }
         actionBlock.initSvg();
         actionBlock.render();
-        previous.nextConnection?.connect(actionBlock.previousConnection);
+        const wrappedActionBlock = wrapActionWithAgentContext(actionBlock, rule.actionAgentDeviceId);
+        previous.nextConnection?.connect((wrappedActionBlock || actionBlock).previousConnection);
     });
 }
 
@@ -8063,7 +8393,10 @@ function extractScriptingRulesFromWorkspace(workspace) {
             || block.type === "hub_when_hint"
             || block.type === "hub_when_sensor_data"
             || block.type === "hub_when_sensor_match"
-            || block.type === "hub_when_room_started")
+            || block.type === "hub_when_room_started"
+            || block.type === "hub_agent_statement"
+            || block.type === "hub_agent_trigger"
+            || block.type === "hub_agent_context")
         .sort((a, b) => {
             const aPos = a.getRelativeToSurfaceXY();
             const bPos = b.getRelativeToSurfaceXY();
@@ -8076,6 +8409,7 @@ function extractScriptingRulesFromWorkspace(workspace) {
         triggerValue: String(state?.triggerValue || ""),
         triggerField: String(state?.triggerField || ""),
         triggerExpected: String(state?.triggerExpected || ""),
+        triggerAgentDeviceId: String(state?.triggerAgentDeviceId || ""),
         conditionType: String(state?.conditionType || "none"),
         conditionValue: String(state?.conditionValue || ""),
         conditionVar: String(state?.conditionVar || ""),
@@ -8152,6 +8486,7 @@ function extractScriptingRulesFromWorkspace(workspace) {
             triggerValue: state.triggerValue,
             triggerField: state.triggerField,
             triggerExpected: state.triggerExpected,
+            triggerAgentDeviceId: state.triggerAgentDeviceId,
             conditionType: state.conditionType,
             conditionVar: state.conditionVar,
             conditionField: state.conditionType === "sensor_compare" ? state.conditionField : "",
@@ -8160,6 +8495,7 @@ function extractScriptingRulesFromWorkspace(workspace) {
             conditionValue: state.conditionType === "none" ? "" : state.conditionValue,
             actionType,
             actionValue,
+            actionAgentDeviceId: getBlocklyAgentContextDevice(current),
             actionExpr,
             actionSourceDevice: actionType === "set_var_from_sensor" ? String(current.getFieldValue("DEVICE") || "") : "",
             actionSourceField: actionType === "set_var_from_sensor" ? String(current.getFieldValue("FIELD") || "") : "",
@@ -8246,6 +8582,12 @@ function extractScriptingRulesFromWorkspace(workspace) {
                     mode: "forever",
                     stack: [...(loopCtx?.stack || []), { type: "forever", key: foreverKey, iter: null }]
                 });
+            } else if (current.type === "hub_agent_context") {
+                walkChain(current.getInputTargetBlock("DO"), state, loopCtx);
+            } else if (current.type === "hub_agent_statement") {
+                walkChain(current.getInputTargetBlock("DO"), state, loopCtx);
+            } else if (current.type === "hub_agent_action") {
+                walkChain(current.getInputTargetBlock("ACTION"), state, loopCtx);
             } else if (current.type === "hub_action_play_cue"
                 || current.type === "hub_action_play_sound"
                 || current.type === "hub_action_send_custom"
@@ -8264,11 +8606,28 @@ function extractScriptingRulesFromWorkspace(workspace) {
         }
     };
     topBlocks.forEach((topBlock) => {
+        const triggerBlock = topBlock.type === "hub_agent_context"
+            ? topBlock.getInputTargetBlock("DO")
+            : (topBlock.type === "hub_agent_statement"
+                ? topBlock.getInputTargetBlock("DO")
+                : (topBlock.type === "hub_agent_trigger" ? topBlock.getInputTargetBlock("TRIGGER") : topBlock));
+        if (!triggerBlock || !(triggerBlock.type === "hub_when_state"
+            || triggerBlock.type === "hub_when_event"
+            || triggerBlock.type === "hub_when_external_input"
+            || triggerBlock.type === "hub_when_hint"
+            || triggerBlock.type === "hub_when_sensor_data"
+            || triggerBlock.type === "hub_when_sensor_match"
+            || triggerBlock.type === "hub_when_room_started")) {
+            return;
+        }
         const topState = {
             triggerType: "on_running",
             triggerValue: "",
             triggerField: "",
             triggerExpected: "",
+            triggerAgentDeviceId: (topBlock.type === "hub_agent_statement" || topBlock.type === "hub_agent_trigger")
+                ? String(topBlock.getFieldValue("AGENT") || "").trim()
+                : getBlocklyAgentContextDevice(triggerBlock),
             conditionType: "none",
             conditionValue: "",
             conditionVar: "",
@@ -8277,29 +8636,32 @@ function extractScriptingRulesFromWorkspace(workspace) {
             conditionOp: "eq",
             exprBranchRawList: []
         };
-        if (topBlock.type === "hub_when_room_started") {
+        if (triggerBlock.type === "hub_when_room_started") {
             topState.triggerType = "on_room_started";
-        } else if (topBlock.type === "hub_when_state") {
-            const stateRaw = topBlock.getFieldValue("STATE");
+        } else if (triggerBlock.type === "hub_when_state") {
+            const stateRaw = triggerBlock.getFieldValue("STATE");
             topState.triggerType = stateRaw === "on_solved" ? "on_solved" : "on_running";
-        } else if (topBlock.type === "hub_when_external_input") {
-            const raw = String(topBlock.getFieldValue("EXT_EVENT") || "").trim();
+        } else if (triggerBlock.type === "hub_when_external_input") {
+            const raw = String(triggerBlock.getFieldValue("EXT_EVENT") || "").trim();
             topState.triggerType = SCRIPTING_TRIGGER_TYPES.includes(raw) ? raw : "on_external_input_activated";
-        } else if (topBlock.type === "hub_when_hint") {
+        } else if (triggerBlock.type === "hub_when_hint") {
             topState.triggerType = "on_hint";
-        } else if (topBlock.type === "hub_when_sensor_data") {
+        } else if (triggerBlock.type === "hub_when_sensor_data") {
             topState.triggerType = "on_sensor_data";
-            topState.triggerValue = String(topBlock.getFieldValue("DEVICE") || "");
-        } else if (topBlock.type === "hub_when_sensor_match") {
+            topState.triggerValue = String(triggerBlock.getFieldValue("DEVICE") || "");
+        } else if (triggerBlock.type === "hub_when_sensor_match") {
             topState.triggerType = "on_sensor_match";
-            topState.triggerValue = String(topBlock.getFieldValue("DEVICE") || "");
-            topState.triggerField = String(topBlock.getFieldValue("FIELD") || "");
-            topState.triggerExpected = String(topBlock.getFieldValue("VALUE") || "");
+            topState.triggerValue = String(triggerBlock.getFieldValue("DEVICE") || "");
+            topState.triggerField = String(triggerBlock.getFieldValue("FIELD") || "");
+            topState.triggerExpected = String(triggerBlock.getFieldValue("VALUE") || "");
         } else {
-            const eventRaw = topBlock.getFieldValue("EVENT");
+            const eventRaw = triggerBlock.getFieldValue("EVENT");
             topState.triggerType = SCRIPTING_TRIGGER_TYPES.includes(eventRaw) ? eventRaw : "on_reset";
         }
-        walkChain(topBlock.getNextBlock(), topState, { mode: "", stack: [] });
+        walkChain(triggerBlock.getNextBlock(), topState, { mode: "", stack: [] });
+        if (topBlock.type === "hub_agent_statement" || topBlock.type === "hub_agent_trigger") {
+            walkChain(topBlock.getNextBlock(), topState, { mode: "", stack: [] });
+        }
     });
 
     return rules;
@@ -8358,7 +8720,7 @@ function renderScriptingRules(node) {
         setScriptingStatus(formatRuleCountStatus((node.properties.scriptingRules || []).length));
     }
 
-    window.Blockly.svgResize(scriptingBlocklyWorkspace);
+    forceRenderBlocklyWorkspace(scriptingBlocklyWorkspace);
 }
 
 async function openScriptingOverlay() {
@@ -8371,9 +8733,7 @@ async function openScriptingOverlay() {
     if (scriptingUI.overlay) scriptingUI.overlay.style.display = "flex";
     renderScriptingRules(selectedNode);
     if (window.Blockly && scriptingBlocklyWorkspace) {
-        setTimeout(() => {
-            window.Blockly.svgResize(scriptingBlocklyWorkspace);
-        }, 0);
+        setTimeout(() => forceRenderBlocklyWorkspace(scriptingBlocklyWorkspace), 0);
     }
 }
 
@@ -8419,9 +8779,7 @@ async function openRoomScriptingOverlay() {
     if (roomScriptingUI.overlay) roomScriptingUI.overlay.style.display = "flex";
     renderRoomScriptingRules();
     if (window.Blockly && roomScriptingBlocklyWorkspace) {
-        setTimeout(() => {
-            window.Blockly.svgResize(roomScriptingBlocklyWorkspace);
-        }, 0);
+        setTimeout(() => forceRenderBlocklyWorkspace(roomScriptingBlocklyWorkspace), 0);
     }
 }
 
@@ -9070,6 +9428,7 @@ function updatePropertiesPanel(node){
         const isAnalog = !!node.properties.isAnalog;
         const currentDev = isAnalog ? "" : (node.properties.selectedDeviceID || "");
         fillDeviceDropdown(currentDev, isAnalog); 
+        renderAgentDeviceList(node);
         if(ui.dropdown){
             if(isAnalog){
                 ui.dropdown.classList.add("dropdown-disabled");
@@ -9278,6 +9637,140 @@ function refreshProgressBranchesForSelectedScreen() {
 }
 
 function hidePropertiesPanel(){ propertiesSidebar.style.display="none"; selectedNode=null; selectedScreenId=null; updateSidebarHighlight(null); updateScreenHighlight(null); logWindow.classList.remove("sidebar-open"); updateCenterFlowButtonPosition(); closeFallbackModal(); }
+function getKnownDeviceMapFromCache() {
+    try {
+        return lastKnownDevicesStr ? (JSON.parse(lastKnownDevicesStr) || {}) : {};
+    } catch (e) {
+        return {};
+    }
+}
+function normalizePuzzleAgentDeviceIds(node) {
+    if (!node || node.type !== "escape/Puzzle") return [];
+    const ownDeviceId = String(node.properties?.selectedDeviceID || "").trim();
+    const raw = Array.isArray(node.properties?.agentDeviceIDs) ? node.properties.agentDeviceIDs : [];
+    const seen = new Set();
+    const normalized = raw
+        .map(id => String(id || "").trim())
+        .filter(id => id && id !== ownDeviceId && !seen.has(id) && (seen.add(id), true));
+    if (!Array.isArray(node.properties.agentDeviceIDs)
+        || normalized.length !== raw.length
+        || normalized.some((id, idx) => id !== raw[idx])) {
+        node.properties.agentDeviceIDs = normalized;
+    }
+    return normalized;
+}
+function collectReservedDeviceIds(exceptNode = null) {
+    const hostIds = new Set();
+    const agentIds = new Set();
+    const puzzleNodes = graph?.findNodesByType ? (graph.findNodesByType("escape/Puzzle") || []) : [];
+    puzzleNodes.forEach((node) => {
+        if (!node || node === exceptNode) return;
+        const host = String(node.properties?.selectedDeviceID || "").trim();
+        if (host) hostIds.add(host);
+        normalizePuzzleAgentDeviceIds(node).forEach(id => agentIds.add(id));
+    });
+    return { hostIds, agentIds };
+}
+function getAvailableAgentDevicesForNode(node) {
+    if (!node || node.type !== "escape/Puzzle") return [];
+    const devices = getKnownDeviceMapFromCache();
+    const ownDeviceId = String(node.properties?.selectedDeviceID || "").trim();
+    const selectedAgents = new Set(normalizePuzzleAgentDeviceIds(node));
+    const { hostIds, agentIds } = collectReservedDeviceIds(node);
+    return Object.values(devices)
+        .map(entry => ({
+            id: String(entry?.id || "").trim(),
+            name: String(entry?.name || entry?.id || "").trim(),
+            ip: String(entry?.ip || "").trim(),
+            lastSeen: Number(entry?.lastSeen || 0)
+        }))
+        .filter(entry => {
+            if (!entry.id || entry.id === ownDeviceId) return false;
+            if (hostIds.has(entry.id)) return false;
+            if (agentIds.has(entry.id) && !selectedAgents.has(entry.id)) return false;
+            return true;
+        })
+        .sort((a, b) => a.name.localeCompare(b.name));
+}
+function pruneInvalidAgentsForNode(node) {
+    if (!node || node.type !== "escape/Puzzle") return false;
+    if (!knownDevicesLoaded) return false;
+    const before = normalizePuzzleAgentDeviceIds(node);
+    const allowed = new Set(getAvailableAgentDevicesForNode(node).map(entry => entry.id));
+    const after = before.filter(id => allowed.has(id));
+    const changed = after.length !== before.length || after.some((id, idx) => id !== before[idx]);
+    if (changed) node.properties.agentDeviceIDs = after;
+    return changed;
+}
+function removeAgentDeviceAssignmentEverywhere(deviceId, exceptNode = null) {
+    const safeId = String(deviceId || "").trim();
+    if (!safeId) return false;
+    let changed = false;
+    const puzzleNodes = graph?.findNodesByType ? (graph.findNodesByType("escape/Puzzle") || []) : [];
+    puzzleNodes.forEach((node) => {
+        if (!node || node === exceptNode) return;
+        const agents = normalizePuzzleAgentDeviceIds(node);
+        const next = agents.filter(id => id !== safeId);
+        if (next.length !== agents.length) {
+            node.properties.agentDeviceIDs = next;
+            changed = true;
+        }
+    });
+    return changed;
+}
+function renderAgentDeviceList(node) {
+    if (!ui.agentsList) return;
+    ui.agentsList.innerHTML = "";
+    if (!node || node.type !== "escape/Puzzle") return;
+    const pruned = pruneInvalidAgentsForNode(node);
+    const selected = new Set(normalizePuzzleAgentDeviceIds(node));
+    const devices = getAvailableAgentDevicesForNode(node);
+    if (!devices.length) {
+        const empty = document.createElement("div");
+        empty.className = "agent-select-empty";
+        empty.textContent = knownDevicesLoaded
+            ? "No available heartbeat puzzle devices."
+            : (selected.size ? "Loading assigned agents..." : "Loading heartbeat puzzle devices...");
+        ui.agentsList.appendChild(empty);
+        if (pruned) autoSave();
+        return;
+    }
+    devices.forEach((device) => {
+        const row = document.createElement("label");
+        row.className = "agent-select-item";
+
+        const main = document.createElement("div");
+        main.className = "agent-select-main";
+        const name = document.createElement("div");
+        name.className = "agent-select-name";
+        name.textContent = device.name || device.id;
+        const meta = document.createElement("div");
+        meta.className = "agent-select-meta";
+        meta.textContent = [device.ip, device.id].filter(Boolean).join(" | ");
+        main.appendChild(name);
+        main.appendChild(meta);
+
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.checked = selected.has(device.id);
+        checkbox.addEventListener("change", () => {
+            const next = new Set(normalizePuzzleAgentDeviceIds(node));
+            if (checkbox.checked) next.add(device.id);
+            else next.delete(device.id);
+            node.properties.agentDeviceIDs = Array.from(next);
+            window.flushEditorSave?.().catch(() => {});
+            renderAgentDeviceList(node);
+            if (scriptingUI.overlay?.style.display === "flex") {
+                renderScriptingRules(node);
+            }
+        });
+
+        row.appendChild(main);
+        row.appendChild(checkbox);
+        ui.agentsList.appendChild(row);
+    });
+    if (pruned) autoSave();
+}
 function fillDeviceDropdown(currentSelection,isAnalog=false){ 
     const updateLabel=(text)=>{ ui.dropdownTrigger.innerHTML=`<span>${text}</span><span class="dropdown-arrow">>></span>`; };
     if(isAnalog){
@@ -9286,6 +9779,8 @@ function fillDeviceDropdown(currentSelection,isAnalog=false){
         return;
     }
     fetch('/api/devices').then(r=>r.json()).then(devices=>{
+        knownDevicesLoaded = true;
+        lastKnownDevicesStr = JSON.stringify(devices || {});
         ui.dropdownMenu.innerHTML="";
         updateLabel("-- Select Device --");
         const deviceList=Object.values(devices).sort((a,b)=>a.name.localeCompare(b.name));
@@ -9298,6 +9793,9 @@ function fillDeviceDropdown(currentSelection,isAnalog=false){
         if(currentSelection && !devices[currentSelection] && currentSelection!==""){
             updateLabel(`Unknown (${currentSelection})`);
             ui.dropdownMenu.appendChild(createDropdownItem(currentSelection,`Unknown (${currentSelection})`,true,false));
+        }
+        if (selectedNode && selectedNode.type === "escape/Puzzle") {
+            renderAgentDeviceList(selectedNode);
         }
     }).catch(err=>{});
 }
@@ -9312,8 +9810,11 @@ function createDropdownItem(id,text,isSelected,isDeletable){
         if(selectedNode){
             selectedNode.properties.isAnalog=false;
             selectedNode.properties.selectedDeviceID=id;
+            selectedNode.properties.agentDeviceIDs = normalizePuzzleAgentDeviceIds(selectedNode).filter(agentId => agentId !== id);
+            removeAgentDeviceAssignmentEverywhere(id, selectedNode);
             ui.dropdownMenu.classList.remove("open");
             fillDeviceDropdown(id, false);
+            renderAgentDeviceList(selectedNode);
             autoSave();
         }
     });
@@ -9335,6 +9836,11 @@ function createDropdownItem(id,text,isSelected,isDeletable){
                                 node.properties.selectedDeviceID="";
                                 node.setDirtyCanvas(true,true);
                                 graphModified=true;
+                            }
+                            const nextAgents = normalizePuzzleAgentDeviceIds(node).filter(agentId => agentId !== id);
+                            if (nextAgents.length !== normalizePuzzleAgentDeviceIds(node).length) {
+                                node.properties.agentDeviceIDs = nextAgents;
+                                graphModified = true;
                             }
                         });
                     }
@@ -9705,7 +10211,7 @@ if (ui.screenOpenPageBtn) {
 }
 graph.onNodeAdded=autoSave; graph.onNodeRemoved=n=>{ rebuildSidebarList(); if(selectedNode&&selectedNode.id===n.id)updatePropertiesPanel(null); autoSave(); }; graph.onNodeConnectionChange=autoSave; canvas.onNodeMoved=autoSave; canvas.onSelectionChange=nodes=>{ if(suppressSelectionChange){ suppressSelectionChange=false; return; } const list=nodes?Object.values(nodes):[]; const branchNode=list.find(n=>n && (n.type==="escape/Start" || n.type==="escape/End")); if(branchNode){ selectBranchPairForNode(branchNode); } else { clearBranchPairSelection(); } updatePropertiesPanel(list[0]||null); };
 const origProp=LGraphNode.prototype.onPropertyChanged; LGraphNode.prototype.onPropertyChanged=function(n,v){ if(origProp)origProp.call(this,n,v); autoSave(); };
-function checkForDeviceUpdates(){ if(!selectedNode||selectedNode.type!=="escape/Puzzle")return; fetch('/api/devices').then(r=>r.json()).then(devices=>{ const currentJson=JSON.stringify(devices); if(currentJson!==lastKnownDevicesStr){ lastKnownDevicesStr=currentJson; const devSel = selectedNode.properties.isAnalog ? "" : (selectedNode.properties.selectedDeviceID || ""); fillDeviceDropdown(devSel, !!selectedNode.properties.isAnalog); } }).catch(()=>{}); }
+function checkForDeviceUpdates(){ if(!selectedNode||selectedNode.type!=="escape/Puzzle")return; fetch('/api/devices').then(r=>r.json()).then(devices=>{ knownDevicesLoaded = true; const currentJson=JSON.stringify(devices); if(currentJson!==lastKnownDevicesStr){ lastKnownDevicesStr=currentJson; const devSel = selectedNode.properties.isAnalog ? "" : (selectedNode.properties.selectedDeviceID || ""); fillDeviceDropdown(devSel, !!selectedNode.properties.isAnalog); } }).catch(()=>{}); }
 
 function pollData(){ 
     fetch('/api/runtime/status').then(r=>r.json()).then(statusMap=>{ 
@@ -9788,9 +10294,11 @@ window.addEventListener("load", () => {
     loadZigbeeDevices({ silent: true }).catch(() => {});
     startZigbeeBackgroundPolling();
     
-    fetch('/api/room')
-        .then(r => r.json())
-        .then(data => {
+    Promise.all([
+        fetch('/api/room').then(r => r.json()),
+        fetch('/api/rooms/list').then(r => r.json()).catch(() => ({}))
+    ])
+        .then(([data, listData]) => {
             if(data.empty || !data.nodes || Object.keys(data).length === 0) {
                 currentRoomName = null;
                 screens = [];
@@ -9803,10 +10311,8 @@ window.addEventListener("load", () => {
                 showModal(); 
             } else {
                 updateStatus("Ready", "#fff");
-                fetch('/api/rooms/list').then(r=>r.json()).then(listData => {
-                    currentRoomName = listData.current;
-                    if(currentRoomDisplay) currentRoomDisplay.textContent = currentRoomName ? currentRoomName : "Loaded";
-                });
+                currentRoomName = listData.current || currentRoomName;
+                if(currentRoomDisplay) currentRoomDisplay.textContent = currentRoomName ? currentRoomName : "Loaded";
                 screens = normalizeScreensData(data.config && data.config.screens);
                 nextScreenId = screens.reduce((max,s)=>Math.max(max, s.id||0), 0) + 1;
                 resetLightingState(data.config && data.config.lighting);

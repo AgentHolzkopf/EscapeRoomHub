@@ -353,6 +353,51 @@ HubRemoteEditing/PuzzleTemplates/
 |-- Windows, Linux, Pi/
 ```
 
+### Windows / Linux / Pi Agent Quickstart
+
+The `Windows, Linux, Pi` template includes a PowerShell installer for Windows puzzle clients.
+
+```powershell
+cd "PuzzleTemplates\Windows, Linux, Pi"
+powershell -ExecutionPolicy Bypass -File .\install-agent.ps1
+```
+
+If Node.js is missing, install it through the same installer:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install-agent.ps1 -InstallNode
+```
+
+After Node.js installation, reopen PowerShell and run the installer again so the updated `PATH` is available.
+
+Non-interactive example:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install-agent.ps1 -HubHost 192.168.101.96 -PuzzleName TestPuzzle
+```
+
+Install and start immediately:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install-agent.ps1 -HubHost 192.168.101.96 -PuzzleName TestPuzzle -Start
+```
+
+The installer checks Node.js/npm, writes `CommunikationAgent.config.json`, generates a stable local agent ID in `.agent-device-id` when needed, installs the MQTT dependency, and validates the agent script.
+
+Start the agent manually with:
+
+```bash
+node CommunikationAgent.js --port 5001
+```
+
+The agent exposes HTTP endpoints for the local puzzle logic and uses MQTT to communicate with the hub. The hub must allow MQTT clients on the local network. The hub installer configures Mosquitto for this in `--core` and `--full` mode.
+
+Detailed setup and HTTP API examples are documented in:
+
+```text
+PuzzleTemplates/Windows, Linux, Pi/README_CommunikationAgent_Setup.txt
+```
+
 ---
 
 ## DMX and Lighting

@@ -500,19 +500,22 @@
             background: linear-gradient(180deg, #3587d4, #236299);
         }
         .settings-modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: none; align-items: center; justify-content: center; z-index: 4000; }
-        .settings-modal { width: min(520px, 95vw); background: #1f1f1f; border: 1px solid #3b3b3b; border-radius: 12px; box-shadow: 0 18px 50px rgba(0,0,0,0.6); color: #eaeaea; display: flex; flex-direction: column; overflow: hidden; }
+        .settings-modal { width: min(940px, 95vw); max-height: 90vh; background: #1f1f1f; border: 1px solid #3b3b3b; border-radius: 12px; box-shadow: 0 18px 50px rgba(0,0,0,0.6); color: #eaeaea; display: flex; flex-direction: column; overflow: hidden; }
         .settings-modal-header { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; background: #2b2b2b; border-bottom: 1px solid #3d3d3d; }
         .settings-modal-header h3 { margin: 0; font-size: 18px; }
         .settings-close-btn { background: none; border: 1px solid #4a4a4a; color: #cfd7e0; width: 32px; height: 32px; border-radius: 8px; cursor: pointer; }
         .settings-close-btn:hover { border-color: #3b82f6; color: #fff; }
-        .settings-modal-body { padding: 16px; display: flex; flex-direction: column; gap: 16px; }
-        .settings-section { border: 1px solid #333; border-radius: 10px; padding: 12px; background: #262626; }
+        .settings-modal-body { padding: 16px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; overflow-y: auto; }
+        .settings-section { min-width: 0; border: 1px solid #333; border-radius: 10px; padding: 12px; background: #262626; }
         .settings-title { font-weight: 700; font-size: 14px; }
         .settings-sub { color: #9aa6b5; font-size: 12px; margin-top: 4px; }
         .settings-field { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
         .settings-input { background: #1c1c1c; border: 1px solid #444; color: #fff; border-radius: 6px; padding: 8px 10px; min-width: 120px; }
         .settings-label-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
         .file-label { flex: 1; min-width: 200px; }
+        @media (max-width: 760px) {
+            .settings-modal-body { grid-template-columns: 1fr; }
+        }
         /* Hint modal */
         .hint-modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: none; align-items: center; justify-content: center; z-index: 4500; }
         .hint-modal { width: min(520px, 95vw); height: 520px; background: #2f2f2f; border: 1px solid #0f2f45; border-radius: 12px; box-shadow: 0 18px 50px rgba(0,0,0,0.6); color: #eaeaea; display: flex; flex-direction: column; overflow: hidden; }

@@ -69,14 +69,25 @@ function sendParam(key, type, data) { return setInput(key, type, data); }
 function loadConfigFile() {
   const cfgPath = path.join(__dirname, "CommunikationAgent.config.json");
   try {
-    const raw = fs.readFileSync(cfgPath, "utf-8");
+    const raw = fs.readFileSync(cfgPath, "utf-8").replace(/^\uFEFF/, "");
     return JSON.parse(raw);
   } catch (e) {
+    console.warn(`Config could not be loaded from ${cfgPath}: ${e.message}`);
     return {};
   }
 }
 
+function loadDeviceIdFile() {
+  const idPath = path.join(__dirname, ".agent-device-id");
+  try {
+    return fs.readFileSync(idPath, "utf-8").trim();
+  } catch (e) {
+    return "";
+  }
+}
+
 const FILE_CFG = loadConfigFile();
+const FILE_DEVICE_ID = loadDeviceIdFile();
 
 function loadParamsFromConfig() {
   if (FILE_CFG.externalCheck) {
@@ -91,7 +102,7 @@ function loadParamsFromConfig() {
 const HUB_HOST = process.env.HUB_HOST || FILE_CFG.hubHost || "escapehub.local";
 const MQTT_BROKER = process.env.MQTT_BROKER || FILE_CFG.mqttBroker || HUB_HOST;
 const MQTT_PORT = parseInt(process.env.MQTT_PORT || FILE_CFG.mqttPort || "1883", 10);
-let DEVICE_ID = process.env.DEVICE_ID || FILE_CFG.deviceId || null; // will default to LOCAL_IP later
+let DEVICE_ID = process.env.DEVICE_ID || FILE_CFG.deviceId || FILE_DEVICE_ID || null; // will default to LOCAL_IP later
 let MQTT_TOPIC_HEARTBEAT = null;
 let MQTT_TOPIC_COMMAND = null;
 let MQTT_TOPIC_DATA = null;
