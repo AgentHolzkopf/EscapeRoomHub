@@ -7553,7 +7553,11 @@ module.exports = {
             const groupStatus = computeGroupStatusForNodes(members);
             if (!groupStatus) return;
             members.forEach(node => {
-                statusList[node.id] = { ...groupStatus };
+                const devId = getDeviceIdForPuzzle(node);
+                statusList[node.id] = {
+                    ...groupStatus,
+                    online: node.properties?.isAnalog || isDeviceOnline(devId)
+                };
             });
         });
         return statusList;
