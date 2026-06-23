@@ -1643,6 +1643,7 @@
                         const giveHintAttrs = giveHintDisabled ? 'disabled title="Hint system not configured"' : '';
                         const extBadge = externalConfigured ? `<span class="chip chip-ext${checking ? ' checking' : ''}">Player Input aktiv</span>` : '';
                         const typeChip = `<span class="chip type-chip">${analog?'Analog':'Digital'}</span>`;
+                        const groupChip = p.isGroup ? `<span class="chip type-chip">G</span>` : '';
                         const scriptActive = Number(st.scriptingActiveUntil || 0) > now || Number(puzzleScriptFlashUntil[String(p.id)] || 0) > now;
                         const scriptBadge = p.hasScripting ? `<span class="puzzle-script-indicator${scriptActive ? ' active' : ''}" title="Puzzle Skripting aktiv">{}</span>` : '';
                         const statusChip = analog ? '' : `<span class="chip status-chip"><span class="dot ${online?'online':'offline'}"></span><span>${deviceLabel}</span></span>`;
@@ -1665,6 +1666,7 @@
                                     <div class="puzzle-title">
                                         <div class="puzzle-name" title="${p.name || p.title || 'Puzzle'}">${p.name || p.title || 'Puzzle'}</div>
                                         ${typeChip}
+                                        ${groupChip}
                                         ${scriptBadge}
                                     </div>
                                     ${statusBadge(state)}

@@ -302,51 +302,6 @@ body, html {
 .chevron::before { content: '>'; }
 .category.open .chevron { transform: rotate(90deg); }
 .category-header:hover .chevron { color: #007BFF; }
-.agent-select-list {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-}
-.agent-select-item {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 10px;
-    padding: 8px 10px;
-    border: 1px solid #444;
-    border-radius: 6px;
-    background: #282828;
-}
-.agent-select-main {
-    min-width: 0;
-}
-.agent-select-name {
-    color: #eee;
-    font-weight: 700;
-    font-size: 13px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-.agent-select-meta {
-    color: #999;
-    font-size: 11px;
-    margin-top: 2px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-.agent-select-empty {
-    color: #888;
-    font-size: 12px;
-    padding: 4px 0;
-}
-.agent-select-item input[type="checkbox"] {
-    width: 18px;
-    height: 18px;
-    accent-color: #8b5cf6;
-    flex: 0 0 auto;
-}
 .scripting-open-btn {
     width: 100%;
 }
@@ -596,6 +551,9 @@ body, html {
 .fallback-label { display: inline-block; min-width: 42px; color: #9aa6b5; margin-right: 6px; }
 .fallback-input { width: 100%; padding: 8px 10px; border-radius: 6px; border: 1px solid #0f2f45; background: rgba(0,0,0,0.25); color: #e6e6e6; }
 .fallback-input:focus { outline: 1px solid #0f82c4; }
+.fallback-options { display: flex; flex-direction: column; gap: 8px; padding: 2px 0; }
+.fallback-toggle-row { justify-content: space-between; width: 100%; box-sizing: border-box; }
+.fallback-toggle-row .switch-label { white-space: normal; }
 .fallback-error { min-height: 18px; font-size: 12px; color: #ff7777; }
 .fallback-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .fallback-file-row { display: flex; gap: 8px; align-items: center; }

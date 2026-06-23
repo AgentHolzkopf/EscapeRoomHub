@@ -481,16 +481,6 @@
                 </div>
 
                 <div class="category puzzle-prop">
-                    <div class="category-header" data-target="agents-section">
-                        <span class="chevron"></span>
-                        <span>Agents</span>
-                    </div>
-                    <div class="category-body" id="agents-section">
-                        <div id="agents-list" class="agent-select-list"></div>
-                    </div>
-                </div>
-
-                <div class="category puzzle-prop">
                     <div class="category-header" data-target="external-section">
                         <span class="chevron"></span>
                         <span>External Player Input</span>
@@ -677,6 +667,18 @@
                                 <input type="file" id="fallback-file-input" style="display:none;">
                             </div>
                             <input type="text" id="fallback-input-value" class="fallback-input" placeholder="Enter fallback value">
+                            <div id="fallback-output-options" class="fallback-options" style="display:none;">
+                                <label class="switch fallback-toggle-row">
+                                    <input type="checkbox" id="fallback-send-on-solved" checked>
+                                    <span class="slider"></span>
+                                    <span class="switch-label">Send Output when solved</span>
+                                </label>
+                                <label class="switch fallback-toggle-row" id="fallback-send-on-receive-row">
+                                    <input type="checkbox" id="fallback-send-on-receive">
+                                    <span class="slider"></span>
+                                    <span class="switch-label">Send Output on receive</span>
+                                </label>
+                            </div>
                             <div id="fallback-input-error" class="fallback-error"></div>
                             <div class="fallback-actions">
                                 <button type="button" id="fallback-clear-btn" class="btn-secondary">Clear</button>
