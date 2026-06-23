@@ -8838,7 +8838,7 @@ function openFallbackModal(node, name, inputType, direction){
         : isOutput
             ? getOutputValueEntry(node, name)
             : getInputFallbackEntry(node, name);
-    const titlePrefix = node?.properties?.isAnalog ? "Value" : "Fallback";
+    const titlePrefix = "Settings";
     if(ui.fallbackModalTitle) ui.fallbackModalTitle.textContent = `${titlePrefix} - ${name}`;
     if(ui.fallbackInputName) ui.fallbackInputName.textContent = name;
     if(ui.fallbackInputType) ui.fallbackInputType.textContent = typeLabel;
@@ -9212,22 +9212,34 @@ if(ui.fallbackSaveBtn){
         if(!fallbackModalState) return;
         const { node, name, inputType, direction } = fallbackModalState;
         const raw = ui.fallbackInputValue ? ui.fallbackInputValue.value : "";
-        const parsed = parseFallbackValue(raw, inputType);
-        if(!parsed.ok){
-            if(ui.fallbackInputError) ui.fallbackInputError.textContent = parsed.error || "UngÃƒÂ¼ltiger Wert.";
-            return;
+        const trimmedRaw = String(raw ?? "").trim();
+        const hasValue = trimmedRaw.length > 0;
+        const existingOutputEntry = direction === "out" ? getOutputValueEntry(node, name) : null;
+        let parsed = null;
+        if(hasValue || direction !== "out"){
+            parsed = parseFallbackValue(raw, inputType);
+            if(!parsed.ok){
+                if(ui.fallbackInputError) ui.fallbackInputError.textContent = parsed.error || "Invalid value.";
+                return;
+            }
         }
         if(direction === "internal"){
             setInternalValueEntry(node, name, { value: parsed.value, type: inputType });
         } else if(direction === "out"){
-            setOutputValueEntry(node, name, {
-                value: parsed.value,
-                type: inputType,
-                sendOnSolved: ui.fallbackSendOnSolved ? ui.fallbackSendOnSolved.checked !== false : true,
-                sendOnReceive: node?.properties?.isAnalog
-                    ? false
-                    : !!(ui.fallbackSendOnReceive && ui.fallbackSendOnReceive.checked)
-            });
+            const nextOutputEntry = {
+                ...(existingOutputEntry && typeof existingOutputEntry === "object" ? existingOutputEntry : {})
+            };
+            if(hasValue){
+                nextOutputEntry.value = parsed.value;
+                nextOutputEntry.type = inputType;
+            } else if(!Object.prototype.hasOwnProperty.call(nextOutputEntry, "value")){
+                nextOutputEntry.type = inputType;
+            }
+            nextOutputEntry.sendOnSolved = ui.fallbackSendOnSolved ? ui.fallbackSendOnSolved.checked !== false : true;
+            nextOutputEntry.sendOnReceive = node?.properties?.isAnalog
+                ? false
+                : !!(ui.fallbackSendOnReceive && ui.fallbackSendOnReceive.checked);
+            setOutputValueEntry(node, name, nextOutputEntry);
         } else {
             setInputFallbackEntry(node, name, { value: parsed.value, type: inputType });
         }
@@ -9619,7 +9631,7 @@ function renderIOLists(node, inputsOnly = false){
                 fallbackBtn = document.createElement("button");
                 fallbackBtn.type = "button";
                 fallbackBtn.className = "io-fallback-btn";
-                fallbackBtn.title = node.properties?.isAnalog ? "Value" : "Fallback";
+                fallbackBtn.title = "Settings";
                 fallbackBtn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.65 1.65 0 0 0 15 19.4a1.65 1.65 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82-.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.65 1.65 0 0 0 1 1.5 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9c.57 0 1.08.23 1.46.6.38.38.6.9.6 1.46s-.23 1.08-.6 1.46A1.65 1.65 0 0 0 19.4 15z"></path></svg>`;
             }
 
@@ -9742,7 +9754,7 @@ function renderInternalVariables(node){
         const fallbackBtn = document.createElement("button");
         fallbackBtn.type = "button";
         fallbackBtn.className = "io-fallback-btn";
-        fallbackBtn.title = node.properties?.isAnalog ? "Value" : "Fallback";
+        fallbackBtn.title = "Settings";
         fallbackBtn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.65 1.65 0 0 0 15 19.4a1.65 1.65 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82-.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.65 1.65 0 0 0 1 1.5 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9c.57 0 1.08.23 1.46.6.38.38.6.9.6 1.46s-.23 1.08-.6 1.46A1.65 1.65 0 0 0 19.4 15z"></path></svg>`;
 
         const removeBtn = document.createElement("button");
@@ -10168,5 +10180,6 @@ function renderHintList(){
     });
     updateHintBadge();
 }
+
 
 
