@@ -8786,6 +8786,7 @@ function getFallbackValueString(entry){
     if(entry && typeof entry === "object" && Object.prototype.hasOwnProperty.call(entry, "value")){
         return entry.value === undefined || entry.value === null ? "" : String(entry.value);
     }
+    if(entry && typeof entry === "object") return "";
     if(entry === undefined || entry === null) return "";
     return String(entry);
 }
