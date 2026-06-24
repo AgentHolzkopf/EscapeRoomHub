@@ -12,10 +12,6 @@ body, html {
 :root {
     --type-string-border: #d9b300;
     --type-string-bg: rgba(217, 179, 0, 0.15);
-    --type-number-border: #2c7be5;
-    --type-number-bg: rgba(44, 123, 229, 0.15);
-    --type-boolean-border: #9b6bd3;
-    --type-boolean-bg: rgba(155, 107, 211, 0.15);
     --type-media-border: #2a9d8f;
     --type-media-bg: rgba(42, 157, 143, 0.18);
     --type-action-border: #c0c0ff;
@@ -726,8 +722,6 @@ hr { border: 0; border-top: 1px solid #444; margin: 20px 0; }
 .io-item { display: flex; align-items: center; padding: 6px 8px; border-radius: 4px; border-left: 4px solid #666; background-color: rgba(255,255,255,0.05); }
 .io-actions { margin-left: auto; display: flex; align-items: center; gap: 0; }
 .io-item[data-type="string"] { border-left-color: var(--type-string-border); background: var(--type-string-bg); }
-.io-item[data-type="number"] { border-left-color: var(--type-number-border); background: var(--type-number-bg); }
-.io-item[data-type="boolean"] { border-left-color: var(--type-boolean-border); background: var(--type-boolean-bg); }
 .io-item[data-type="media"] { border-left-color: var(--type-media-border); background: var(--type-media-bg); }
 .io-item[data-type="action"], .io-item[data-type="-1"] { border-left-color: var(--type-action-border); background: var(--type-action-bg); }
 .io-fallback-btn { width: 26px; height: 26px; border-radius: 6px; border: none; background: transparent; color: #e6e6e6; display: grid; place-items: center; cursor: pointer; flex-shrink: 0; outline: none; box-shadow: none; }
@@ -746,14 +740,10 @@ hr { border: 0; border-top: 1px solid #444; margin: 20px 0; }
 }
 .typed-select option { background: #222; color: #fff; }
 .typed-select option[data-type="string"] { background: var(--type-string-bg); }
-.typed-select option[data-type="number"] { background: var(--type-number-bg); }
-.typed-select option[data-type="boolean"] { background: var(--type-boolean-bg); }
 .typed-select option[data-type="media"] { background: var(--type-media-bg); }
 .typed-select option[data-type="action"], .typed-select option[data-type="-1"] { background: var(--type-action-bg); }
 .typed-select:disabled { opacity: 0.6; cursor: not-allowed; }
 .typed-select[data-type="string"] { border-left-color: var(--type-string-border); background: var(--type-string-bg); }
-.typed-select[data-type="number"] { border-left-color: var(--type-number-border); background: var(--type-number-bg); }
-.typed-select[data-type="boolean"] { border-left-color: var(--type-boolean-border); background: var(--type-boolean-bg); }
 .typed-select[data-type="media"] { border-left-color: var(--type-media-border); background: var(--type-media-bg); }
 .typed-select[data-type="action"], .typed-select[data-type="-1"] { border-left-color: var(--type-action-border); background: var(--type-action-bg); }
 .io-name-wrap { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; }

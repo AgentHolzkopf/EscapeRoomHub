@@ -19,10 +19,10 @@
 // Project-specific settings
 // -------------------------
 /////////////////////////////////////////////////////////////////////////
-static const char* WIFI_SSID = "theStudioWS26";
-static const char* WIFI_PASS = "theStudioWS26";
+static const char* WIFI_SSID = "WIFI_SSID";                                // Change to your WIFI SSID
+static const char* WIFI_PASS = " WIFI_PASS";                                // Change to your WIFI Password
 
-static const char* MQTT_HOST = "192.168.100.23";
+static const char* MQTT_HOST = "MQTT_HOST IP";                                    // Change to IP Adress of the hub
 static const uint16_t MQTT_PORT = 1883;
 
 static const char* DEVICE_ID = "puzzle-esp32-1";
@@ -30,6 +30,10 @@ static const char* PUZZLE_NAME = "ESP32 Puzzle";
 static const bool NEED_RESTART = false;
 static const uint32_t HEARTBEAT_INTERVAL_MS = 2000;
 /////////////////////////////////////////////////////////////////////////
+
+/// add your own variables here:
+
+
 
 ///dont change this block////////////////////////////////////////////////
 
@@ -119,20 +123,30 @@ void connectionSetup() {
 }
 
 ////////////////////////////////////////////////////////////////////////////
+/// you can change stuff from here on
 
 void handlePuzzleLogic() {
   //You can inplement your own puzzle logic here
   //following agent functions can be used to communicate with the hub
 
-  //agent.getState();                         // returns the current state of the puzzle
-  //agent.setState("solved");                 // sets a new state ("running", "solved", "locked", "starting") => example: when puzzle is solve: setState("solved")
-  //agent.stateChanged();                     // returs true if state has changed since last call and false if not 
-  //agent.sendCustom("putStringHere");        // sends custom string to hub 
-  //agent.getCustom();                        // returns custom value, which got send by the hub, as string. Automaticly deletes custom value => only returns value if the hub has send one since last call.
-  //agent.getInput("key");                    // returns input, which got send by the hub, as string. the name ("key") has to fit to the name of the input given in hub UI.
-  //agent.setOutput("key", "type", "value");  // sets output internally. "key" must fit to the name given to the output in the hub UI. "type" descripes the type of value (String, int, bool). For example: agent.setOutput("password", "String", "password123");
-  //agent.sendOutput("key");                  // sends the output with the name "key" etc to the hub
-  //agent.sendAllOutput();                    // sends all settet outputs to the hub
+  // agent.getState();                         // returns the current state of the puzzle
+  // agent.setState("solved");                 // sets a new state ("running", "solved", "locked", "starting") => example: when puzzle is solve: setState("solved")
+  // agent.stateChanged();                     // returs true if state has changed since last call and false if not
+
+  // agent.sendCustom("putStringHere");        // sends custom string to hub
+  // agent.getCustom();                        // returns the current custom value as string without deleting it
+  // agent.customAvailable();                  // returns true if a custom value is currently available
+  // agent.deleteCustom();                     // deletes the current custom value
+
+  // agent.getInput("key");                    // returns input as string without deleting it. "key" has to fit to the input name from the hub UI
+  // agent.inputAvailable("key");              // returns true if the input currently exists
+  // agent.deleteInput("key");                 // deletes the current input value for the given key
+
+  // agent.setOutput("key", "value");          // sets output internally. "key" must fit to the name given to the output in the hub UI. Example: agent.setOutput("password", "password123");
+  // agent.sendOutput("key");                  // sends the output with the name "key" etc to the hub
+  // agent.sendAllOutput();                    // sends all set outputs to the hub
+
+  // agent.triggerExternalCheck("1234, true);  // triggers the hub external check. can be used to check if the player has solved the puzzle / has got the right password out of it. the last value (true = bool) triggers the check. with false it can be deactivated
 }
 
 
@@ -142,6 +156,7 @@ void setup() {
   connectionSetup();
 
   // You can place your setup code here
+  
 }
 
 void loop() {
@@ -155,6 +170,14 @@ void loop() {
   // Keep this loop fast: avoid long delay() calls so MQTT and heartbeat stay responsive.
   // You can use this function if desired
   handlePuzzleLogic();
+  if (Serial.available()) {
+    agent.setOutput("seriell", Serial.readStringUntil('\n'));
+    agent.sendOutput("seriell");
+  }
+  if (agent.inputAvailable("clicked")) {
+    Serial.println(agent.getInput("clicked"));
+    agent.deleteInput("clicked");
+  }
 }
 
 ///////////////////////////////////////////////////////////////////////////////

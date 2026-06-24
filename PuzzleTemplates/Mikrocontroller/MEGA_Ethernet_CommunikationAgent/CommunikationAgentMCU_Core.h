@@ -2,6 +2,7 @@
 #define COMMUNIKATION_AGENT_MCU_CORE_H
 
 #include <ArduinoJson.h>
+#include <Arduino.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -35,7 +36,8 @@ public:
       lastHeartbeatAt_(0),
       inputCount_(0),
       outputCount_(0),
-      customPresent_(false) {
+      customPresent_(false),
+      stateChanged_(false) {
     safeCopy(deviceId_, sizeof(deviceId_), "puzzle-1");
     safeCopy(puzzleName_, sizeof(puzzleName_), "Puzzle");
     safeCopy(topicPrefix_, sizeof(topicPrefix_), "puzzle");
@@ -143,14 +145,18 @@ public:
     }
   }
 
-  bool setState(const char* state) {
-    bool ok = setStateInternal(state);
-    if (ok) publishHeartbeatNow();
-    return ok;
+  bool setState(const String& state) {
+    return setState(state.c_str());
   }
 
-  const char* getState() const {
-    return state_;
+  String getState() const {
+    return String(state_);
+  }
+
+  bool stateChanged() {
+    bool result = stateChanged_;
+    stateChanged_ = false;
+    return result;
   }
 
   void restartComplete() {
@@ -167,21 +173,37 @@ public:
     return inputs_[idx].value;
   }
 
-  const char* getInputType(const char* key) const {
-    int8_t idx = findInput(key);
-    if (idx < 0) return NULL;
-    return inputs_[idx].type;
+  String getInput(const String& key) const {
+    const char* value = getInputValue(key.c_str());
+    return value ? String(value) : String();
   }
 
-  bool setOutputFromPuzzle(const char* key, const char* type, const char* value) {
-    return setOutputFromText(key, type, value);
+  bool inputAvailable(const String& key) const {
+    int8_t idx = findInput(key.c_str());
+    if (idx < 0) {
+      return false;
+    }
+    return inputs_[idx].present;
   }
 
-  bool sendOutputFromPuzzle(const char* key) {
-    return publishOutputData(key);
+  void deleteInput(const String& key) {
+    int8_t idx = findInput(key.c_str());
+    if (idx < 0) {
+      return;
+    }
+    inputs_[idx].value[0] = '\0';
+    inputs_[idx].present = false;
   }
 
-  void publishAllOutputsFromPuzzle() {
+  bool setOutput(const String& key, const String& value) {
+    return setOutputFromText(key.c_str(), "string", value.c_str());
+  }
+
+  bool sendOutput(const String& key) {
+    return publishOutputData(key.c_str());
+  }
+
+  void sendAllOutput() {
     publishAllOutputs();
   }
 
@@ -205,6 +227,10 @@ public:
     publishFn_(topic, payload);
   }
 
+  void triggerExternalCheck(const String& value, bool active) {
+    triggerExternalCheck(value.c_str(), active);
+  }
+
   void setCustomLocal(const char* value) {
     setCustomFromText(value, true);
   }
@@ -213,12 +239,30 @@ public:
     return customPresent_ ? customValue_ : NULL;
   }
 
+  String getCustom() {
+    return customPresent_ ? String(customValue_) : String();
+  }
+
+  bool customAvailable() const {
+    return customPresent_;
+  }
+
+  void deleteCustom() {
+    customValue_[0] = '\0';
+    customPresent_ = false;
+  }
+
   bool publishCustomFromPuzzle() {
     return publishCustomNow();
   }
 
   bool publishCustomFromPuzzle(const char* value) {
     setCustomFromText(value, true);
+    return publishCustomNow();
+  }
+
+  bool sendCustom(const String& value) {
+    setCustomFromText(value.c_str(), true);
     return publishCustomNow();
   }
 
@@ -271,6 +315,7 @@ private:
   uint8_t outputCount_;
   char customValue_[MAX_VALUE_LEN + 1];
   bool customPresent_;
+  bool stateChanged_;
 
   static void safeCopy(char* dest, size_t destLen, const char* src) {
     if (!dest || destLen == 0) return;
@@ -355,10 +400,11 @@ private:
 
   bool setStateInternal(const char* s) {
     if (!isValidState(s)) return false;
-    if (strcmp(s, "active") == 0) {
-      safeCopy(state_, sizeof(state_), "running");
-    } else {
-      safeCopy(state_, sizeof(state_), s);
+    const char* normalizedState = strcmp(s, "active") == 0 ? "running" : s;
+    bool changed = strcmp(state_, normalizedState) != 0;
+    safeCopy(state_, sizeof(state_), normalizedState);
+    if (changed) {
+      stateChanged_ = true;
     }
     return true;
   }

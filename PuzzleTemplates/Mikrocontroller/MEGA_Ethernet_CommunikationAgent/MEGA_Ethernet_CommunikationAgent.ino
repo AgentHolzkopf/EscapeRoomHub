@@ -20,20 +20,35 @@
 // -------------------------
 // Project-specific settings
 // -------------------------
+///////////////////////////////////////////////////////////////////
 byte MAC_ADDRESS[] = { 0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0x01 };
 
 IPAddress MQTT_SERVER(192, 168, 1, 10);
 const uint16_t MQTT_PORT = 1883;
+
+/// this section is only relevant when no dhcp service is running
 
 IPAddress STATIC_IP(192, 168, 1, 60);
 IPAddress DNS_SERVER(192, 168, 1, 1);
 IPAddress GATEWAY(192, 168, 1, 1);
 IPAddress SUBNET(255, 255, 255, 0);
 
-static const char* DEVICE_ID = "puzzle-mega-1";
-static const char* PUZZLE_NAME = "Mega Puzzle";
+///////////////////////////////////////////////////////////////
+
+static const char* DEVICE_ID = "puzzle-mega-1";                          // relevant for internal assignment
+static const char* PUZZLE_NAME = "Mega Puzzle";                          // relevant for assignment in hub UI
 static const bool NEED_RESTART = false;
-static const uint32_t HEARTBEAT_INTERVAL_MS = 2500;
+static const uint32_t HEARTBEAT_INTERVAL_MS = 2000;
+
+
+/// add your own variables here:
+
+
+
+
+///////////////////////////////////////////////////////////////////
+
+// dont change this section //////////////////////////////////////
 
 EthernetClient netClient;
 PubSubClient mqttClient(netClient);
@@ -61,44 +76,6 @@ bool isTrueText(const char* value) {
     strcmp(value, "TRUE") == 0 ||
     strcmp(value, "yes") == 0
   );
-}
-
-void sendCustomValueToHub(const char* value) {
-  // Publishes to puzzle/<deviceId>/custom with payload {"value": "...", "deviceId": "..."}.
-  agent.publishCustomFromPuzzle(value);
-}
-
-void handlePuzzleLogicExample() {
-  // Example: if Hub input Solve=true, set output VerifyCorrect=true and solved.
-  const char* solve = agent.getInputValue("Solve");
-  if (!solvedSent && solve && (strcmp(solve, "true") == 0 || strcmp(solve, "1") == 0)) {
-    if (agent.setOutputFromPuzzle("VerifyCorrect", "boolean", "true")) {
-      agent.sendOutputFromPuzzle("VerifyCorrect");
-    }
-    agent.setState("solved");
-    solvedSent = true;
-  }
-
-  // Example: react to a Custom value sent by the Hub.
-  const char* custom = agent.getCustomValue();
-  if (custom && strcmp(custom, lastCustomValue) != 0) {
-    strncpy(lastCustomValue, custom, sizeof(lastCustomValue) - 1);
-    lastCustomValue[sizeof(lastCustomValue) - 1] = '\0';
-    Serial.print("Custom received from Hub: ");
-    Serial.println(lastCustomValue);
-  }
-
-  // Example: if Hub input SendCustom=true, send one Custom value back to the Hub.
-  // Replace this with your own button/sensor condition in the real puzzle logic.
-  const char* sendCustom = agent.getInputValue("SendCustom");
-  if (isTrueText(sendCustom)) {
-    if (!customSent) {
-      sendCustomValueToHub("mega-custom-value");
-      customSent = true;
-    }
-  } else {
-    customSent = false;
-  }
 }
 
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
@@ -137,11 +114,8 @@ void setupEthernet() {
   delay(1000);
 }
 
-void setup() {
-  Serial.begin(115200);
-  delay(200);
-
-  setupEthernet();
+void setupConnection() {
+    setupEthernet();
 
   mqttClient.setServer(MQTT_SERVER, MQTT_PORT);
   mqttClient.setCallback(mqttCallback);
@@ -158,11 +132,55 @@ void setup() {
   ensureMqttConnected();
 }
 
+/////////////////////////////////////////////////////////////////////////
+/// you can change stuff from here on
+
+void handlePuzzleLogic() {
+
+  // You can inplement your own puzzle logic here
+  // following agent functions can be used to communicate with the hub
+
+  // agent.getState();                         // returns the current state of the puzzle
+  // agent.setState("solved");                 // sets a new state ("running", "solved", "locked", "starting") => example: when puzzle is solve: setState("solved")
+  // agent.stateChanged();                     // returs true if state has changed since last call and false if not
+
+  // agent.sendCustom("putStringHere");        // sends custom string to hub
+  // agent.getCustom();                        // returns the current custom value as string without deleting it
+  // agent.customAvailable();                  // returns true if a custom value is currently available
+  // agent.deleteCustom();                     // deletes the current custom value
+
+  // agent.getInput("key");                    // returns the current input as string without deleting it. the name ("key") has to fit to the input name given in hub UI.
+  // agent.inputAvailable("key");              // returns true if the input currently exists
+  // agent.deleteInput("key");                 // deletes the current input value for the given key
+
+  // agent.setOutput("key", "value");          // sets output internally. "key" must fit to the name given to the output in the hub UI. Example: agent.setOutput("password", "password123");
+  // agent.sendOutput("key");                  // sends the output with the name "key" etc to the hub
+  // agent.sendAllOutput();                    // sends all set outputs to the hub
+  
+  // agent.triggerExternalCheck("1234, true);  // triggers the hub external check. can be used to check if the player has solved the puzzle / has got the right password out of it. the last value (true = bool) triggers the check. with false it can be deactivated
+
+}
+
+void setup() {
+  Serial.begin(115200);
+  delay(200);
+  setupConnection();
+
+  //put your puzzle setup here:
+
+}
+
 void loop() {
   ensureMqttConnected();
 
   mqttClient.loop();
   agent.loop(millis());
 
+  // Place your own non-blocking puzzle code here.
+  // Keep this loop fast: avoid long delay() calls so MQTT and heartbeat stay responsive.
+  // You can use this function if desired
   handlePuzzleLogicExample();
+
 }
+
+/////////////////////////////////////////////////////////////////////////

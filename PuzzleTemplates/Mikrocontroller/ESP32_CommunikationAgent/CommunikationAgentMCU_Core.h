@@ -178,16 +178,37 @@ public:
     return String(inputs_[idx].value);
   }
 
-  bool setOutput(const String& key, const String& type, const String& value) {
+  bool inputAvailable(const String& key) const {
+    int8_t idx = findInput(key.c_str());
+    if (idx < 0) {
+      return false;
+    }
+    return inputs_[idx].present;
+  }
+
+  void deleteInput(const String& key) {
+    int8_t idx = findInput(key.c_str());
+    if (idx < 0) {
+      return;
+    }
+    inputs_[idx].value[0] = '\0';
+    inputs_[idx].present = false;
+  }
+
+  bool setOutput(const String& key, const String& value) {
     return setOutputFromText(
       key.c_str(),
-      type.c_str(),
+      "string",
       value.c_str()
     );
   }
 
   bool sendOutput(const String& key) {
     return publishOutputData(key.c_str());
+  }
+
+  void sendAllOutput() {
+    publishAllOutputs();
   }
 
   void triggerExternalCheck(const String& value, bool active) {
@@ -208,21 +229,25 @@ public:
     publishFn_(topic, payload);
   }
 
- const char* getCustomValue() {
-  if (!customPresent_) {
-    return nullptr;
+  const char* getCustomValue() const {
+    if (!customPresent_) {
+      return nullptr;
+    }
+    return customValue_;
   }
 
-  static char returnedValue[sizeof(customValue_)];
+  const char* getCustom() {
+    return getCustomValue();
+  }
 
-  strncpy(returnedValue, customValue_, sizeof(returnedValue) - 1);
-  returnedValue[sizeof(returnedValue) - 1] = '\0';
+  bool customAvailable() const {
+    return customPresent_;
+  }
 
-  customValue_[0] = '\0';
-  customPresent_ = false;
-
-  return returnedValue;
-}
+  void deleteCustom() {
+    customValue_[0] = '\0';
+    customPresent_ = false;
+  }
 
   bool sendCustom(const String& value) {
   if (!publishFn_) {

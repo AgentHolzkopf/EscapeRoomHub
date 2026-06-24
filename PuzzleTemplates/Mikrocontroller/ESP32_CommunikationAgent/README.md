@@ -15,30 +15,11 @@ Both files must stay in the same folder.
 ## Requirements
 
 Arduino IDE:
+download following librarys:
 
-- ESP32 board support by `Espressif Systems`
-- Library `PubSubClient`
-- Library `ArduinoJson`
-
-Install libraries:
-
-1. Open Arduino IDE
-2. Go to `Sketch` -> `Include Library` -> `Manage Libraries...`
-3. Search for `PubSubClient` and install it
-4. Search for `ArduinoJson` and install it
-
-Install ESP32 board support:
-
-1. Go to `File` -> `Preferences`
-2. Add this URL under `Additional Boards Manager URLs`:
-
-```text
-https://espressif.github.io/arduino-esp32/package_esp32_index.json
-```
-
-3. Go to `Tools` -> `Board` -> `Boards Manager...`
-4. Search for `esp32`
-5. Install `esp32 by Espressif Systems`
+#include <WiFi.h>
+#include <PubSubClient.h>
+#include <ArduinoJson.h>
 
 ## Open the Sketch
 
@@ -74,42 +55,6 @@ Important:
 - `PUZZLE_NAME` is only the display name.
 - `NEED_RESTART = true` means the puzzle reports `starting` after restart and must later set itself to `running`.
 
-## Upload
-
-Arduino IDE:
-
-1. Select board:
-
-```text
-Tools -> Board -> ESP32 Arduino -> ESP32 Dev Module
-```
-
-2. Select port:
-
-```text
-Tools -> Port -> COM...
-```
-
-3. Start upload.
-
-If upload hangs at `Connecting...`:
-
-- Hold the BOOT button on the ESP32
-- Start upload
-- Release BOOT once upload begins
-
-## Serial Monitor
-
-After upload:
-
-1. Open Serial Monitor
-2. Set baud rate to `115200`
-
-The sketch prints received custom values:
-
-```text
-Custom received from Hub: button pressed
-```
 
 ## Hub Linking
 
@@ -120,22 +65,6 @@ In the hub:
 3. Start the room
 4. Verify that the puzzle sends heartbeats
 
-MQTT topics:
-
-- Hub -> ESP32:
-
-```text
-puzzle/<deviceId>/command
-```
-
-- ESP32 -> Hub:
-
-```text
-puzzle/<deviceId>/heartbeat
-puzzle/<deviceId>/data
-puzzle/<deviceId>/custom
-puzzle/<deviceId>/external-check
-```
 
 ## Custom Puzzle Logic
 
@@ -152,7 +81,7 @@ void loop() {
   // Place your own non-blocking puzzle code here.
   // Keep this loop fast: avoid long delay() calls so MQTT and heartbeat stay responsive.
 
-  handlePuzzleLogicExample();
+  handlePuzzleLogic();        // You can use this function for your code
 }
 ```
 
@@ -162,107 +91,18 @@ Important:
 - Use `millis()` instead.
 - `mqttClient.loop()` and `agent.loop(millis())` must run regularly.
 
-## Read Inputs from the Hub
+## Usable functions for communication with the hub
 
-When the hub sends an input to the puzzle:
-
-```cpp
-const char* value = agent.getInputValue("Solve");
-if (value && strcmp(value, "true") == 0) {
-  // Input is true.
-}
-```
-
-## Send Output to the Hub
-
-Set and send an output:
-
-```cpp
-if (agent.setOutputFromPuzzle("VerifyCorrect", "boolean", "true")) {
-  agent.sendOutputFromPuzzle("VerifyCorrect");
-}
-```
-
-The output key must be configured for this puzzle in the hub first.
-
-## Set State
-
-Report puzzle as running:
-
-```cpp
-agent.setState("running");
-```
-
-Report puzzle as solved:
-
-```cpp
-agent.setState("solved");
-```
-
-## Receive Custom Values from the Hub
-
-Custom values are event-like messages from the hub.
-
-```cpp
-const char* custom = agent.getCustomValue();
-if (custom) {
-  Serial.print("Custom received from Hub: ");
-  Serial.println(custom);
-
-  if (strcmp(custom, "button pressed") == 0) {
-    // Your own reaction here.
-  }
-
-  agent.clearCustomValue();
-}
-```
-
-`clearCustomValue()` is important when the same value should trigger repeatedly.
-Example: every button press sends `button pressed` again.
-
-## Send Custom Values to the Hub
-
-```cpp
-agent.publishCustomFromPuzzle("my-custom-value");
-```
-
-The hub receives:
-
-```json
-{"value":"my-custom-value","deviceId":"puzzle-esp32-1"}
-```
-
-## Trigger External Check
-
-```cpp
-agent.triggerExternalCheck("1234", true);
-```
-
-This sends an external check value to the hub.
-
-## Common Errors
-
-`PubSubClient.h: No such file or directory`
-
-- Library `PubSubClient` is missing.
-
-`ArduinoJson.h: No such file or directory`
-
-- Library `ArduinoJson` is missing.
-
-`CommunikationAgentMCU_Core.h: No such file or directory`
-
-- The `.ino` was compiled from a temporary Arduino sketch.
-- Open the complete template folder directly.
-
-No connection to the hub:
-
-- Check `WIFI_SSID` / `WIFI_PASS`.
-- Check `MQTT_HOST`.
-- EscapeHub and ESP32 must be in the same network.
-- Mosquitto/MQTT must be running on the hub.
-
-Puzzle does not appear in the hub:
-
-- `DEVICE_ID` in the sketch and Linked Device in the hub must match.
-- The room must be started so `initKeys` and commands are sent.
+ - agent.getState();                         // returns the current state of the puzzle
+ - agent.setState("solved");                 // sets a new state ("running", "solved", "locked", "starting") => example: when puzzle is solve: setState("solved")
+ - agent.stateChanged();                     // returs true if state has changed since last call and false if not 
+ - agent.sendCustom("putStringHere");        // sends custom string to hub 
+ - agent.getCustom();                        // returns the current custom value as string without deleting it
+ - agent.customAvailable();                  // returns true if a custom value is currently available
+ - agent.deleteCustom();                     // deletes the current custom value
+ - agent.getInput("key");                    // returns the current input as string without deleting it. the name ("key") has to fit to the input name given in hub UI.
+ - agent.inputAvailable("key");              // returns true if the input currently exists
+ - agent.deleteInput("key");                 // deletes the current input value for the given key
+ - agent.setOutput("key", "value");         // sets output internally as string. "key" must fit to the name given to the output in the hub UI. Example: agent.setOutput("password", "password123");
+ - agent.sendOutput("key");                 // sends the output with the name "key" to the hub
+ - agent.sendAllOutput();                   // sends all set outputs to the hub

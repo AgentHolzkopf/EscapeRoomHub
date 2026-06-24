@@ -2790,6 +2790,11 @@ async function runPuzzleScriptingEvent(node, triggerType, eventPayload = {}) {
     if (!node || node.type !== 'escape/Puzzle') return [];
     const normalizedTrigger = String(triggerType || '').trim().toLowerCase();
     if (!normalizedTrigger) return [];
+    const puzzleStateKey = getPuzzleStateKey(node?.id);
+    const allowOutsideRunning = normalizedTrigger === 'on_running'
+        || normalizedTrigger === 'on_solved'
+        || normalizedTrigger === 'on_reset';
+    if (puzzleStateKey !== 'running' && !allowOutsideRunning) return [];
 
     const customValue = String(eventPayload?.customValue || '');
     const sensorDeviceId = String(eventPayload?.sensorDeviceId || '');
@@ -4547,6 +4552,12 @@ function collectIOKeys(node){
 
 function normalizeDataType(t) {
     const str = stringifyIOType(t).toLowerCase();
+    if (str === "media") return "media";
+    return "string";
+}
+
+function normalizeRuntimeValueType(t) {
+    const str = stringifyIOType(t).toLowerCase();
     if (["string", "number", "boolean", "media"].includes(str)) return str;
     return "string";
 }
@@ -4628,26 +4639,7 @@ function getOutputFallbackConfig(node, name, mode = 'solved') {
 
 function parseFallbackValueForType(raw, type) {
     if (raw === undefined || raw === null) return { ok: false };
-    const normalized = normalizeDataType(type);
-    if (normalized === "string" || normalized === "media") {
-        return { ok: true, value: String(raw) };
-    }
-    if (normalized === "number") {
-        if (typeof raw === "number" && Number.isFinite(raw)) return { ok: true, value: raw };
-        const str = String(raw).trim();
-        if (!/^-?\d+(?:\.\d+)?$/.test(str)) return { ok: false };
-        const num = parseFloat(str);
-        if (!Number.isFinite(num)) return { ok: false };
-        return { ok: true, value: num };
-    }
-    if (normalized === "boolean") {
-        if (typeof raw === "boolean") return { ok: true, value: raw };
-        const str = String(raw).trim().toLowerCase();
-        if (["true", "1", "yes", "on"].includes(str)) return { ok: true, value: true };
-        if (["false", "0", "no", "off"].includes(str)) return { ok: true, value: false };
-        return { ok: false };
-    }
-    return { ok: false };
+    return { ok: true, value: String(raw) };
 }
 function getOutputDataForPuzzleOutput(originNode, outName, outType) {
     if (!originNode) return null;
@@ -4834,6 +4826,8 @@ function recordOutputData(puzzleId, key, type, data) {
                 finalData = mediaKey;
             }
         }
+    } else if (finalData !== null && finalData !== undefined) {
+        finalData = String(finalData);
     }
     puzzleDataStore[puzzleId].outputs[key] = {
         type: finalType,
@@ -5136,15 +5130,18 @@ function forwardOutputToTargets(sourceNode, key, type, data) {
         if (!isDataKeyAllowed(outName, out.type)) return;
         const configuredForward = getOutputFallbackConfig(sourceNode, outName, 'receive');
         let sendData = data;
-        let sendType = type || out.type || "string";
+        let sendType = normalizeDataType(type || out.type || "string");
         if (configuredForward) {
             const parsed = parseFallbackValueForType(configuredForward.value, configuredForward.type || out.type);
             if (parsed.ok) {
                 sendData = parsed.value;
-                sendType = configuredForward.type || out.type || sendType;
+                sendType = normalizeDataType(configuredForward.type || out.type || sendType);
             }
         } else if (getOutputFallbackEntry(sourceNode, outName)) {
             return;
+        }
+        if (sendData !== null && sendData !== undefined) {
+            sendData = String(sendData);
         }
         const linkIds = Array.isArray(out.links) ? out.links : (out.link !== undefined ? [out.link] : []);
         if (!linkIds) return;
@@ -7750,7 +7747,7 @@ module.exports = {
             const showValue = stateKey === "running" || stateKey === "solved";
             const entries = node.properties?.internalVariables || {};
             Object.entries(entries).forEach(([key, entry]) => {
-                const type = normalizeDataType(entry?.type || "string");
+                const type = normalizeRuntimeValueType(entry?.type || "string");
                 const hasValue = entry && Object.prototype.hasOwnProperty.call(entry, "value");
                 const data = (showValue && hasValue) ? entry.value : null;
                 const externalCheck = node.properties?.externalCheckVariable === `internal:${key}`;
@@ -7780,7 +7777,7 @@ module.exports = {
             if (externalVar !== EXTERNAL_CHECK_SOLUTION) return;
             const runtime = getExternalCheckRuntime(node.id);
             const rawValue = runtime ? runtime.value ?? null : null;
-            const normalizedType = normalizeDataType(rawValue === null ? "string" : typeof rawValue);
+            const normalizedType = normalizeRuntimeValueType(rawValue === null ? "string" : typeof rawValue);
             const solved = puzzleStateDetails[node.id]?.state === 'solved';
             const entry = {
                 key: "ExternalCheck",

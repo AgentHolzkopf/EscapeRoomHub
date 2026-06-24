@@ -7,8 +7,7 @@ const statusDiv = document.getElementById("save-status");
 
 const typeColors = {
     "string": "#d9b300",
-    "number": "#2c7be5",
-    "boolean": "#9b6bd3",
+    "media": "#2a9d8f",
     [LiteGraph.ACTION]: "#c0c0ff",
     [LiteGraph.EVENT]: "#c0c0ff"
 };
@@ -6902,11 +6901,7 @@ function ensureBlocklyDataExpressionBlocks(BlocklyRef) {
             this.appendValueInput("A").setCheck(null);
             this.appendDummyInput()
                 .appendField(new BlocklyRef.FieldDropdown([
-                    [">", "gt"],
-                    ["<", "lt"],
                     ["=", "eq"],
-                    [">=", "gte"],
-                    ["<=", "lte"],
                     ["!=", "neq"]
                 ]), "OP");
             this.appendValueInput("B").setCheck(null);
@@ -7112,11 +7107,7 @@ function ensureRoomScriptingBlocklyDefinitions() {
                     .appendField(new BlocklyRef.FieldTextInput("sensorValue"), "VAR")
                     .appendField(new BlocklyRef.FieldDropdown([
                         ["=", "eq"],
-                        ["!=", "neq"],
-                        [">", "gt"],
-                        [">=", "gte"],
-                        ["<", "lt"],
-                        ["<=", "lte"]
+                        ["!=", "neq"]
                     ]), "OP")
                     .appendField("value")
                     .appendField(new BlocklyRef.FieldTextInput(""), "VALUE");
@@ -7133,11 +7124,7 @@ function ensureRoomScriptingBlocklyDefinitions() {
                     .appendField(new BlocklyRef.FieldDropdown(() => getBlocklyAllSensorFieldDropdownOptions()), "FIELD")
                     .appendField(new BlocklyRef.FieldDropdown([
                         ["=", "eq"],
-                        ["!=", "neq"],
-                        [">", "gt"],
-                        [">=", "gte"],
-                        ["<", "lt"],
-                        ["<=", "lte"]
+                        ["!=", "neq"]
                     ]), "OP")
                     .appendField("value")
                     .appendField(new BlocklyRef.FieldTextInput(""), "VALUE");
@@ -7856,11 +7843,7 @@ function ensureScriptingBlocklyDefinitions() {
                     .appendField(new BlocklyRef.FieldTextInput("sensorValue"), "VAR")
                     .appendField(new BlocklyRef.FieldDropdown([
                         ["=", "eq"],
-                        ["!=", "neq"],
-                        [">", "gt"],
-                        [">=", "gte"],
-                        ["<", "lt"],
-                        ["<=", "lte"]
+                        ["!=", "neq"]
                     ]), "OP")
                     .appendField("value")
                     .appendField(new BlocklyRef.FieldTextInput(""), "VALUE");
@@ -7877,11 +7860,7 @@ function ensureScriptingBlocklyDefinitions() {
                     .appendField(new BlocklyRef.FieldDropdown(() => getBlocklyAllSensorFieldDropdownOptions()), "FIELD")
                     .appendField(new BlocklyRef.FieldDropdown([
                         ["=", "eq"],
-                        ["!=", "neq"],
-                        [">", "gt"],
-                        [">=", "gte"],
-                        ["<", "lt"],
-                        ["<=", "lte"]
+                        ["!=", "neq"]
                     ]), "OP")
                     .appendField("value")
                     .appendField(new BlocklyRef.FieldTextInput(""), "VALUE");
@@ -8680,8 +8659,15 @@ function ensureInternalVariables(node){
 
 function normalizeFallbackType(type){
     const t = (type ?? "").toString().toLowerCase();
-    if(t === "string" || t === "number" || t === "boolean" || t === "media") return t;
+    if(t === "string" || t === "media") return t;
     return "";
+}
+
+function normalizeHubIOType(type){
+    const t = (type ?? "").toString().toLowerCase();
+    if(t === "action" || t === "event" || t === "-1") return "action";
+    if(t === "media") return "media";
+    return "string";
 }
 
 function isFallbackCapableType(type){
@@ -8689,20 +8675,8 @@ function isFallbackCapableType(type){
 }
 
 function parseInternalValue(raw, type){
-    const t = normalizeFallbackType(type);
     const val = (raw ?? "").toString().trim();
     if(!val) return null;
-    if(t === "number"){
-        if(!/^-?\d+(?:\.\d+)?$/.test(val)) return null;
-        const num = parseFloat(val);
-        return Number.isFinite(num) ? num : null;
-    }
-    if(t === "boolean"){
-        const lowered = val.toLowerCase();
-        if(["true","1","yes","on"].includes(lowered)) return true;
-        if(["false","0","no","off"].includes(lowered)) return false;
-        return null;
-    }
     return val;
 }
 
@@ -8808,18 +8782,6 @@ function parseFallbackValue(raw, type){
     }
     if(t === "string" || t === "media"){
         return { ok: true, value: val };
-    }
-    if(t === "number"){
-        if(!/^-?\d+(?:\.\d+)?$/.test(val)){
-            return { ok: false, error: "UngÃƒÂ¼ltige Zahl." };
-        }
-        return { ok: true, value: val };
-    }
-    if(t === "boolean"){
-        const lowered = val.toLowerCase();
-        if(["true","1","yes","on"].includes(lowered)) return { ok: true, value: "true" };
-        if(["false","0","no","off"].includes(lowered)) return { ok: true, value: "false" };
-        return { ok: false, error: "Nur true/false (oder 1/0)." };
     }
     return { ok: false, error: "Unbekannter Datentyp." };
 }
@@ -8939,7 +8901,7 @@ const EXTERNAL_CHECK_SOLUTION = "__PUZZLE_SOLUTION__";
 
 function isCheckVariableType(type) {
     const t = (type ?? "").toString().toLowerCase();
-    return t === "string" || t === "number";
+    return t === "string";
 }
 
 function applyTypeStyleToTypedElement(el, type) {
@@ -8952,12 +8914,9 @@ function applyTypeStyleToTypedElement(el, type) {
     if (t === "string") {
         el.style.backgroundImage = "linear-gradient(0deg, var(--type-string-bg), var(--type-string-bg))";
         el.style.borderLeftColor = "var(--type-string-border)";
-    } else if (t === "number") {
-        el.style.backgroundImage = "linear-gradient(0deg, var(--type-number-bg), var(--type-number-bg))";
-        el.style.borderLeftColor = "var(--type-number-border)";
-    } else if (t === "boolean") {
-        el.style.backgroundImage = "linear-gradient(0deg, var(--type-boolean-bg), var(--type-boolean-bg))";
-        el.style.borderLeftColor = "var(--type-boolean-border)";
+    } else if (t === "media") {
+        el.style.backgroundImage = "linear-gradient(0deg, var(--type-media-bg), var(--type-media-bg))";
+        el.style.borderLeftColor = "var(--type-media-border)";
     } else if (t === "action" || t === "-1") {
         el.style.backgroundImage = "linear-gradient(0deg, var(--type-action-bg), var(--type-action-bg))";
         el.style.borderLeftColor = "var(--type-action-border)";
@@ -8977,15 +8936,17 @@ function buildExternalVariableOptionsForPuzzle(node) {
     inputs.forEach(inp => {
         if (!inp) return;
         if (inp.name === "Trigger") return;
-        if (!isCheckVariableType(inp.type)) return;
-        options.push({ value: `in:${inp.name}`, label: `${inp.name}`, type: inp.type });
+        const normalizedType = normalizeHubIOType(inp.type);
+        if (!isCheckVariableType(normalizedType)) return;
+        options.push({ value: `in:${inp.name}`, label: `${inp.name}`, type: normalizedType });
     });
 
     outputs.forEach(out => {
         if (!out) return;
         if (out.name === "Done") return;
-        if (!isCheckVariableType(out.type)) return;
-        options.push({ value: `out:${out.name}`, label: `${out.name} (Output)`, type: out.type });
+        const normalizedType = normalizeHubIOType(out.type);
+        if (!isCheckVariableType(normalizedType)) return;
+        options.push({ value: `out:${out.name}`, label: `${out.name} (Output)`, type: normalizedType });
     });
 
     Object.entries(internalVars).forEach(([name, entry]) => {
@@ -9008,7 +8969,9 @@ function getExternalCheckVariableType(node, value) {
 
     const list = direction === "in" ? (node.inputs || []) : direction === "out" ? (node.outputs || []) : [];
     const found = list.find(s => s && s.name === name);
-    return found?.type ?? "";
+    return direction === "in" || direction === "out"
+        ? normalizeHubIOType(found?.type ?? "")
+        : (found?.type ?? "");
 }
 
 function setExternalCheckTrigger(label, type) {
@@ -9335,7 +9298,7 @@ function updatePropertiesPanel(node){
         }
         const inputsHeaderLabel = ioControlsContainer.querySelector('.category-header[data-target="inputs-section"] span:last-child');
         if (inputsHeaderLabel) inputsHeaderLabel.textContent = "Inputs";
-        if (ui.inType.value === "action") ui.inType.value = "boolean";
+        if (ui.inType.value === "action") ui.inType.value = "string";
         ui.outType.style.display="";
         ui.addOutBtn.disabled = false;
         renderIOLists(node); 
@@ -9367,7 +9330,7 @@ function updatePropertiesPanel(node){
             ui.inType.style.display="";
             const actionOpt = ui.inType.querySelector('option[value="action"]');
             if (actionOpt) actionOpt.style.display = "none";
-            if (ui.inType.value === "action") ui.inType.value = "boolean";
+            if (ui.inType.value === "action") ui.inType.value = "string";
             ui.addInBtn.style.display = "";
             ui.addInBtn.disabled = false;
             ui.outType.style.display="none";
@@ -9604,6 +9567,11 @@ function renderIOLists(node, inputsOnly = false){
             if(item.name === "Done") return;
             if(type === 'in' && node.type === "escape/Puzzle" && item.name === "Trigger") return;
 
+            const normalizedItemType = normalizeHubIOType(item.type);
+            if(!isActionType(item.type) && item.type !== normalizedItemType){
+                item.type = normalizedItemType;
+            }
+
             const div = document.createElement("div");
             div.className = "io-item";
             div.dataset.type = item.type;
@@ -9692,7 +9660,7 @@ function renderIOLists(node, inputsOnly = false){
                 fallbackBtn.addEventListener("click", e => {
                     e.preventDefault();
                     const inputName = input.value || item.name;
-                    openFallbackModal(node, inputName, item.type, type);
+                    openFallbackModal(node, inputName, normalizeHubIOType(item.type), type);
                 });
                 div.appendChild(fallbackBtn);
             }
@@ -9926,8 +9894,8 @@ ioControlsContainer.addEventListener('change',e=>{
 
 
 const allInputs=ioControlsContainer.querySelectorAll('input'); allInputs.forEach(inp=>{inp.addEventListener('keydown',e=>{if(e.key==="Enter"){e.preventDefault();inp.blur();}});});
-ui.addInBtn.addEventListener("click",e=>{ e.preventDefault(); if(!selectedNode)return; let type; if(selectedNode.type==="escape/Logic"){ const logicType = (selectedNode.properties?.logicType || "AND").toUpperCase(); if(logicType !== "QUEUE") return; type=ui.inType.value; }else{ if(ui.inType.value==='action') return; type=ui.inType.value; } if(isQueueLogic(selectedNode)){ const groupCount = getQueueGroupInputs(selectedNode).length; selectedNode.addInput("In "+(groupCount+1),type,{queueGroup:true,multiple:true}); syncQueueGroupOutputs(selectedNode); }else{ selectedNode.addInput("In "+(selectedNode.inputs.length+1),type); } updatePropertiesPanel(selectedNode); autoSave(); });
-ui.addOutBtn.addEventListener("click",e=>{ e.preventDefault(); if(!selectedNode || isQueueLogic(selectedNode))return; selectedNode.addOutput("Out "+(selectedNode.outputs.length+1),ui.outType.value==='action'?LiteGraph.EVENT:ui.outType.value); updatePropertiesPanel(selectedNode); autoSave(); });
+ui.addInBtn.addEventListener("click",e=>{ e.preventDefault(); if(!selectedNode)return; let type; if(selectedNode.type==="escape/Logic"){ const logicType = (selectedNode.properties?.logicType || "AND").toUpperCase(); if(logicType !== "QUEUE") return; type=normalizeHubIOType(ui.inType.value); }else{ if(ui.inType.value==='action') return; type=normalizeHubIOType(ui.inType.value); } if(isQueueLogic(selectedNode)){ const groupCount = getQueueGroupInputs(selectedNode).length; selectedNode.addInput("In "+(groupCount+1),type,{queueGroup:true,multiple:true}); syncQueueGroupOutputs(selectedNode); }else{ selectedNode.addInput("In "+(selectedNode.inputs.length+1),type); } updatePropertiesPanel(selectedNode); autoSave(); });
+ui.addOutBtn.addEventListener("click",e=>{ e.preventDefault(); if(!selectedNode || isQueueLogic(selectedNode))return; selectedNode.addOutput("Out "+(selectedNode.outputs.length+1),normalizeHubIOType(ui.outType.value)); updatePropertiesPanel(selectedNode); autoSave(); });
 ui.addInternalBtn?.addEventListener("click", e=>{ 
     e.preventDefault();
     if(!selectedNode || selectedNode.type !== "escape/Puzzle") return;
@@ -9937,7 +9905,7 @@ ui.addInternalBtn?.addEventListener("click", e=>{
     let idx = 1;
     let name = `${base}${idx}`;
     while(entries[name]){ idx += 1; name = `${base}${idx}`; }
-    const type = ui.internalType?.value || "string";
+    const type = "string";
     entries[name] = { type, value: null };
     fillExternalCheckVariableDropdown(selectedNode);
     renderInternalVariables(selectedNode);
