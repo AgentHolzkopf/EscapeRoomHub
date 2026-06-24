@@ -22,6 +22,7 @@ let puzzleTelemetry = {}; // Stores latest heartbeat payload per puzzle
 let puzzleDataStore = {}; // Stores latest output data per puzzle { puzzleId: { outputs: { key: {type,data,updatedAt} } } }
 let puzzleInputFallbackStore = {}; // Stores fallback input values used per puzzle { puzzleId: { inputs: { key: {type,data,updatedAt,fallback} } } }
 let externalCheckRuntime = {}; // { puzzleId: { active, value, updatedAt } }
+let outputTransferState = {}; // { transferKey: { hubSentAt, forwardedAt } }
 let queueStates = {}; // { queueNodeId: { entries: [{ puzzleId, branchId, payload }], active: { puzzleId, branchId } } }
 let queueTimers = {}; // { queueNodeId: timeoutId }
 let puzzleQueueLocks = {}; // { puzzleId: { queueNodeId, branchId } }
@@ -4600,9 +4601,9 @@ function getOutputFallbackEntry(node, name) {
     if (!node || !node.properties || !node.properties.outputValues) return null;
     if (!Object.prototype.hasOwnProperty.call(node.properties.outputValues, name)) return null;
     const entry = node.properties.outputValues[name];
-    if (entry && typeof entry === "object" && Object.prototype.hasOwnProperty.call(entry, "value")) {
+    if (entry && typeof entry === "object" && !Array.isArray(entry)) {
         return {
-            value: entry.value,
+            value: Object.prototype.hasOwnProperty.call(entry, "value") ? entry.value : undefined,
             type: entry.type,
             sendOnSolved: entry.sendOnSolved !== false,
             sendOnReceive: entry.sendOnReceive === true
@@ -4912,6 +4913,60 @@ function clearInputFallbackUsage(puzzleId, key) {
     }
 }
 
+function buildOutputTransferKey(originPuzzleId, outName, targetPuzzleId, inputName) {
+    const originId = Number(originPuzzleId);
+    const targetId = Number(targetPuzzleId);
+    return [
+        Number.isFinite(originId) ? originId : 0,
+        String(outName || '').trim(),
+        Number.isFinite(targetId) ? targetId : 0,
+        String(inputName || '').trim()
+    ].join('|');
+}
+
+function markOutputSentToHub(sourceNode, outName) {
+    if (!sourceNode || !sourceNode.outputs) return;
+    const links = graph.links || {};
+    sourceNode.outputs.forEach((out, idx) => {
+        const currentOutName = out?.name || `Output ${idx + 1}`;
+        if (currentOutName !== outName) return;
+        const linkIds = Array.isArray(out.links) ? out.links : (out?.link !== undefined ? [out.link] : []);
+        linkIds.forEach((linkId) => {
+            const link = links[linkId];
+            if (!link) return;
+            const targetNode = getPuzzleNodeById(link.target_id);
+            if (!targetNode || targetNode.type !== "escape/Puzzle") return;
+            const targetInput = targetNode.inputs && targetNode.inputs[link.target_slot];
+            const inputName = targetInput?.name || currentOutName || `Input ${link.target_slot + 1}`;
+            const key = buildOutputTransferKey(sourceNode.id, currentOutName, targetNode.id, inputName);
+            const existing = outputTransferState[key] || {};
+            outputTransferState[key] = { ...existing, hubSentAt: Date.now() };
+        });
+    });
+}
+
+function markOutputForwarded(originPuzzleId, outName, targetPuzzleId, inputName) {
+    const key = buildOutputTransferKey(originPuzzleId, outName, targetPuzzleId, inputName);
+    const existing = outputTransferState[key] || {};
+    outputTransferState[key] = { ...existing, forwardedAt: Date.now() };
+}
+
+function getOutputTransferEntry(originPuzzleId, outName, targetPuzzleId, inputName) {
+    return outputTransferState[buildOutputTransferKey(originPuzzleId, outName, targetPuzzleId, inputName)] || null;
+}
+
+function clearOutputTransferStateForPuzzle(puzzleId) {
+    const numericPuzzleId = Number(puzzleId);
+    Object.keys(outputTransferState).forEach((key) => {
+        const parts = key.split('|');
+        const originId = Number(parts[0]);
+        const targetId = Number(parts[2]);
+        if (originId === numericPuzzleId || targetId === numericPuzzleId) {
+            delete outputTransferState[key];
+        }
+    });
+}
+
 function clearPendingMediaFallback(puzzleId, key) {
     if (!pendingMediaFallbackTimers[puzzleId]) return;
     const timers = pendingMediaFallbackTimers[puzzleId];
@@ -5096,20 +5151,23 @@ function forwardOutputToTargets(sourceNode, key, type, data) {
         linkIds.forEach(linkId => {
             const link = links[linkId];
             if (!link) return;
-              const targetNode = getPuzzleNodeById(link.target_id);
-              if (!targetNode || targetNode.type !== "escape/Puzzle") return;
-              if (targetNode.properties?.isAnalog) return; // analog puzzles are not device-driven
-              const targetDevId = getDeviceIdForPuzzle(targetNode);
-              if (!targetDevId) return;
-              publishCommand(targetDevId, { action: "sendParam", key: key || outName, type: sendType, data: sendData });
-              logSystem(
-                  `Data sent to "${getPuzzleName(targetNode, targetNode.id)}" (${key || outName}): ${JSON.stringify(sendData)}`,
-                  "system"
-              );
-              clearInputFallbackUsage(targetNode.id, key || outName);
-              clearPendingMediaFallback(targetNode.id, key || outName);
-          });
-      });
+            const targetNode = getPuzzleNodeById(link.target_id);
+            if (!targetNode || targetNode.type !== "escape/Puzzle") return;
+            if (targetNode.properties?.isAnalog) return; // analog puzzles are not device-driven
+            const targetDevId = getDeviceIdForPuzzle(targetNode);
+            if (!targetDevId) return;
+            const targetInput = targetNode.inputs && targetNode.inputs[link.target_slot];
+            const targetKey = targetInput?.name || key || outName || `Input ${link.target_slot + 1}`;
+            publishCommand(targetDevId, { action: "sendParam", key: targetKey, type: sendType, data: sendData });
+            logSystem(
+                `Data sent to "${getPuzzleName(targetNode, targetNode.id)}" (${targetKey}): ${JSON.stringify(sendData)}`,
+                "system"
+            );
+            markOutputForwarded(sourceNode.id, outName, targetNode.id, targetKey);
+            clearInputFallbackUsage(targetNode.id, targetKey);
+            clearPendingMediaFallback(targetNode.id, targetKey);
+        });
+    });
 }
 
 function seedInputsForPuzzle(targetNode) {
@@ -5142,16 +5200,18 @@ function seedInputsForPuzzle(targetNode) {
             const outName = out.name || `Output ${link.origin_slot + 1}`;
             const stored = puzzleDataStore[originNode.id]?.outputs?.[outName];
               if (stored && stored.data !== null && stored.data !== undefined) {
+                  const targetKey = input.name || outName;
                   publishCommand(targetDevId, {
                       action: "sendParam",
-                      key: outName,
+                      key: targetKey,
                       type: stored.type || normalizeDataType(out.type),
                       data: stored.data
                   });
                   logSystem(
-                      `Data sent to "${getPuzzleName(targetNode, targetNode.id)}" (${outName}): ${JSON.stringify(stored.data)}`,
+                      `Data sent to "${getPuzzleName(targetNode, targetNode.id)}" (${targetKey}): ${JSON.stringify(stored.data)}`,
                       "system"
                   );
+                  markOutputForwarded(originNode.id, outName, targetNode.id, targetKey);
                   sentValue = true;
                   break;
               }
@@ -5205,15 +5265,16 @@ function seedInputsForPuzzle(targetNode) {
             }
             publishCommand(targetDevId, {
                 action: "sendParam",
-                key: outName,
+                key: input.name || outName,
                 type: normalizeDataType(outFallbackConfig.type || out.type),
                 data: parsed.value,
                 fallback: true
             });
             logSystem(
-                `Data sent to "${getPuzzleName(targetNode, targetNode.id)}" (${outName}): ${JSON.stringify(parsed.value)}`,
+                `Data sent to "${getPuzzleName(targetNode, targetNode.id)}" (${input.name || outName}): ${JSON.stringify(parsed.value)}`,
                 "system"
             );
+            markOutputForwarded(originNode.id, outName, targetNode.id, input.name || outName);
             sentValue = true;
             break;
         }
@@ -6015,6 +6076,7 @@ function resetAllPuzzleStates(defaultState = 'locked', options = {}) {
     puzzleStateDetails = {};
     puzzleDataStore = {};
     puzzleInputFallbackStore = {};
+    outputTransferState = {};
     queueStates = {};
     queueSolvedState = {};
     queueBranchChoices = {};
@@ -6056,6 +6118,7 @@ function resetPuzzleRuntimeState(puzzleId) {
     delete puzzleStateDetails[puzzleId];
     delete puzzleDataStore[puzzleId];
     delete puzzleInputFallbackStore[puzzleId];
+    clearOutputTransferStateForPuzzle(puzzleId);
     delete puzzleQueueLocks[puzzleId];
     delete restartRequestedAt[puzzleId];
     delete restartFreshStateSeen[puzzleId];
@@ -7601,6 +7664,7 @@ module.exports = {
             const fallbackUsed = analogUnsolved
                 ? false
                 : !hasStored && (useInputFallback || (useOutputFallback && !origin.properties?.isAnalog));
+            const transferEntry = getOutputTransferEntry(origin.id, outName, ownerId, inputName || outName);
             if (!inputMap[ownerId]) {
                 inputMap[ownerId] = {
                     id: ownerId,
@@ -7619,6 +7683,8 @@ module.exports = {
                 type: normalizeDataType(out.type),
                 data,
                 updatedAt,
+                hubSentAt: transferEntry?.hubSentAt || null,
+                forwardedAt: transferEntry?.forwardedAt || null,
                 fallback: fallbackUsed,
                 externalCheck,
                 externalCheckActive: externalCheck ? isExternalCheckActive(origin, originState) : false,
@@ -8081,6 +8147,7 @@ module.exports = {
             const type = payload.type;
             if (targetNode && key && isDataKeyAllowed(key, type)) {
                 recordOutputData(targetNode.id, key, type, payload.data);
+                markOutputSentToHub(targetNode, key);
                 puzzleTelemetry[targetNode.id] = { lastData: payload, lastSeen: Date.now() };
                 const puzzleName = getPuzzleName(targetNode, targetNode.id);
                 logSystem(`Data received from "${puzzleName}" (${key}): ${JSON.stringify(payload.data)}`, "system");

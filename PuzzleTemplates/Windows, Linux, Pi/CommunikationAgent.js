@@ -801,6 +801,7 @@ function createServer(port) {
       if (!ok) {
         return sendJson(res, 400, { error: `Unknown output key "${finalKey}". Configure outputs in Hub I/O first.` });
       }
+      publishData(finalKey);
       return sendJson(res, 200, { ok: true, stored: { key: finalKey, type: type || "string", data: STATE.outputs[finalKey] } });
     }
 

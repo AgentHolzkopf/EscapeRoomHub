@@ -300,6 +300,7 @@
             row-gap: 2px;
         }
         .data-row .meta { font-size: 11px; color: #9fb5c9; display: flex; flex-direction: column; gap: 4px; align-items: flex-end; }
+        .data-row .meta-badges { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; }
         .data-row .key { font-weight: 700; color: #f2f2f2; font-size: 13px; min-width: 0; }
         .data-row .key-line { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
         .data-row .value { color: #cfd7e0; font-family: 'Consolas','Courier New',monospace; word-break: break-all; font-size: 12px; }
@@ -322,6 +323,23 @@
         .data-row.state-downloading { border-color: #0b3b91; box-shadow: 0 0 0 1px rgba(11,59,145,0.25); }
         .data-row.state-queueing { border-color: #7c5a2a; box-shadow: 0 0 0 1px rgba(124,90,42,0.25); }
         .data-row.state-locked { border-color: #3f3f3f; }
+        .transfer-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            padding: 2px 6px;
+            border-radius: 999px;
+            border: 1px solid #3b3b3b;
+            background: #232323;
+            color: #8aa0b5;
+            font-size: 10px;
+            font-weight: 700;
+        }
+        .transfer-badge.active {
+            border-color: #2c77d1;
+            background: rgba(44,119,209,0.16);
+            color: #d9e8fb;
+        }
         .ext-check-tag { padding: 2px 6px; border-radius: 999px; font-size: 10px; font-weight: 700; border: 1px solid #1e3a8a; color: #cfe0ff; background: rgba(30,58,138,0.18); }
         .ext-check-tag.active { border-color: #1d4ed8; color: #d9e7ff; background: rgba(29,78,216,0.2); }
         .ext-check-tag.solved { border-color: #2b8a3e; color: #b9f1c7; background: rgba(43,138,62,0.2); }
@@ -2069,9 +2087,12 @@
                     const typeKey = normalizeDataType(out.type);
                     const puzzleMeta = getPuzzleMetaForDataRow(p.id, out.branchId);
                     const derivedState = puzzleMeta ? deriveState(puzzleMeta) : (p.state || '');
-                    if (!isExternal && derivedState !== 'running') {
-                        return;
-                    }
+                    const hubSentBadge = !isExternal
+                        ? `<span class="transfer-badge${out.hubSentAt ? ' active' : ''}">↑</span>`
+                        : '';
+                    const forwardedBadge = !isExternal
+                        ? `<span class="transfer-badge${out.forwardedAt ? ' active' : ''}">↓</span>`
+                        : '';
                     const rowKey = getDataRowOrderKey(p, out, isExternal);
                     if (!dataRowOrder.has(rowKey)) {
                         dataRowOrder.set(rowKey, dataRowOrderNext++);
@@ -2097,7 +2118,7 @@
                             return `
                                 <div class="data-row${stateClass}">
                                     <div class="key"><span class="key-line">${name}${keyText}</span>${sourceText ? `<span class="key-line">${sourceText}</span>` : ''}${targetText ? `<span class="key-line">${targetText}</span>` : ''}</div>
-                                    <div class="meta"><span class="type" data-type="${typeKey}">${typeKey}</span>${extCheckTag}<span class="ts">${ts}</span></div>
+                                    <div class="meta"><div class="meta-badges"><span class="type" data-type="${typeKey}">${typeKey}</span>${hubSentBadge}${forwardedBadge}${extCheckTag}</div><span class="ts">${ts}</span></div>
                                     <div class="value">${value}${fallbackTag}</div>
                                 </div>`;
                         })()

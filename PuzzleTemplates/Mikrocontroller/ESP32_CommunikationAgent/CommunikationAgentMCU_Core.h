@@ -35,7 +35,8 @@ public:
       lastHeartbeatAt_(0),
       inputCount_(0),
       outputCount_(0),
-      customPresent_(false) {
+      customPresent_(false),
+      stateChanged_(false) {
     safeCopy(deviceId_, sizeof(deviceId_), "puzzle-1");
     safeCopy(puzzleName_, sizeof(puzzleName_), "Puzzle");
     safeCopy(topicPrefix_, sizeof(topicPrefix_), "puzzle");
@@ -143,16 +144,22 @@ public:
     }
   }
 
-  bool setState(const char* state) {
-    bool ok = setStateInternal(state);
+  bool setState(const String& state) {
+    bool ok = setStateInternal(state.c_str());
     if (ok) publishHeartbeatNow();
     return ok;
   }
 
-  const char* getState() const {
-    return state_;
+  String getState() const {
+    return String(state_);
   }
 
+  bool stateChanged() {
+  bool result = stateChanged_;
+  stateChanged_ = false;
+  return result;
+}
+  
   void restartComplete() {
     if (strcmp(state_, "starting") == 0) {
       setStateInternal("running");
@@ -160,41 +167,37 @@ public:
     }
   }
 
-  const char* getInputValue(const char* key) const {
-    int8_t idx = findInput(key);
-    if (idx < 0) return NULL;
-    if (!inputs_[idx].present) return NULL;
-    return inputs_[idx].value;
+  String getInput(const String& key) const {
+    int8_t idx = findInput(key.c_str());
+    if (idx < 0) {
+      return String();
+    }
+    if (!inputs_[idx].present) {
+      return String();
+    }
+    return String(inputs_[idx].value);
   }
 
-  const char* getInputType(const char* key) const {
-    int8_t idx = findInput(key);
-    if (idx < 0) return NULL;
-    return inputs_[idx].type;
+  bool setOutput(const String& key, const String& type, const String& value) {
+    return setOutputFromText(
+      key.c_str(),
+      type.c_str(),
+      value.c_str()
+    );
   }
 
-  bool setOutputFromPuzzle(const char* key, const char* type, const char* value) {
-    return setOutputFromText(key, type, value);
+  bool sendOutput(const String& key) {
+    return publishOutputData(key.c_str());
   }
 
-  bool sendOutputFromPuzzle(const char* key) {
-    return publishOutputData(key);
-  }
-
-  void publishAllOutputsFromPuzzle() {
-    publishAllOutputs();
-  }
-
-  void triggerExternalCheck(const char* value, bool active) {
-    if (!publishFn_) return;
+  void triggerExternalCheck(const String& value, bool active) {
+    if (!publishFn_) {
+      return;
+    }
 
     StaticJsonDocument<192> doc;
     doc["active"] = active;
-    if (value) {
-      doc["variable"] = value;
-    } else {
-      doc["variable"] = nullptr;
-    }
+    doc["variable"] = value;
     doc["deviceId"] = deviceId_;
 
     char payload[192];
@@ -205,27 +208,36 @@ public:
     publishFn_(topic, payload);
   }
 
-  void setCustomLocal(const char* value) {
-    setCustomFromText(value, true);
+ const char* getCustomValue() {
+  if (!customPresent_) {
+    return nullptr;
   }
 
-  const char* getCustomValue() const {
-    return customPresent_ ? customValue_ : NULL;
-  }
+  static char returnedValue[sizeof(customValue_)];
 
-  void clearCustomValue() {
-    customValue_[0] = '\0';
-    customPresent_ = false;
-  }
+  strncpy(returnedValue, customValue_, sizeof(returnedValue) - 1);
+  returnedValue[sizeof(returnedValue) - 1] = '\0';
 
-  bool publishCustomFromPuzzle() {
-    return publishCustomNow();
-  }
+  customValue_[0] = '\0';
+  customPresent_ = false;
 
-  bool publishCustomFromPuzzle(const char* value) {
-    setCustomFromText(value, true);
-    return publishCustomNow();
+  return returnedValue;
+}
+
+  bool sendCustom(const String& value) {
+  if (!publishFn_) {
+    return false;
   }
+  StaticJsonDocument<224> doc;
+  doc["value"] = value;
+  doc["deviceId"] = deviceId_;
+  char payload[224];
+  serializeJson(doc, payload, sizeof(payload));
+  char topic[96];
+  buildTopic("custom", topic, sizeof(topic));
+  publishFn_(topic, payload);
+  return true;
+}
 
   void publishHeartbeatNow() {
     if (!publishFn_) return;
@@ -276,6 +288,7 @@ private:
   uint8_t outputCount_;
   char customValue_[MAX_VALUE_LEN + 1];
   bool customPresent_;
+  bool stateChanged_;
 
   static void safeCopy(char* dest, size_t destLen, const char* src) {
     if (!dest || destLen == 0) return;
@@ -358,16 +371,6 @@ private:
     return false;
   }
 
-  bool setStateInternal(const char* s) {
-    if (!isValidState(s)) return false;
-    if (strcmp(s, "active") == 0) {
-      safeCopy(state_, sizeof(state_), "running");
-    } else {
-      safeCopy(state_, sizeof(state_), s);
-    }
-    return true;
-  }
-
   void buildTopic(const char* suffix, char* out, size_t outLen) const {
     if (!out || outLen == 0) return;
     snprintf(out, outLen, "%s/%s/%s", topicPrefix_, deviceId_, suffix);
@@ -419,13 +422,28 @@ private:
   }
 
   void setCustomFromVariant(JsonVariantConst data) {
-    variantToText(data, customValue_, sizeof(customValue_));
-    customPresent_ = !data.isNull();
-  }
+      variantToText(data, customValue_, sizeof(customValue_));
+      customPresent_ = !data.isNull();
+    }
 
-  void setCustomFromText(const char* value, bool present) {
-    safeCopy(customValue_, sizeof(customValue_), value ? value : "");
-    customPresent_ = present;
+    bool setStateInternal(const char* newState) {
+    if (!isValidState(newState)) {
+      return false;
+    }
+
+    const char* normalizedState =
+      strcmp(newState, "active") == 0
+        ? "running"
+        : newState;
+
+    if (strcmp(state_, normalizedState) == 0) {
+      return true;
+    }
+
+    safeCopy(state_, sizeof(state_), normalizedState);
+    stateChanged_ = true;
+
+    return true;
   }
 
   void setInputValue(const char* key, const char* type, JsonVariantConst data) {
