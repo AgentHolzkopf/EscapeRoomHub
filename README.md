@@ -545,6 +545,15 @@ PolyForm Noncommercial License 1.0.0
 
 See [LICENSE](LICENSE).
 
+Third-party components included in this repository, especially bundled libraries used by the Unity / C# communication agent, are licensed separately by their respective authors.
+
+See [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
+
+Included third-party libraries currently documented there:
+
+* `MQTTnet` `4.3.7.1207` - MIT License
+* `Newtonsoft.Json` `13.0.3` - MIT License
+
 Note: Because commercial use is excluded, this project is not licensed as OSI-compliant open source software. It is source-available non-commercial software.
 
 ---

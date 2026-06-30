@@ -10,6 +10,17 @@ This agent is meant to be embedded directly into a Unity project. It talks to Es
 - `UnityPlugins/Newtonsoft.Json.dll` is the JSON dependency.
 - `InstallUnityAgent.ps1` copies the agent and DLLs into a Unity project.
 
+## Licensing
+
+`COMAgent.cs` is part of the EscapeHub project and follows the repository license.
+
+The bundled DLLs in `UnityPlugins/` are third-party components with their own licenses:
+
+- `MQTTnet` `4.3.7.1207` - MIT License
+- `Newtonsoft.Json` `13.0.3` - MIT License
+
+See the repository-level [THIRD_PARTY_LICENSES.md](../../../THIRD_PARTY_LICENSES.md) for details.
+
 ## Unity Setup
 
 ### Recommended: install by script
