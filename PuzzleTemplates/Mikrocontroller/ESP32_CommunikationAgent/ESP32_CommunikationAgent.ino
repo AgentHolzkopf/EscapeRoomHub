@@ -170,14 +170,6 @@ void loop() {
   // Keep this loop fast: avoid long delay() calls so MQTT and heartbeat stay responsive.
   // You can use this function if desired
   handlePuzzleLogic();
-  if (Serial.available()) {
-    agent.setOutput("seriell", Serial.readStringUntil('\n'));
-    agent.sendOutput("seriell");
-  }
-  if (agent.inputAvailable("clicked")) {
-    Serial.println(agent.getInput("clicked"));
-    agent.deleteInput("clicked");
-  }
 }
 
 ///////////////////////////////////////////////////////////////////////////////
