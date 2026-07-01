@@ -16,6 +16,7 @@ var HEARTBEAT_INTERVAL_MS := 2000
 var MEDIA_SERVER := ""
 var MEDIA_LOCAL_DIR := "user://MediaStorage"
 var MQTT_TOPIC_PREFIX := "puzzle"
+var CONNECT_RETRY_INTERVAL_MS := 3000
 
 # functions that can be called externally
 
@@ -96,9 +97,9 @@ func start() -> void:
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(MEDIA_LOCAL_DIR))
 	_ensure_media_server()
 	_ensure_mqtt_client()
-	_connect_if_needed(true)
-	publishHeartbeatNow()
 	_started = true
+	_last_connect_attempt_ms = 0
+	_last_heartbeat_ms = Time.get_ticks_msec()
 
 func run() -> void:
 	if not _started:
@@ -263,7 +264,7 @@ func publishHeartbeatNow() -> bool:
 
 func _tick() -> void:
 	_connect_if_needed(false)
-	if HEARTBEAT_INTERVAL_MS > 0 and Time.get_ticks_msec() - _last_heartbeat_ms >= HEARTBEAT_INTERVAL_MS:
+	if _connected and HEARTBEAT_INTERVAL_MS > 0 and Time.get_ticks_msec() - _last_heartbeat_ms >= HEARTBEAT_INTERVAL_MS:
 		publishHeartbeatNow()
 
 func _ensure_media_server() -> void:
@@ -293,10 +294,14 @@ func _connect_if_needed(force: bool) -> void:
 		_connected = true
 		return
 	var now := Time.get_ticks_msec()
-	if not force and now - _last_connect_attempt_ms < 1000:
+	if not force and now - _last_connect_attempt_ms < CONNECT_RETRY_INTERVAL_MS:
 		return
 	_last_connect_attempt_ms = now
-	_mqtt_client.connect_to_broker("tcp://%s:%d" % [MQTT_BROKER, MQTT_PORT])
+	var broker_host := String(MQTT_BROKER).strip_edges()
+	if broker_host.is_empty() or broker_host == "HUB_HOST_IP":
+		return
+	var broker_url := "tcp://%s:%d" % [broker_host, MQTT_PORT]
+	_mqtt_client.connect_to_broker(broker_url)
 
 func _on_mqtt_connected() -> void:
 	_connected = true
@@ -499,7 +504,6 @@ func _build_topic(suffix: String) -> String:
 	return "%s/%s/%s" % [MQTT_TOPIC_PREFIX, DEVICE_ID, suffix]
 
 func _publish_json(topic: String, payload: Dictionary) -> bool:
-	_connect_if_needed(false)
 	var json_text := JSON.stringify(payload)
 	if not _connected or _mqtt_client == null or not _mqtt_client.is_connected_to_broker():
 		_pending_messages.append({"topic": topic, "payload": json_text})

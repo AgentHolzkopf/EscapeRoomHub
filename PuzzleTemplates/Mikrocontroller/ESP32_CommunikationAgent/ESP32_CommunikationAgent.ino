@@ -19,8 +19,8 @@
 // Project-specific settings
 // -------------------------
 /////////////////////////////////////////////////////////////////////////
-static const char* WIFI_SSID = "WIFI_SSID";                                // Change to your WIFI SSID
-static const char* WIFI_PASS = " WIFI_PASS";                                // Change to your WIFI Password
+static const char* WIFI_SSID = "theStudioWS26";                                // Change to your WIFI SSID
+static const char* WIFI_PASS = "theStudioWS26";                                // Change to your WIFI Password
 
 static const char* MQTT_HOST = "MQTT_HOST IP";                                    // Change to IP Adress of the hub
 static const uint16_t MQTT_PORT = 1883;

@@ -73,6 +73,8 @@ COMAgent.deleteMedia("image")
 
 - `run()` is optional when `COMAgent` is used as Autoload.  
   The singleton already processes MQTT and heartbeats internally.
+- `start()` only initializes the agent locally.  
+  If the hub or MQTT broker is currently offline, the agent keeps running and retries connecting in the background.
 - `getInput()` returns an empty string when no input is available.
 - `getMedia()` returns the local absolute path when the media file is ready.  
   Otherwise it returns an empty string.
