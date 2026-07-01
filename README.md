@@ -113,26 +113,10 @@ cd HubRemoteEditing
 Run the installer:
 
 ```bash
-sudo bash install.sh
+sudo bash install-hub.sh
 ```
 
-Choose `Install core hub` for a hub-only setup or `Install full setup` for guided hardware setup.
-
-For a non-interactive install, run:
-
-```bash
-sudo bash install.sh --core
-```
-
-Use `--core` for development, demos, VMs, or installations where Zigbee/DMX/audio hardware is not configured yet.
-
-For the full installer path, run:
-
-```bash
-sudo bash install.sh --full
-```
-
-Use `--full` for a Raspberry Pi that should run the complete room setup. It runs the core install and then performs guided setup for:
+The installer now uses a single entry point and performs the full guided setup automatically. It installs the hub, Node.js 20 LTS, Mosquitto MQTT, runtime folders, the `md2-hub` systemd service, and then performs guided setup for:
 
 * Zigbee2MQTT
 * stable `/dev/zigbee` udev rule
@@ -141,10 +125,6 @@ Use `--full` for a Raspberry Pi that should run the complete room setup. It runs
 * USB audio default device and mixer volume
 
 The hardware steps are interactive. The installer asks before binding detected USB serial devices to `/dev/zigbee` or `/dev/dmx`.
-
-Use `--core` when you only need the hub server and MQTT. Use `--full` for production-like Pi installations where the Zigbee dongle, DMX adapter, and audio device are connected.
-
-The installer installs system dependencies, Node.js 20 LTS, Node.js packages, Mosquitto MQTT, runtime folders, and a `md2-hub` systemd service.
 
 It also configures Mosquitto for local-network puzzle clients:
 
@@ -167,10 +147,10 @@ Useful service commands:
 sudo systemctl status md2-hub --no-pager
 sudo journalctl -u md2-hub -f
 sudo systemctl restart md2-hub
-bash install.sh --doctor
+bash install-hub.sh --doctor
 ```
 
-For hardware setup, run `sudo bash install.sh --full` with the Zigbee dongle, DMX adapter, and audio device connected.
+For best results, run `sudo bash install-hub.sh` with the Zigbee dongle, DMX adapter, and audio device connected.
 
 ### Manual Setup
 
@@ -390,7 +370,7 @@ Start the agent manually with:
 node CommunikationAgent.js --port 5001
 ```
 
-The agent exposes HTTP endpoints for the local puzzle logic and uses MQTT to communicate with the hub. The hub must allow MQTT clients on the local network. The hub installer configures Mosquitto for this in `--core` and `--full` mode.
+The agent exposes HTTP endpoints for the local puzzle logic and uses MQTT to communicate with the hub. The hub must allow MQTT clients on the local network. The hub installer configures Mosquitto for this automatically.
 
 Detailed setup and HTTP API examples are documented in:
 
