@@ -1,131 +1,37 @@
-Communication Agent Setup (Node.js)
-===================================
+Generic Communication Agent Setup (Node.js)
+==========================================
 
-This document applies to:
-`PuzzleTemplates/Windows, Linux, Pi`
-
-------------------------------------------------------------
-Architecture: MQTT + HTTP
-------------------------------------------------------------
-
-The template uses MQTT internally for communication with the hub:
-- Sub: `puzzle/<deviceId>/command`
-- Pub: `puzzle/<deviceId>/heartbeat`, `.../data`, `.../custom`, `.../external-check`
-
-Your puzzle logic controls the template locally through HTTP calls.
-These HTTP calls are the API for your own puzzle script.
-The agent translates them into MQTT messages for the hub.
+This template uses MQTT internally for communication with the hub.
+Your own puzzle logic talks to the agent locally through HTTP.
 
 Short version:
 - Hub <-> Agent: MQTT
 - Puzzle logic <-> Agent: HTTP
 
-For Unity or other C# projects, use the included wrapper:
-- `Clients/CSharp/EscapeHubAgentClient.cs`
-
-This wrapper hides the raw HTTP requests and exposes simple async methods like:
-- `GetStateAsync()`
-- `SetStateAsync("running")`
-- `GetInputValueAsync("Code")`
-- `SetOutputAsync("Result", "string", "OK")`
-- `SendCustomAsync("button pressed")`
+Public data model:
+- inputs are strings or media
+- outputs are strings or media
+- custom values are strings
+- no public number/boolean workflow
 
 ------------------------------------------------------------
-1) Example Workflow: Puzzle Loop
+1) Core idea
 ------------------------------------------------------------
 
-Goal of this workflow:
-- Read state from the agent
-- React to `reset`
-- Read inputs and execute puzzle logic
-- Set outputs
-- Set state to `solved` when the puzzle is solved
+The Generic Communication Agent is the fallback option for projects that do not fit one of the dedicated agents.
+Instead of embedding agent logic directly, your application talks to a separately running local agent over HTTP.
 
-Note:
-- The template uses MQTT internally.
-- Your puzzle logic talks to the agent locally via HTTP.
+Run `CommunikationAgent.js` next to your puzzle application.
+Your application does not need to know anything about MQTT.
+It only calls the local HTTP API.
 
-Python example with core functions:
-
-```python
-import time
-import requests
-
-BASE = "http://127.0.0.1:5001"
-
-def get_state():
-    return requests.get(f"{BASE}/getState", timeout=3).json()
-
-def set_state(state):
-    return requests.post(f"{BASE}/setState", json={"state": state}, timeout=3).json()
-
-def get_input(key):
-    return requests.get(f"{BASE}/getParam", params={"type": key}, timeout=3).json()
-
-def set_output(key, value):
-    body = {"key": key, "type": "string", "data": str(value)}
-    return requests.post(f"{BASE}/setOutput", json=body, timeout=3).json()
-
-def send_custom(value):
-    body = {"value": str(value)}
-    return requests.post(f"{BASE}/sendCustom", json=body, timeout=3).json()
-
-set_state("running")
-
-while True:
-    state = get_state().get("state")
-
-    if state == "reset":
-        # Re-initialize your own variables, actuators, displays, etc.
-        continue
-
-    if state == "running":
-        own_parameters = get_input("Code")
-        # Execute your own puzzle logic here.
-
-    if puzzle_state == "solved":
-        set_state("solved")
-
-    send_custom("myvariable")
-    time.sleep(0.1)
-```
-
-C# / Unity example with the included wrapper:
-
-```csharp
-using System.Threading.Tasks;
-using EscapeHub.Agent;
-
-public class PuzzleController
-{
-    private readonly EscapeHubAgentClient agent =
-        new EscapeHubAgentClient("http://127.0.0.1:5001");
-
-    public async Task RunAsync()
-    {
-        await agent.SetStateAsync("running");
-
-        while (true)
-        {
-            string state = await agent.GetStateAsync();
-
-            if (state == "running")
-            {
-                string code = await agent.GetInputValueAsync("Code");
-                if (code == "1234")
-                {
-                    await agent.SetOutputAsync("Result", "string", "OK");
-                    await agent.SendCustomAsync("correct code received");
-                    await agent.SetStateAsync("solved");
-                    break;
-                }
-            }
-
-            await Task.Delay(100);
-        }
-    }
-}
-```
+Typical flow:
+1. Read the current puzzle state with `GET /getState`
+2. React to `locked`, `running`, `solved`, or `starting`
+3. Read incoming string data with `GET /getInput?key=...`
+4. Send outgoing string data with `POST /setOutput` and `POST /sendOutput`
+5. Send outgoing media with `POST /setMedia` and `POST /sendMedia`
+6. When the puzzle is solved, call `POST /setState` with `solved`
 
 ------------------------------------------------------------
 2) Quickstart
@@ -137,98 +43,26 @@ Windows installer:
 powershell -ExecutionPolicy Bypass -File .\install-agent.ps1
 ```
 
-If Node.js is not installed, the installer can install Node.js LTS through `winget`:
+If Node.js is missing:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\install-agent.ps1 -InstallNode
 ```
 
-After Node.js was installed, close PowerShell, open a new PowerShell window, and run the installer again. This is required because Windows updates `PATH` only for new terminal sessions.
-
-Non-interactive example:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\install-agent.ps1 -HubHost 192.168.101.96 -PuzzleName TestPuzzle
-```
-
-Install and start immediately:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\install-agent.ps1 -HubHost 192.168.101.96 -PuzzleName TestPuzzle -Start
-```
-
-Start the agent:
+Then start the agent:
 
 ```bash
 node CommunikationAgent.js --port 5001
 ```
 
-Optional companion script for Custom -> board LED:
+Then optionally open the browser test client:
 
-```bash
-node CustomLedBridge.js
+```text
+CommunikationAgent_TestClient.html
 ```
 
-The script polls `GET /getCustom` from the agent and toggles the LED when the custom value is exactly `button pressed`.
-
-Configuration:
-
-```bash
-AGENT_URL=http://127.0.0.1:5001 CUSTOM_TRIGGER="button pressed" LED_GPIO=17 node CustomLedBridge.js
-```
-
-Notes:
-- The agent starts HTTP by default, not HTTPS.
-- `CustomLedBridge.js` can use HTTPS if `AGENT_URL` starts with `https://`.
-- On a Raspberry Pi it uses `/sys/class/gpio`.
-- On Windows or without GPIO access, the LED state is only logged to the terminal.
-
 ------------------------------------------------------------
-3) Basic Setup
-------------------------------------------------------------
-
-Recommended on Windows:
-
-1. Open PowerShell in this folder:
-   `PuzzleTemplates/Windows, Linux, Pi`
-2. Run:
-   `powershell -ExecutionPolicy Bypass -File .\install-agent.ps1`
-   If Node.js is missing, either confirm the winget install prompt or run:
-   `powershell -ExecutionPolicy Bypass -File .\install-agent.ps1 -InstallNode`
-   Then reopen PowerShell and run the installer again.
-3. Enter the hub IP/hostname and puzzle name.
-   The installer requires a real hub IP/hostname. It will not silently keep the template placeholder.
-4. Start the agent:
-   `node CommunikationAgent.js --port 5001`
-5. Select the detected agent as Linked Device in the hub.
-6. Start the room.
-
-Unity / C# setup:
-
-1. Start the agent:
-   `node CommunikationAgent.js --port 5001`
-2. Copy:
-   `Clients/CSharp/EscapeHubAgentClient.cs`
-   into your Unity project, for example into:
-   `Assets/Scripts/EscapeHub/`
-3. Create your puzzle logic in Unity and call the client methods instead of raw HTTP.
-4. Select the detected agent as Linked Device in the hub.
-5. Start the room.
-
-Manual setup:
-
-1. Change into the folder:
-   `PuzzleTemplates/Windows, Linux, Pi`
-2. Install dependency:
-   `npm install mqtt`
-3. Edit `CommunikationAgent.config.json` (at least `mqttBroker` and `puzzleName`).
-4. Start the agent:
-   `node CommunikationAgent.js --port 5001`
-5. Select the detected agent as Linked Device in the hub.
-6. Start the room.
-
-------------------------------------------------------------
-4) Minimal Configuration
+3) Minimal configuration
 ------------------------------------------------------------
 
 Example `CommunikationAgent.config.json`:
@@ -238,179 +72,211 @@ Example `CommunikationAgent.config.json`:
   "hubHost": "192.168.101.96",
   "mqttBroker": "192.168.101.96",
   "mqttPort": 1883,
-  "puzzleName": "Radio_Puzzle",
+  "puzzleName": "TestPuzzle",
   "heartbeatIntervalMs": 2000,
-  "needRestart": false
+  "needRestart": false,
+  "mediaLocalDir": "MediaStorage"
 }
 ```
 
-Important:
-- The installer generates a stable local agent ID in `.agent-device-id` if none exists yet.
-- `CommunikationAgent.config.json` does not need a `deviceId` entry.
-- Without the installer or `.agent-device-id`, the agent falls back to the local IP address as device ID.
-- Select the detected agent as Linked Device in the hub.
-- Inputs and outputs are initialized by the hub through `initKeys`.
-- Output keys must be defined in the hub I/O configuration.
+Notes:
+- the installer creates a stable `.agent-device-id`
+- `deviceId` in the JSON is optional
+- if no persistent ID exists, the agent falls back to the local IP
+- media files are stored locally in `mediaLocalDir`
 
 ------------------------------------------------------------
-5) HTTP API: Core Functions
+4) Example workflow
+------------------------------------------------------------
+
+Python example:
+
+```python
+import time
+import requests
+
+BASE = "http://127.0.0.1:5001"
+
+while True:
+    state = requests.get(f"{BASE}/getState", timeout=3).json()["state"]
+
+    if state == "running":
+        available = requests.get(
+            f"{BASE}/inputAvailable",
+            params={"key": "Code"},
+            timeout=3,
+        ).json()["available"]
+
+        if available:
+            data = requests.get(
+                f"{BASE}/getInput",
+                params={"key": "Code"},
+                timeout=3,
+            ).json()
+
+            if data.get("data") == "1234":
+                requests.post(
+                    f"{BASE}/setOutput",
+                    json={"key": "Result", "data": "OK"},
+                    timeout=3,
+                )
+                requests.post(
+                    f"{BASE}/sendOutput",
+                    json={"key": "Result"},
+                    timeout=3,
+                )
+                requests.post(
+                    f"{BASE}/sendCustom",
+                    json={"value": "correct code"},
+                    timeout=3,
+                )
+                requests.post(
+                    f"{BASE}/setState",
+                    json={"state": "solved"},
+                    timeout=3,
+                )
+                break
+
+    time.sleep(0.1)
+```
+
+------------------------------------------------------------
+5) HTTP API
 ------------------------------------------------------------
 
 Base URL:
 - `BASE=http://127.0.0.1:5001`
 
 State:
-- GET state:
-  `curl "$BASE/getState"`
-- POST set state:
-  `curl -X POST "$BASE/setState" -H "Content-Type: application/json" -d "{\"state\":\"running\"}"`
-
-Inputs:
-- GET input:
-  `curl "$BASE/getParam?type=Code"`
-
-Outputs:
-- POST output:
-  `curl -X POST "$BASE/setOutput" -H "Content-Type: application/json" -d "{\"key\":\"Result\",\"type\":\"string\",\"data\":\"OK\"}"`
-
-------------------------------------------------------------
-6) MQTT Flow to the Hub
-------------------------------------------------------------
-
-Hub -> Agent:
-- Topic: `puzzle/<deviceId>/command`
-- Common actions:
-  - `initKeys`
-  - `clearData`
-  - `restart`
-  - `setState`
-  - `sendParam`
-  - `requestData`
-  - `sendCustom`
-  - `sendOutput`
-
-Agent -> Hub:
-- `puzzle/<deviceId>/heartbeat`
-- `puzzle/<deviceId>/data`
-- `puzzle/<deviceId>/custom`
-- `puzzle/<deviceId>/external-check`
-
-------------------------------------------------------------
-7) Full HTTP Function List
-------------------------------------------------------------
-
-State:
 - `GET /getState`
-  Reads the current puzzle state, for example `locked`, `running`, `solved`, `reset`.
-- `POST /setState`
-  Sets the puzzle state and publishes it to the hub.
+- `POST /setState` with `{ "state": "running" }`
 
 Inputs:
-- `GET /getParam?type=<Key>`
-  Reads the last known input value for a key.
-- `POST /sendParam`
-  Sets a local input value, mainly for tests and simulations.
+- `GET /getInput?key=Code`
+- `GET /inputAvailable?key=Code`
+- `POST /deleteInput` with `{ "key": "Code" }`
+- `POST /sendParam` with `{ "key": "Code", "data": "1234" }`
+  This is mainly useful for local tests.
+
+Input response example:
+
+```json
+{
+  "key": "Code",
+  "type": "string",
+  "data": "1234",
+  "present": true
+}
+```
 
 Outputs:
-- `POST /setOutput`
-  Sets an output value, for example a relay or virtual output, and publishes it.
-- `GET /getOutput?key=<Key>`
-  Reads the last set output value.
+- `POST /setOutput` with `{ "key": "Result", "data": "OK" }`
+- `POST /sendOutput` with `{ "key": "Result" }`
+- `POST /sendAllOutputs`
+- `GET /getOutput?key=Result`
 
-Heartbeat:
-- `POST /sendHeartbeat`
-  Forces an immediate heartbeat publish. Useful for immediate UI updates.
+Output response example:
+
+```json
+{
+  "key": "Result",
+  "output": {
+    "type": "string",
+    "data": "OK",
+    "present": true
+  }
+}
+```
 
 Custom:
-- `POST /sendCustom`
-  Sends a custom message/event to the hub.
+- `POST /sendCustom` with `{ "value": "button pressed" }`
 - `GET /getCustom`
-  Reads the latest received or locally set custom value.
+- `GET /customAvailable`
+- `POST /deleteCustom`
 
-External Check:
-- `POST /triggerExternalCheck`
-  Reports an external input check, for example a user input that should be verified by the hub.
+Custom response example:
+
+```json
+{
+  "value": "button pressed",
+  "available": true
+}
+```
+
+External check:
+- `POST /triggerExternalCheck` with `{ "value": "1234", "active": true }`
 - `GET /getExternalCheck`
-  Reads the last external check state.
 
 Restart:
 - `POST /restartComplete`
-  Tells the hub that a requested restart has completed.
-- `POST /restartConfig`
-  Sets at runtime whether this puzzle uses `needRestart` for start/reset handling.
+- `POST /restartConfig` with `{ "needRestart": true }`
 
 Media:
-- `POST /media/upload`
-  Uploads a file to hub media storage.
-- `POST /media/download`
-  Downloads a file from the hub.
+- `POST /setMedia` with `{ "key": "image", "sourcePath": "./MediaStorage/test.png" }`
+- `POST /sendMedia` with `{ "key": "image" }`
+- `GET /getMedia?key=image`
+- `GET /media/file?key=image`
+- `POST /deleteMedia` with `{ "key": "image" }`
+- `POST /media/upload` with `{ "localPath": "./MediaStorage/test.png", "remoteName": "test.png" }`
+- `POST /media/download` with `{ "remoteName": "test.png", "localPath": "./MediaStorage/test_copy.png" }`
+
+Media behavior:
+- `setMedia` copies a local file into the agent's local media folder and binds it to the given key
+- `sendMedia` uploads that local file to the hub and then forwards the key as a media output
+- when the hub sends a media input to the agent, the agent starts downloading it immediately in the background
+- `getMedia(key)` only returns a local path after the file is fully available locally
+- `GET /media/file?key=...` streams that local file directly from the agent for preview/debugging
 
 Debug:
 - `GET /getAll`
-  Returns the complete internal agent state snapshot for diagnostics.
 
 ------------------------------------------------------------
-8) Example Calls for All Functions (curl)
+6) Curl examples
 ------------------------------------------------------------
 
-Base:
-- `BASE=http://127.0.0.1:5001`
+```bash
+curl "http://127.0.0.1:5001/getState"
+curl -X POST "http://127.0.0.1:5001/setState" -H "Content-Type: application/json" -d "{\"state\":\"running\"}"
 
-State:
-- `curl "$BASE/getState"`
-- `curl -X POST "$BASE/setState" -H "Content-Type: application/json" -d "{\"state\":\"running\"}"`
+curl "http://127.0.0.1:5001/inputAvailable?key=Code"
+curl "http://127.0.0.1:5001/getInput?key=Code"
+curl -X POST "http://127.0.0.1:5001/deleteInput" -H "Content-Type: application/json" -d "{\"key\":\"Code\"}"
 
-Inputs:
-- `curl "$BASE/getParam?type=Code"`
-- `curl -X POST "$BASE/sendParam" -H "Content-Type: application/json" -d "{\"key\":\"Code\",\"type\":\"string\",\"data\":\"ABC123\"}"`
+curl -X POST "http://127.0.0.1:5001/setOutput" -H "Content-Type: application/json" -d "{\"key\":\"Result\",\"data\":\"OK\"}"
+curl -X POST "http://127.0.0.1:5001/sendOutput" -H "Content-Type: application/json" -d "{\"key\":\"Result\"}"
 
-Outputs:
-- `curl -X POST "$BASE/setOutput" -H "Content-Type: application/json" -d "{\"key\":\"Result\",\"type\":\"string\",\"data\":\"OK\"}"`
-- `curl "$BASE/getOutput?key=Result"`
+curl -X POST "http://127.0.0.1:5001/sendCustom" -H "Content-Type: application/json" -d "{\"value\":\"button pressed\"}"
+curl "http://127.0.0.1:5001/getCustom"
 
-Heartbeat:
-- `curl -X POST "$BASE/sendHeartbeat" -H "Content-Type: application/json" -d "{\"state\":\"running\"}"`
+curl -X POST "http://127.0.0.1:5001/triggerExternalCheck" -H "Content-Type: application/json" -d "{\"value\":\"1234\",\"active\":true}"
+curl "http://127.0.0.1:5001/getExternalCheck"
 
-Custom:
-- `curl -X POST "$BASE/sendCustom" -H "Content-Type: application/json" -d "{\"value\":\"door-opened\"}"`
-- `curl "$BASE/getCustom"`
-
-External Check:
-- `curl -X POST "$BASE/triggerExternalCheck" -H "Content-Type: application/json" -d "{\"value\":\"1234\",\"active\":true}"`
-- `curl "$BASE/getExternalCheck"`
-
-Restart:
-- `curl -X POST "$BASE/restartComplete" -H "Content-Type: application/json" -d "{}"`
-- `curl -X POST "$BASE/restartConfig" -H "Content-Type: application/json" -d "{\"needRestart\":true}"`
-
-Media:
-- `curl -X POST "$BASE/media/upload" -H "Content-Type: application/json" -d "{\"localPath\":\"./MediaStorage/Lampe.png\",\"remoteName\":\"Lampe.png\"}"`
-- `curl -X POST "$BASE/media/download" -H "Content-Type: application/json" -d "{\"remoteName\":\"Lampe.png\",\"localPath\":\"./MediaStorage/Lampe_copy.png\"}"`
-
-Debug:
-- `curl "$BASE/getAll"`
+curl -X POST "http://127.0.0.1:5001/setMedia" -H "Content-Type: application/json" -d "{\"key\":\"image\",\"sourcePath\":\"./MediaStorage/test.png\"}"
+curl -X POST "http://127.0.0.1:5001/sendMedia" -H "Content-Type: application/json" -d "{\"key\":\"image\"}"
+curl "http://127.0.0.1:5001/getMedia?key=image"
+curl "http://127.0.0.1:5001/media/file?key=image"
+```
 
 ------------------------------------------------------------
-9) Troubleshooting
+7) Test client
 ------------------------------------------------------------
 
-Problem: The hub sees no data.
-- Check that the detected agent is selected as Linked Device in the hub.
-- Check `mqttBroker` and `mqttPort`.
-- Check whether startup logs show `MQTT connected ...`.
-
-Problem: Output is ignored.
-- The output key is not defined in the hub I/O configuration through `initKeys`.
-- The key must match exactly.
-
-Problem: State changes do not appear in the hub.
-- After `setState`, call `sendHeartbeat` if an immediate push is required.
+`CommunikationAgent_TestClient.html` covers these common checks:
+- refresh current state/custom/external-check status
+- set and send a string output
+- set and send a media output
+- preview incoming downloaded media
+- trigger an external check
+- send a custom value
+- manually set puzzle state
+- inspect and delete single inputs
 
 ------------------------------------------------------------
-10) Related Documentation
+8) Notes
 ------------------------------------------------------------
 
-- MCU reference:
-  `../Mikrocontroller/README_MCU_REFERENCE.md`
-- C# client wrapper:
-  `Clients/CSharp/EscapeHubAgentClient.cs`
+- Incoming media is downloaded immediately when the hub sends a media input.
+- `getMedia(key)` only returns a local path when the file is already available.
+- `sendMedia(key)` uploads the matching local file and then forwards the media output to the hub.
+- The agent itself still listens to hub MQTT commands like `initKeys`, `sendParam`, `setState`, `restart`, and `sendCustom`.
+- The local HTTP API is the intended integration surface for your own application logic.

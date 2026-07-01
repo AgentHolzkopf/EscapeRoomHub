@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="de">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Puzzle Template Test Client</title>
+  <title>Generic Communication Agent Test Client</title>
   <style>
     :root {
       --bg: #101418;
@@ -23,7 +23,7 @@
       font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
     }
     .page {
-      max-width: 820px;
+      max-width: 960px;
       margin: 24px auto;
       padding: 0 16px 24px;
     }
@@ -36,9 +36,10 @@
       box-shadow: 0 12px 30px rgba(0,0,0,0.2);
     }
     h1 { margin: 0 0 6px; font-size: 22px; }
+    h2 { margin: 0 0 6px; font-size: 18px; }
     .sub { color: var(--muted); font-size: 13px; margin-bottom: 14px; }
     .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
-    label { font-size: 12px; color: var(--muted); }
+    label { font-size: 12px; color: var(--muted); display: block; margin-bottom: 6px; }
     input[type="text"] {
       width: 100%;
       padding: 10px 12px;
@@ -64,6 +65,12 @@
       color: #0b1320;
     }
     button:hover { filter: brightness(1.05); }
+    .status-bar {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 12px;
+    }
     .status-pill {
       display: inline-flex;
       align-items: center;
@@ -84,7 +91,7 @@
       border-radius: 8px;
       padding: 10px;
       font-size: 12px;
-      max-height: 180px;
+      max-height: 220px;
       overflow: auto;
       color: #b8c7d8;
     }
@@ -97,18 +104,26 @@
       align-items: flex-start;
       margin-top: 12px;
     }
+    .preview-item {
+      width: 320px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px;
+      background: #0f1720;
+    }
     .preview img {
       max-width: 100%;
-      width: 320px;
-      border-radius: 10px;
+      width: 100%;
+      border-radius: 8px;
       border: 1px solid var(--border);
-      background: #0f1720;
+      background: #0b1118;
       object-fit: contain;
     }
     .preview .meta {
       font-size: 12px;
       color: var(--muted);
-      min-width: 160px;
+      margin-top: 8px;
+      word-break: break-word;
     }
     .toggle {
       display: inline-flex;
@@ -122,16 +137,16 @@
 <body>
   <div class="page">
     <div class="card">
-      <h1>Puzzle Template Test Client</h1>
-      <div class="sub">Simple GUI to test WindowsPuzzleTemplate functions.</div>
+      <h1>Generic Communication Agent Test Client</h1>
+      <div class="sub">Small browser UI for the current HTTP API. Data values are strings. Media is handled separately.</div>
       <div class="row">
         <div class="field">
-          <label for="base-url">Template URL</label>
+          <label for="base-url">Agent URL</label>
           <input id="base-url" type="text" value="http://localhost:5001">
         </div>
         <button id="refresh-btn">Refresh Status</button>
       </div>
-      <div style="margin-top:12px;">
+      <div class="status-bar">
         <span class="status-pill" id="state-pill">State: --</span>
         <span class="status-pill" id="ext-pill">External Check: --</span>
         <span class="status-pill" id="custom-pill">Custom: --</span>
@@ -139,25 +154,37 @@
     </div>
 
     <div class="card">
-      <h1>Password Output</h1>
-      <div class="sub">Stores output data in the template (uses /setOutput).</div>
+      <h2>Password Output</h2>
+      <div class="sub">Stores a string output and sends it to the hub.</div>
       <div class="row">
         <div class="field">
           <label for="password-value">Password</label>
           <input id="password-value" type="text" placeholder="e.g. 1234">
         </div>
-        <button class="primary" id="send-password">Set Password Output</button>
+        <button class="primary" id="send-password">Set And Send Password</button>
       </div>
     </div>
 
     <div class="card">
-      <h1>Incoming Media</h1>
-      <div class="sub">Displays incoming media inputs (auto-detected).</div>
+      <h2>Media Output</h2>
+      <div class="sub">Copies a local file into the agent media folder and sends it as a media output.</div>
       <div class="row">
         <div class="field">
-          <label for="media-server-url">Media Server URL</label>
-          <input id="media-server-url" type="text" value="http://escapehub.local">
+          <label for="media-key">Media Key</label>
+          <input id="media-key" type="text" value="image">
         </div>
+        <div class="field">
+          <label for="media-source-path">Local File Path</label>
+          <input id="media-source-path" type="text" placeholder="e.g. C:\\media\\picture.png">
+        </div>
+        <button class="primary" id="send-media">Set And Send Media</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Incoming Media</h2>
+      <div class="sub">Shows media inputs that were already downloaded locally by the agent.</div>
+      <div class="row">
         <label class="toggle">
           <input type="checkbox" id="auto-media-refresh" checked>
           Auto refresh
@@ -168,22 +195,20 @@
     </div>
 
     <div class="card">
-      <h1>Player Input</h1>
-      <div class="sub">Sets the check value and triggers external check (uses /triggerExternalCheck).</div>
+      <h2>Player Input</h2>
+      <div class="sub">Triggers an external check.</div>
       <div class="row">
         <div class="field">
           <label for="player-input">Player Input</label>
           <input id="player-input" type="text" placeholder="value to verify">
         </div>
-      </div>
-      <div class="row" style="margin-top:12px;">
         <button class="primary" id="activate-player-input">Activate Player Input</button>
       </div>
     </div>
 
     <div class="card">
-      <h1>Custom Value</h1>
-      <div class="sub">Sends a custom value (uses /sendCustom) and shows last custom value received by the agent.</div>
+      <h2>Custom Value</h2>
+      <div class="sub">Sends a custom string and shows the last current custom value.</div>
       <div class="row">
         <div class="field">
           <label for="custom-value">Custom Value</label>
@@ -194,15 +219,30 @@
     </div>
 
     <div class="card">
-      <h1>Puzzle State</h1>
-      <div class="sub">Manually mark the puzzle as solved.</div>
+      <h2>Puzzle State</h2>
+      <div class="sub">Sets the current puzzle state.</div>
       <div class="row">
-        <button class="primary" id="solve-puzzle">Solve Puzzle</button>
+        <button id="lock-puzzle">Set Locked</button>
+        <button id="run-puzzle">Set Running</button>
+        <button class="primary" id="solve-puzzle">Set Solved</button>
       </div>
     </div>
 
     <div class="card">
-      <h1>Log</h1>
+      <h2>Input Inspector</h2>
+      <div class="sub">Reads a single input directly from the agent.</div>
+      <div class="row">
+        <div class="field">
+          <label for="inspect-input-key">Input Key</label>
+          <input id="inspect-input-key" type="text" value="seriell">
+        </div>
+        <button id="inspect-input">Inspect Input</button>
+        <button id="clear-input">Delete Input</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Log</h2>
       <div class="log" id="log"></div>
     </div>
   </div>
@@ -213,11 +253,10 @@
     const extPill = document.getElementById("ext-pill");
     const customPill = document.getElementById("custom-pill");
     const logEl = document.getElementById("log");
-    const mediaServerInput = document.getElementById("media-server-url");
     const incomingList = document.getElementById("incoming-media-list");
     const autoMediaRefresh = document.getElementById("auto-media-refresh");
     let incomingRenderKey = "";
-    let lastCustomUpdatedAt = null;
+    let lastCustomValue = "";
 
     function log(msg) {
       const entry = document.createElement("div");
@@ -237,39 +276,41 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload || {})
       });
-      return res.json();
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data?.error || `HTTP ${res.status}`);
+      }
+      return data;
     }
 
     async function get(path) {
       const res = await fetch(apiUrl(path), { cache: "no-store" });
-      return res.json();
-    }
-
-    function mediaServerUrl(path) {
-      const base = (mediaServerInput.value || "").trim().replace(/\/+$/, "");
-      return base + path;
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data?.error || `HTTP ${res.status}`);
+      }
+      return data;
     }
 
     function renderIncomingMedia(items) {
-      if (!incomingList) return;
       const renderKey = JSON.stringify(items);
       if (renderKey === incomingRenderKey) return;
       incomingRenderKey = renderKey;
+
       if (!items.length) {
-        incomingList.innerHTML = `<div class="meta">No incoming media loaded.</div>`;
+        incomingList.innerHTML = `<div class="meta">No incoming media ready.</div>`;
         return;
       }
+
       incomingList.innerHTML = items.map(item => {
-        const url = item.resolved
-          ? mediaServerUrl(`/media/${encodeURIComponent(item.resolved)}`)
-          : "";
-        const imgTag = item.resolved
-          ? `<img src="${url}" alt="${item.ref}">`
-          : `<div class="meta">Media not found on server.</div>`;
+        const fileUrl = apiUrl(`/media/file?key=${encodeURIComponent(item.key)}`);
         return `
-          <div>
-            ${imgTag}
-            <div class="meta">Key: ${item.key} · Ref: ${item.ref}${item.resolved ? ` · File: ${item.resolved}` : ""}</div>
+          <div class="preview-item">
+            <img src="${fileUrl}" alt="${item.ref}">
+            <div class="meta">Key: ${item.key}</div>
+            <div class="meta">Ref: ${item.ref}</div>
+            <div class="meta">File: ${item.fileName}</div>
+            <div class="meta">Path: ${item.path}</div>
           </div>`;
       }).join("");
     }
@@ -278,7 +319,7 @@
       try {
         const state = await get("/getState");
         statePill.textContent = `State: ${state.state || "--"}`;
-        statePill.className = "status-pill" + (state.state === "running" ? " ok" : state.state === "solved" ? " ok" : "");
+        statePill.className = "status-pill" + (["running", "solved"].includes(state.state) ? " ok" : "");
       } catch (e) {
         statePill.textContent = "State: error";
         statePill.className = "status-pill warn";
@@ -288,7 +329,7 @@
         const ext = await get("/getExternalCheck");
         const active = !!ext.externalCheck?.active;
         const value = ext.externalCheck?.value;
-        extPill.textContent = `External Check: ${active ? "active" : "inactive"}${value ? " (" + value + ")" : ""}`;
+        extPill.textContent = `External Check: ${active ? "active" : "inactive"}${value ? ` (${value})` : ""}`;
         extPill.className = "status-pill" + (active ? " ok" : "");
       } catch (e) {
         extPill.textContent = "External Check: error";
@@ -297,15 +338,14 @@
 
       try {
         const custom = await get("/getCustom");
-        const customValue = String(custom?.custom?.value ?? "");
-        const customUpdatedAt = custom?.custom?.updatedAt ?? null;
+        const customValue = String(custom?.value ?? "");
         customPill.textContent = customValue ? `Custom: ${customValue}` : "Custom: --";
         customPill.className = "status-pill" + (customValue ? " ok" : "");
-        if (customUpdatedAt && customUpdatedAt !== lastCustomUpdatedAt) {
-          if (lastCustomUpdatedAt !== null) {
+        if (customValue !== lastCustomValue) {
+          if (lastCustomValue !== "") {
             log(`Custom value updated: ${customValue}`);
           }
-          lastCustomUpdatedAt = customUpdatedAt;
+          lastCustomValue = customValue;
         }
       } catch (e) {
         customPill.textContent = "Custom: error";
@@ -313,58 +353,59 @@
       }
     }
 
-    document.getElementById("refresh-btn").addEventListener("click", () => {
-      refreshStatus();
-    });
+    async function loadIncomingMedia() {
+      try {
+        const all = await get("/getAll");
+        const inputs = all?.inputs || {};
+        const keys = Object.keys(inputs).filter(key => inputs[key]?.type === "media" && inputs[key]?.present);
+        const items = [];
+
+        for (const key of keys) {
+          const info = await get(`/getMedia?key=${encodeURIComponent(key)}`);
+          if (!info?.path) continue;
+          const fileName = info.path.split(/[\\/]/).pop();
+          items.push({
+            key,
+            ref: inputs[key]?.data || "",
+            path: info.path,
+            fileName
+          });
+        }
+
+        renderIncomingMedia(items);
+      } catch (e) {
+        log(`Failed to load incoming media: ${e.message}`);
+      }
+    }
+
+    document.getElementById("refresh-btn").addEventListener("click", refreshStatus);
 
     document.getElementById("send-password").addEventListener("click", async () => {
       const value = document.getElementById("password-value").value || "";
       try {
-        await post("/setOutput", { key: "Password", type: "string", data: value });
-        log(`Password output stored: ${value}`);
+        await post("/setOutput", { key: "Password", data: value });
+        await post("/sendOutput", { key: "Password" });
+        log(`Password output stored and sent: ${value}`);
       } catch (e) {
-        log("Failed to store password output.");
+        log(`Failed to store/send password output: ${e.message}`);
       }
       refreshStatus();
     });
 
-    async function loadIncomingMedia() {
+    document.getElementById("send-media").addEventListener("click", async () => {
+      const key = document.getElementById("media-key").value || "";
+      const sourcePath = document.getElementById("media-source-path").value || "";
       try {
-        const all = await get("/getAll");
-        const inputs = all && all.inputs ? all.inputs : {};
-        const puzzleState = (all && all.state ? all.state : "").toString().toLowerCase();
-        if (!["running", "active", "uploading", "solved"].includes(puzzleState)) {
-          renderIncomingMedia([]);
-          return;
-        }
-        const keys = Object.keys(inputs).filter(k => inputs[k]?.type === "media");
-        const items = [];
-        for (const key of keys) {
-          const ref = inputs[key]?.data;
-          if (!ref) continue;
-          let resolved = null;
-          try {
-            const resolveUrl = mediaServerUrl(`/api/media/resolve?name=${encodeURIComponent(ref)}`);
-            const res = await fetch(resolveUrl);
-            if (res.ok) {
-              const data = await res.json();
-              resolved = data?.name || null;
-            }
-          } catch (e) {}
-          items.push({ key, ref, resolved });
-        }
-        renderIncomingMedia(items);
-        if (items.length) {
-          log(`Incoming media updated (${items.length}).`);
-        }
+        await post("/setMedia", { key, sourcePath });
+        await post("/sendMedia", { key });
+        log(`Media stored and sent: ${key}`);
       } catch (e) {
-        log("Failed to load incoming media.");
+        log(`Failed to store/send media: ${e.message}`);
       }
-    }
-
-    document.getElementById("load-incoming-media").addEventListener("click", async () => {
-      await loadIncomingMedia();
+      refreshStatus();
     });
+
+    document.getElementById("load-incoming-media").addEventListener("click", loadIncomingMedia);
 
     document.getElementById("activate-player-input").addEventListener("click", async () => {
       const value = document.getElementById("player-input").value || "";
@@ -372,7 +413,7 @@
         await post("/triggerExternalCheck", { value, active: true });
         log(`External check activated with value: ${value}`);
       } catch (e) {
-        log("Failed to activate external check.");
+        log(`Failed to activate external check: ${e.message}`);
       }
       refreshStatus();
     });
@@ -383,7 +424,27 @@
         await post("/sendCustom", { value });
         log(`Custom sent: ${value}`);
       } catch (e) {
-        log("Failed to send custom value.");
+        log(`Failed to send custom value: ${e.message}`);
+      }
+      refreshStatus();
+    });
+
+    document.getElementById("lock-puzzle").addEventListener("click", async () => {
+      try {
+        await post("/setState", { state: "locked" });
+        log("Puzzle set to locked.");
+      } catch (e) {
+        log(`Failed to set locked: ${e.message}`);
+      }
+      refreshStatus();
+    });
+
+    document.getElementById("run-puzzle").addEventListener("click", async () => {
+      try {
+        await post("/setState", { state: "running" });
+        log("Puzzle set to running.");
+      } catch (e) {
+        log(`Failed to set running: ${e.message}`);
       }
       refreshStatus();
     });
@@ -391,17 +452,44 @@
     document.getElementById("solve-puzzle").addEventListener("click", async () => {
       try {
         await post("/setState", { state: "solved" });
-        log("Puzzle marked as solved.");
+        log("Puzzle set to solved.");
       } catch (e) {
-        log("Failed to set puzzle state.");
+        log(`Failed to set solved: ${e.message}`);
+      }
+      refreshStatus();
+    });
+
+    document.getElementById("inspect-input").addEventListener("click", async () => {
+      const key = document.getElementById("inspect-input-key").value || "";
+      try {
+        const available = await get(`/inputAvailable?key=${encodeURIComponent(key)}`);
+        if (!available?.available) {
+          log(`Input '${key}' not available.`);
+          return;
+        }
+        const data = await get(`/getInput?key=${encodeURIComponent(key)}`);
+        log(`Input '${key}': ${data?.data ?? ""}`);
+      } catch (e) {
+        log(`Failed to inspect input: ${e.message}`);
+      }
+    });
+
+    document.getElementById("clear-input").addEventListener("click", async () => {
+      const key = document.getElementById("inspect-input-key").value || "";
+      try {
+        await post("/deleteInput", { key });
+        log(`Input '${key}' deleted.`);
+      } catch (e) {
+        log(`Failed to delete input: ${e.message}`);
       }
       refreshStatus();
     });
 
     refreshStatus();
+    loadIncomingMedia();
     setInterval(refreshStatus, 2000);
     setInterval(() => {
-      if (autoMediaRefresh && autoMediaRefresh.checked) {
+      if (autoMediaRefresh?.checked) {
         loadIncomingMedia();
       }
     }, 2000);

@@ -1,70 +1,8 @@
-/**
- * Lightweight puzzle template in Node.js (no external deps required).
- * Optional MQTT publish for heartbeats if "mqtt" package is installed.
- *
- * Routes (HTTP mainly for testing):
- *   POST /setState        { state: "locked"|"starting"|"running"|"solved" }
- *   GET  /getState        -> { state }
- *   POST /sendParam       { type: "<datatype>", data: <payload> }
- *   GET  /getParam?type=  -> { type, data }
- *   POST /setOutput       { key, type, data }
- *   GET  /getExternalCheck -> { externalCheck }
- *   POST /triggerExternalCheck { value, active }
- *   POST /sendHeartbeat   { name, state }
- *   POST /sendCustom      { value }
- *   GET  /getCustom       -> { custom }
- *   POST /restartComplete -> { ok: true }
- *   POST /restartConfig   { needRestart: true }
- *   POST /media/upload    { localPath, remoteName? }
- *   POST /media/download  { remoteName, localPath? }
- *
- * MQTT (Hub-driven):
- *   Sub: puzzle/<DEVICE_ID>/command  payload {action:"restart"|"setState"|"requestData"|"sendParam", ...}
- *   Pub: puzzle/<DEVICE_ID>/heartbeat payload {name,state,deviceId,ip}
- *   Pub: puzzle/<DEVICE_ID>/data      payload {type,data,deviceId}
- *   Pub: puzzle/<DEVICE_ID>/custom    payload {value,deviceId}
- *   Pub: puzzle/<DEVICE_ID>/external-check payload {active,variable,deviceId}
- *
- * Config:
- *   - Env vars (highest priority)
- *   - CommunikationAgent.config.json in same folder (secondary)
- *   - built-in defaults
- *
- * Usage:
- *   node CommunikationAgent.js --port 5001
- *   (optional) edit CommunikationAgent.config.json or set env HUB_HOST / MQTT_BROKER / MQTT_PORT / DEVICE_ID / PUZZLE_NAME / DEBUG / MEDIA_SERVER / MEDIA_LOCAL_DIR / NEED_RESTART
- */
-
-/**
- * Quickstart (for puzzle creators):
- *   // 1) set state
- *   setState("running");
- *   // 2) send output
- *   setOutput("Result", "string", "ok");
- *   // 3) send input param (from hub to puzzle logic)
- *   sendParam("Target", "number", 3);
- *   // 4) external check
- *   triggerExternalCheck("1234", { active: true });
- *   // 5) media upload
- *   uploadMediaFile("./MediaStorage/video.mp4", "video.mp4");
- */
-
-
 const http = require("http");
 const https = require("https");
 const url = require("url");
 const fs = require("fs");
 const path = require("path");
-
-// Public API (for puzzle creators)
-// setState(state): change puzzle state (locked/starting/running/solved)
-function setState(state) { return transitionState(state); }
-// setOutput(key, type, data): publish output to Hub
-// sendParam(key, type, data): store input param (local)
-function sendParam(key, type, data) { return setInput(key, type, data); }
-// triggerExternalCheck(value, {active}): push external check payload
-// uploadMediaFile(localPath, remoteName): upload file to media server
-// downloadMediaFile(remoteName, localPath): download file from media server
 
 function loadConfigFile() {
   const cfgPath = path.join(__dirname, "CommunikationAgent.config.json");
@@ -89,84 +27,51 @@ function loadDeviceIdFile() {
 const FILE_CFG = loadConfigFile();
 const FILE_DEVICE_ID = loadDeviceIdFile();
 
-function loadParamsFromConfig() {
-  if (FILE_CFG.externalCheck) {
-    const value = FILE_CFG.externalCheck.value ?? null;
-    const active = FILE_CFG.externalCheck.active === true;
-    setExternalCheckValue(value, { active });
-  }
-}
-
-
-// Config (env > file > default)
 const HUB_HOST = process.env.HUB_HOST || FILE_CFG.hubHost || "escapehub.local";
 const MQTT_BROKER = process.env.MQTT_BROKER || FILE_CFG.mqttBroker || HUB_HOST;
 const MQTT_PORT = parseInt(process.env.MQTT_PORT || FILE_CFG.mqttPort || "1883", 10);
-let DEVICE_ID = process.env.DEVICE_ID || FILE_CFG.deviceId || FILE_DEVICE_ID || null; // will default to LOCAL_IP later
+let DEVICE_ID = process.env.DEVICE_ID || FILE_CFG.deviceId || FILE_DEVICE_ID || null;
+const PUZZLE_NAME = process.env.PUZZLE_NAME || FILE_CFG.puzzleName || "Puzzle";
+const HEARTBEAT_INTERVAL_MS = parseInt(process.env.HEARTBEAT_INTERVAL_MS || FILE_CFG.heartbeatIntervalMs || "2000", 10);
+const DEBUG = (process.env.DEBUG || FILE_CFG.debug) ? (process.env.DEBUG === "1" || process.env.DEBUG === "true" || FILE_CFG.debug === true) : false;
+const LOCAL_IP_OVERRIDE = process.env.LOCAL_IP || FILE_CFG.localIp || null;
+const MEDIA_SERVER = process.env.MEDIA_SERVER || FILE_CFG.mediaServer || `http://${HUB_HOST}`;
+const MEDIA_LOCAL_DIR = process.env.MEDIA_LOCAL_DIR || FILE_CFG.mediaLocalDir || "MediaStorage";
+let NEED_RESTART = (process.env.NEED_RESTART || FILE_CFG.needRestart) ? (process.env.NEED_RESTART === "1" || process.env.NEED_RESTART === "true" || FILE_CFG.needRestart === true) : false;
+const MQTT_TOPIC_PREFIX = "puzzle";
+
+let MQTT_CLIENT = null;
+let LOCAL_IP = null;
 let MQTT_TOPIC_HEARTBEAT = null;
 let MQTT_TOPIC_COMMAND = null;
 let MQTT_TOPIC_DATA = null;
 let MQTT_TOPIC_CUSTOM = null;
 let MQTT_TOPIC_EXTERNAL_CHECK = null;
-const PUZZLE_NAME = process.env.PUZZLE_NAME || FILE_CFG.puzzleName || "Puzzle";
-const HEARTBEAT_INTERVAL_MS = parseInt(process.env.HEARTBEAT_INTERVAL_MS || FILE_CFG.heartbeatIntervalMs || "2000", 10); // 2s default
-const DEBUG = (process.env.DEBUG || FILE_CFG.debug) ? (process.env.DEBUG === "1" || process.env.DEBUG === "true" || FILE_CFG.debug === true) : false;
-const PRINT_DATA = (process.env.PRINT_DATA || FILE_CFG.printData) ? true : false;
-const LOCAL_IP_OVERRIDE = process.env.LOCAL_IP || FILE_CFG.localIp || null;
-const MEDIA_SERVER = process.env.MEDIA_SERVER || FILE_CFG.mediaServer || `http://${HUB_HOST}`;
-const MEDIA_LOCAL_DIR = process.env.MEDIA_LOCAL_DIR || FILE_CFG.mediaLocalDir || "MediaStorage";
-let NEED_RESTART = (process.env.NEED_RESTART || FILE_CFG.needRestart) ? (process.env.NEED_RESTART === "1" || process.env.NEED_RESTART === "true" || FILE_CFG.needRestart === true) : false;
-const RESTART_COMMAND_KEY = process.env.RESTART_COMMAND_KEY || FILE_CFG.restartCommandKey || "SystemCommand";
-const RESTART_COMMAND_VALUE = process.env.RESTART_COMMAND_VALUE || FILE_CFG.restartCommandValue || "restart";
 
+const STATE = {
+  state: "locked",
+  inputs: {},
+  outputs: {},
+  custom: "",
+  externalCheck: { active: false, value: null }
+};
 
-let MQTT_CLIENT = null;
-let LOCAL_IP = null;
+const VALID_STATES = new Set(["locked", "starting", "running", "solved"]);
+const TYPE_STRING = "string";
+const TYPE_MEDIA = "media";
+const PENDING_MEDIA_DOWNLOADS = new Set();
+
 function setDeviceId(id) {
   DEVICE_ID = id;
-  MQTT_TOPIC_HEARTBEAT = `puzzle/${DEVICE_ID}/heartbeat`;
-  MQTT_TOPIC_COMMAND = `puzzle/${DEVICE_ID}/command`;
-  MQTT_TOPIC_DATA = `puzzle/${DEVICE_ID}/data`;
-  MQTT_TOPIC_CUSTOM = `puzzle/${DEVICE_ID}/custom`;
-  MQTT_TOPIC_EXTERNAL_CHECK = `puzzle/${DEVICE_ID}/external-check`;
+  MQTT_TOPIC_HEARTBEAT = `${MQTT_TOPIC_PREFIX}/${DEVICE_ID}/heartbeat`;
+  MQTT_TOPIC_COMMAND = `${MQTT_TOPIC_PREFIX}/${DEVICE_ID}/command`;
+  MQTT_TOPIC_DATA = `${MQTT_TOPIC_PREFIX}/${DEVICE_ID}/data`;
+  MQTT_TOPIC_CUSTOM = `${MQTT_TOPIC_PREFIX}/${DEVICE_ID}/custom`;
+  MQTT_TOPIC_EXTERNAL_CHECK = `${MQTT_TOPIC_PREFIX}/${DEVICE_ID}/external-check`;
 }
 
 function logDebug(...args) {
   if (DEBUG) console.log("[DEBUG]", ...args);
-}
-function initMqtt() {
-  try {
-    const mqtt = require("mqtt"); // optional dependency
-    MQTT_CLIENT = mqtt.connect(`mqtt://${MQTT_BROKER}:${MQTT_PORT}`);
-    MQTT_CLIENT.on("connect", () => {
-      console.log(`MQTT connected ${MQTT_BROKER}:${MQTT_PORT}`);
-      MQTT_CLIENT.subscribe(MQTT_TOPIC_COMMAND);
-    });
-    MQTT_CLIENT.on("error", (err) => console.warn("MQTT error:", err.message));
-    MQTT_CLIENT.on("message", (topic, msg) => {
-      const raw = msg.toString();
-      console.log("[MQTT recv]", topic, raw);
-      try {
-        const parsed = JSON.parse(raw);
-        console.log("[MQTT recv payload]", topic, parsed);
-      } catch (e) {}
-      if (topic === MQTT_TOPIC_COMMAND) {
-        handleMqttCommand(msg);
-      }
-    });
-  } catch (e) {
-    console.log('MQTT disabled (install with "npm install mqtt" to enable).');
-    MQTT_CLIENT = null;
-  }
-}
-function publishMqtt(topic, payload) {
-  if (!MQTT_CLIENT) return;
-  try {
-    console.log("[MQTT publish]", topic, JSON.stringify(payload));
-    MQTT_CLIENT.publish(topic, JSON.stringify(payload));
-  } catch (e) {
-    console.warn("MQTT publish failed:", e.message);
-  }
 }
 
 function detectLocalIp() {
@@ -178,20 +83,14 @@ function detectLocalIp() {
     for (const name of Object.keys(ifaces)) {
       for (const iface of ifaces[name]) {
         if (iface.family !== "IPv4" || iface.internal) continue;
-        const addr = iface.address;
-        // Skip link-local, loopback and common host-only ranges (e.g., VirtualBox 192.168.56.x)
-        if (addr.startsWith("169.254.")) continue;
-        if (addr.startsWith("127.")) continue;
-        if (addr.startsWith("192.168.56.")) continue;
-        candidates.push(addr);
+        if (iface.address.startsWith("169.254.") || iface.address.startsWith("127.") || iface.address.startsWith("192.168.56.")) continue;
+        candidates.push(iface.address);
       }
     }
-    // Prefer typical private ranges
-    const preferred = candidates.find((ip) => ip.startsWith("192.168.") || ip.startsWith("10.") || ip.startsWith("172."));
-    if (preferred) return preferred;
-    if (candidates.length) return candidates[0];
-  } catch (e) {}
-  return null;
+    return candidates.find(ip => ip.startsWith("192.168.") || ip.startsWith("10.") || ip.startsWith("172.")) || candidates[0] || "0.0.0.0";
+  } catch (e) {
+    return "0.0.0.0";
+  }
 }
 
 function resolveMediaServerUrl() {
@@ -210,29 +109,107 @@ function resolveLocalPath(inputPath) {
 function ensureMediaLocalDir() {
   const dir = resolveLocalPath(MEDIA_LOCAL_DIR);
   if (!dir) return null;
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   return dir;
 }
 
-function findLocalMediaByKey(baseName) {
-  const safeBase = (baseName || "").toString().trim();
-  if (!safeBase) return null;
-  const dir = ensureMediaLocalDir();
-  if (!dir) return null;
-  try {
-    const files = fs.readdirSync(dir);
-    const match = files.find(name => path.parse(name).name === safeBase);
-    return match ? path.join(dir, match) : null;
-  } catch (e) {
-    return null;
+function normalizeType(type) {
+  return String(type || "").toLowerCase() === TYPE_MEDIA ? TYPE_MEDIA : TYPE_STRING;
+}
+
+function valueToString(value) {
+  if (value === undefined || value === null) return "";
+  if (typeof value === "string") return value;
+  if (typeof value === "boolean") return value ? "true" : "false";
+  return String(value);
+}
+
+function setInput(key, type, data) {
+  if (!key) return false;
+  const finalType = normalizeType(type);
+  STATE.inputs[key] = { type: finalType, data: finalType === TYPE_MEDIA ? valueToString(data) : valueToString(data), present: true };
+  if (finalType === TYPE_MEDIA && valueToString(data)) {
+    scheduleMediaDownload(key, valueToString(data));
   }
+  return true;
+}
+
+function clearInput(key) {
+  if (!STATE.inputs[key]) return;
+  STATE.inputs[key].data = "";
+  STATE.inputs[key].present = false;
+}
+
+function deleteInput(key) {
+  clearInput(key);
+}
+
+function clearCustom() {
+  STATE.custom = "";
+}
+
+function deleteCustom() {
+  clearCustom();
+}
+
+function setOutput(key, data, options = {}) {
+  if (!key) return false;
+  const finalType = normalizeType(options.type);
+  STATE.outputs[key] = { type: finalType, data: finalType === TYPE_MEDIA ? key : valueToString(data), present: true };
+  return true;
+}
+
+function clearOutput(key) {
+  if (!STATE.outputs[key]) return;
+  STATE.outputs[key].data = "";
+  STATE.outputs[key].present = false;
+}
+
+function clearTransientData() {
+  Object.keys(STATE.inputs).forEach(clearInput);
+  Object.keys(STATE.outputs).forEach(clearOutput);
+  clearCustom();
+}
+
+function getInput(key) {
+  const entry = STATE.inputs[key];
+  return entry && entry.present ? valueToString(entry.data) : "";
+}
+
+function inputAvailable(key) {
+  const entry = STATE.inputs[key];
+  return !!(entry && entry.present);
+}
+
+function getInputType(key) {
+  const entry = STATE.inputs[key];
+  return entry ? entry.type : TYPE_STRING;
+}
+
+function setCustomValue(value) {
+  STATE.custom = valueToString(value);
+}
+
+function customAvailable() {
+  return STATE.custom !== "";
+}
+
+function getCustom() {
+  return STATE.custom;
+}
+
+function setExternalCheckValue(value, { active } = {}) {
+  STATE.externalCheck.value = value === undefined ? null : valueToString(value);
+  if (active !== undefined) STATE.externalCheck.active = !!active;
+}
+
+function getExternalCheck() {
+  return { ...STATE.externalCheck };
 }
 
 function resolveRemoteMediaName(baseName) {
   return new Promise((resolve, reject) => {
-    const key = (baseName || "").toString().trim();
+    const key = valueToString(baseName).trim();
     if (!key) return reject(new Error("remoteName required"));
     const baseUrl = resolveMediaServerUrl();
     const resolveUrl = new URL("/api/media/resolve", baseUrl);
@@ -248,11 +225,10 @@ function resolveRemoteMediaName(baseName) {
         if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
           return resolve(payload?.name || key);
         }
-        const msg = payload?.error || text || `Resolve failed (${res.statusCode})`;
-        return reject(new Error(msg));
+        return reject(new Error(payload?.error || text || `Resolve failed (${res.statusCode})`));
       });
     });
-    req.on("error", (e) => reject(e));
+    req.on("error", reject);
     req.end();
   });
 }
@@ -260,25 +236,17 @@ function resolveRemoteMediaName(baseName) {
 function uploadMediaFile(localPath, remoteName) {
   return new Promise((resolve, reject) => {
     const resolvedPath = resolveLocalPath(localPath);
-    if (!resolvedPath) {
-      return reject(new Error("localPath required"));
-    }
+    if (!resolvedPath) return reject(new Error("localPath required"));
     fs.stat(resolvedPath, (err, stat) => {
-      if (err || !stat.isFile()) {
-        return reject(new Error("Local file not found"));
-      }
-      const name = (remoteName || path.basename(resolvedPath)).toString();
+      if (err || !stat.isFile()) return reject(new Error("Local file not found"));
+      const name = valueToString(remoteName || path.basename(resolvedPath));
       const baseUrl = resolveMediaServerUrl();
       const uploadUrl = new URL("/api/media/upload", baseUrl);
       uploadUrl.searchParams.set("name", name);
       const client = uploadUrl.protocol === "https:" ? https : http;
-
       const req = client.request(uploadUrl, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/octet-stream",
-          "Content-Length": stat.size
-        }
+        headers: { "Content-Type": "application/octet-stream", "Content-Length": stat.size }
       }, (res) => {
         const chunks = [];
         res.on("data", (c) => chunks.push(c));
@@ -289,11 +257,10 @@ function uploadMediaFile(localPath, remoteName) {
           if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
             return resolve(payload || { success: true, name });
           }
-          const msg = payload?.error || text || `Upload failed (${res.statusCode})`;
-          return reject(new Error(msg));
+          return reject(new Error(payload?.error || text || `Upload failed (${res.statusCode})`));
         });
       });
-      req.on("error", (e) => reject(e));
+      req.on("error", reject);
       fs.createReadStream(resolvedPath).pipe(req);
     });
   });
@@ -301,41 +268,24 @@ function uploadMediaFile(localPath, remoteName) {
 
 function downloadMediaFile(remoteName, localPath) {
   return new Promise((resolve, reject) => {
-    const name = (remoteName || "").toString().trim();
+    const name = valueToString(remoteName).trim();
     if (!name) return reject(new Error("remoteName required"));
     const baseUrl = resolveMediaServerUrl();
     const downloadUrl = new URL(`/media/${encodeURIComponent(name)}`, baseUrl);
     const client = downloadUrl.protocol === "https:" ? https : http;
-
-    const resolvedLocal = localPath
-      ? resolveLocalPath(localPath)
-      : path.join(ensureMediaLocalDir() || __dirname, name);
+    const resolvedLocal = localPath ? resolveLocalPath(localPath) : path.join(ensureMediaLocalDir() || __dirname, name);
     const tempPath = `${resolvedLocal}.download`;
-    const targetDir = path.dirname(resolvedLocal);
-    if (!fs.existsSync(targetDir)) {
-      fs.mkdirSync(targetDir, { recursive: true });
-    }
-
+    fs.mkdirSync(path.dirname(resolvedLocal), { recursive: true });
     const req = client.request(downloadUrl, { method: "GET" }, (res) => {
       if (res.statusCode !== 200) {
         const chunks = [];
         res.on("data", (c) => chunks.push(c));
-        res.on("end", () => {
-          const text = Buffer.concat(chunks).toString();
-          return reject(new Error(text || `Download failed (${res.statusCode})`));
-        });
+        res.on("end", () => reject(new Error(Buffer.concat(chunks).toString() || `Download failed (${res.statusCode})`)));
         return;
       }
       const file = fs.createWriteStream(tempPath);
       res.pipe(file);
-      file.on("finish", () => {
-        file.close(() => {
-          fs.rename(tempPath, resolvedLocal, (err) => {
-            if (err) return reject(err);
-            resolve({ success: true, path: resolvedLocal, name });
-          });
-        });
-      });
+      file.on("finish", () => file.close(() => fs.rename(tempPath, resolvedLocal, (err) => err ? reject(err) : resolve({ success: true, path: resolvedLocal, name }))));
       file.on("error", (err) => {
         try { fs.unlinkSync(tempPath); } catch (e) {}
         reject(err);
@@ -349,136 +299,152 @@ function downloadMediaFile(remoteName, localPath) {
   });
 }
 
-// In-memory state
-const STATE = {
-  state: "locked",
-  inputs: {},  // key -> {type,data}
-  outputs: {}, // key -> {type,data}
-  heartbeat: { name: null, state: null },
-  externalCheck: { active: false, value: null },
-  custom: { value: "", updatedAt: null },
-};
-
-const ALLOWED_TYPES = ["string", "number", "boolean", "media"];
-
-function normalizeType(type) {
-  const t = (type || "").toString().toLowerCase();
-  return ALLOWED_TYPES.includes(t) ? t : "string";
+function findLocalMediaByKey(key) {
+  const dir = ensureMediaLocalDir();
+  if (!dir || !key) return "";
+  const direct = path.join(dir, path.basename(key));
+  if (fs.existsSync(direct)) return direct;
+  const baseName = path.parse(key).name;
+  const files = fs.readdirSync(dir);
+  const match = files.find((name) => path.parse(name).name === baseName);
+  return match ? path.join(dir, match) : "";
 }
 
-function coerceType(type, value) {
-  const t = normalizeType(type);
-  if (t === "number") {
-    const n = Number(value);
-    return Number.isFinite(n) ? n : value;
-  }
-  if (t === "boolean") {
-    if (typeof value === "boolean") return value;
-    if (value === "true" || value === "1") return true;
-    if (value === "false" || value === "0") return false;
-  }
-  return value; // string or fallback
+function scheduleMediaDownload(key, remoteName) {
+  if (!key || !remoteName || PENDING_MEDIA_DOWNLOADS.has(key)) return;
+  PENDING_MEDIA_DOWNLOADS.add(key);
+  resolveRemoteMediaName(remoteName)
+    .then((resolvedName) => {
+      const targetPath = path.join(ensureMediaLocalDir() || __dirname, resolvedName);
+      return downloadMediaFile(resolvedName, targetPath).then((result) => {
+        STATE.outputs[key] = STATE.outputs[key] || { type: TYPE_MEDIA, data: key, present: false };
+        STATE.inputs[key] = STATE.inputs[key] || { type: TYPE_MEDIA, data: remoteName, present: true };
+        STATE.inputs[key].localPath = result.path;
+      });
+    })
+    .catch((err) => console.warn(`Media download failed for ${key}: ${err.message || err}`))
+    .finally(() => PENDING_MEDIA_DOWNLOADS.delete(key));
 }
 
-function applyInitKeys(payload) {
-  if (!payload) return;
-  const existingOutputs = { ...STATE.outputs };
-  if (Array.isArray(payload.inputs)) {
-    STATE.inputs = {};
-    payload.inputs.forEach((inp) => setInput(inp.key || inp.type, inp.type, null));
+function setMedia(key, sourcePath) {
+  if (!key || !sourcePath) return false;
+  const resolvedSource = resolveLocalPath(sourcePath);
+  if (!resolvedSource || !fs.existsSync(resolvedSource)) return false;
+  ensureMediaLocalDir();
+  const targetPath = path.join(resolveLocalPath(MEDIA_LOCAL_DIR), path.basename(resolvedSource));
+  if (path.resolve(resolvedSource) !== path.resolve(targetPath)) {
+    fs.copyFileSync(resolvedSource, targetPath);
   }
-  if (Array.isArray(payload.outputs)) {
-    STATE.outputs = {};
-    payload.outputs.forEach((out) => {
-      const key = out.key || out.type;
-      const prev = existingOutputs[key];
-      const prevData = prev && Object.prototype.hasOwnProperty.call(prev, "data") ? prev.data : null;
-      setOutput(key, out.type, prevData, { allowCreate: true });
-    });
-  }
-}
-
-function setInput(key, type, data) {
-  if (!key) return;
-  const finalType = normalizeType(type);
-  STATE.inputs[key] = { type: finalType, data: coerceType(finalType, data) };
-}
-
-function setOutput(key, type, data, { allowCreate = false } = {}) {
-  if (!key) return false;
-  if (!allowCreate && !Object.prototype.hasOwnProperty.call(STATE.outputs, key)) {
-    logDebug(`Reject setOutput for unknown key "${key}". Configure outputs in Hub I/O (initKeys) first.`);
-    return false;
-  }
-  const finalType = normalizeType(type);
-  if (finalType === "media") {
-    STATE.outputs[key] = { type: finalType, data: key };
-    return true;
-  }
-  STATE.outputs[key] = { type: finalType, data: coerceType(finalType, data) };
+  STATE.outputs[key] = { type: TYPE_MEDIA, data: key, present: true };
   return true;
 }
 
-function setExternalCheckValue(value, { active } = {}) {
-  const next = value === undefined ? null : value;
-  STATE.externalCheck.value = next;
-  if (active !== undefined) {
-    STATE.externalCheck.active = !!active;
+async function sendMedia(key) {
+  const localPath = findLocalMediaByKey(key);
+  if (!localPath || !fs.existsSync(localPath)) return false;
+  await uploadMediaFile(localPath, path.basename(localPath));
+  STATE.outputs[key] = { type: TYPE_MEDIA, data: key, present: true };
+  publishData(key);
+  return true;
+}
+
+function getMedia(key) {
+  if (!key) return "";
+  const inputEntry = STATE.inputs[key];
+  if (inputEntry && inputEntry.type === TYPE_MEDIA && inputEntry.localPath && fs.existsSync(inputEntry.localPath)) {
+    return inputEntry.localPath;
   }
+  const outputPath = findLocalMediaByKey(key);
+  return outputPath && fs.existsSync(outputPath) ? outputPath : "";
+}
+
+function deleteMedia(key) {
+  const localPath = findLocalMediaByKey(key);
+  if (STATE.outputs[key]) STATE.outputs[key] = { type: TYPE_MEDIA, data: "", present: false };
+  if (STATE.inputs[key]) delete STATE.inputs[key].localPath;
+  if (localPath && fs.existsSync(localPath)) {
+    fs.unlinkSync(localPath);
+  }
+  return true;
+}
+
+function publishHeartbeat() {
+  const payload = { name: PUZZLE_NAME, state: STATE.state, deviceId: DEVICE_ID, ip: LOCAL_IP, needRestart: NEED_RESTART };
+  console.log("[HEARTBEAT]", payload);
+  publishMqtt(MQTT_TOPIC_HEARTBEAT, payload);
+}
+
+function publishData(key) {
+  const entry = STATE.outputs[key];
+  if (!entry || !entry.present) return;
+  const payloadData = entry.type === TYPE_MEDIA ? key : valueToString(entry.data);
+  publishMqtt(MQTT_TOPIC_DATA, { key, type: entry.type, data: payloadData, deviceId: DEVICE_ID });
+}
+
+function publishAllOutputs() {
+  Object.keys(STATE.outputs).forEach((key) => publishData(key));
+}
+
+function publishCustom(value) {
+  setCustomValue(value);
+  publishMqtt(MQTT_TOPIC_CUSTOM, { value: STATE.custom, deviceId: DEVICE_ID });
+}
+
+function triggerExternalCheck(value, { active = true } = {}) {
+  setExternalCheckValue(value, { active });
+  publishMqtt(MQTT_TOPIC_EXTERNAL_CHECK, { active: !!STATE.externalCheck.active, variable: STATE.externalCheck.value, deviceId: DEVICE_ID });
 }
 
 function setRestartRequired(value) {
   NEED_RESTART = !!value;
 }
 
-function triggerRestartCommand() {
-  if (!RESTART_COMMAND_KEY) return;
-  setInput(RESTART_COMMAND_KEY, "string", RESTART_COMMAND_VALUE);
+function transitionState(newState) {
+  const desired = valueToString(newState).toLowerCase() === "active" ? "running" : valueToString(newState).toLowerCase();
+  if (!VALID_STATES.has(desired)) return false;
+  STATE.state = desired;
+  publishHeartbeat();
+  return true;
 }
 
-function getExternalCheckValue() {
-  return { ...STATE.externalCheck };
+function restartComplete() {
+  return transitionState(NEED_RESTART ? "running" : "locked");
 }
 
-function triggerExternalCheck(value, { active = true } = {}) {
-  setExternalCheckValue(value, { active });
-  publishMqtt(MQTT_TOPIC_EXTERNAL_CHECK, {
-    active: !!STATE.externalCheck.active,
-    variable: STATE.externalCheck.value,
-    deviceId: DEVICE_ID
-  });
+function setState(state) {
+  return transitionState(state);
 }
 
-function setCustomValue(value) {
-  STATE.custom.value = String(value ?? "");
-  STATE.custom.updatedAt = Date.now();
+function getState() {
+  return STATE.state;
 }
 
-function getCustomValue() {
-  return { ...STATE.custom };
+function initMqtt() {
+  try {
+    const mqtt = require("mqtt");
+    MQTT_CLIENT = mqtt.connect(`mqtt://${MQTT_BROKER}:${MQTT_PORT}`);
+    MQTT_CLIENT.on("connect", () => {
+      console.log(`MQTT connected ${MQTT_BROKER}:${MQTT_PORT}`);
+      MQTT_CLIENT.subscribe(MQTT_TOPIC_COMMAND);
+      publishHeartbeat();
+    });
+    MQTT_CLIENT.on("error", (err) => console.warn("MQTT error:", err.message));
+    MQTT_CLIENT.on("message", (topic, msg) => {
+      if (topic === MQTT_TOPIC_COMMAND) handleMqttCommand(msg);
+    });
+  } catch (e) {
+    console.log('MQTT disabled (install with "npm install mqtt" to enable).');
+    MQTT_CLIENT = null;
+  }
 }
 
-function publishCustom(value) {
-  setCustomValue(value);
-  publishMqtt(MQTT_TOPIC_CUSTOM, { value: STATE.custom.value, deviceId: DEVICE_ID });
-}
-
-function publishHeartbeat() {
-  const payload = { name: PUZZLE_NAME, state: STATE.state, deviceId: DEVICE_ID, ip: LOCAL_IP };
-  console.log("[HEARTBEAT]", payload);
-  publishMqtt(MQTT_TOPIC_HEARTBEAT, payload);
-}
-
-function publishData(type) {
-  const entry = STATE.outputs[type];
-  if (!entry) return;
-  const payloadData = entry.type === "media" ? type : entry.data;
-  publishMqtt(MQTT_TOPIC_DATA, { key: type, type: entry.type, data: payloadData, deviceId: DEVICE_ID });
-  if (PRINT_DATA) console.log("[DATA OUT]", type, payloadData);
-}
-
-function publishAllOutputs() {
-  Object.keys(STATE.outputs || {}).forEach((key) => publishData(key));
+function publishMqtt(topic, payload) {
+  if (!MQTT_CLIENT) return;
+  try {
+    MQTT_CLIENT.publish(topic, JSON.stringify(payload));
+  } catch (e) {
+    console.warn("MQTT publish failed:", e.message);
+  }
 }
 
 function handleMqttCommand(msg) {
@@ -486,343 +452,261 @@ function handleMqttCommand(msg) {
   try { payload = JSON.parse(msg.toString()); } catch (e) {}
   const action = payload.action;
   logDebug("MQTT command", action, payload);
+
   if (action === "initKeys") {
     applyInitKeys(payload);
     publishHeartbeat();
     return;
   }
+
   if (action === "clearData") {
-    STATE.inputs = {};
-    STATE.outputs = {};
-    loadParamsFromConfig();
-    if (PRINT_DATA) console.log("[CLEAR DATA]");
+    clearTransientData();
     publishHeartbeat();
     return;
   }
+
   if (action === "restart") {
-    handleRestartCommand().catch((err) => {
-      console.warn("Restart failed:", err?.message || err);
-    });
+    clearTransientData();
+    STATE.state = NEED_RESTART ? "starting" : "running";
+    publishHeartbeat();
     return;
   }
+
   if (action === "setState") {
-    const newState = payload.state;
-    if (["locked","starting","running","solved","active","uploading","downloading"].includes(newState)) {
-      transitionState(newState).catch((err) => {
-        console.warn("State transition failed:", err.message || err);
-      });
-    }
+    setState(payload.state || getState());
     return;
   }
+
   if (action === "requestData") {
     const key = payload.key || payload.type;
-    if (key) {
-      publishData(key);
-    } else {
-      publishAllOutputs();
-    }
+    if (key) publishData(key); else publishAllOutputs();
     publishHeartbeat();
     return;
   }
+
   if (action === "sendParam") {
-    const key = payload.key || payload.type;
+    const key = payload.key || payload.name;
     if (key) setInput(key, payload.type, payload.data);
     publishHeartbeat();
     return;
   }
+
   if (action === "sendOutput") {
-    const key = payload.key || payload.type;
-    if (key) {
-      const ok = setOutput(key, payload.type, payload.data);
-      if (ok) publishData(key);
-    }
+    const key = payload.key;
+    if (key) publishData(key);
     publishHeartbeat();
     return;
   }
+
   if (action === "sendCustom" || action === "custom") {
     setCustomValue(payload?.value ?? payload?.data ?? payload?.text ?? "");
-    setInput("custom", "string", STATE.custom.value);
     publishHeartbeat();
-    return;
   }
 }
 
-function getMediaInputEntries() {
-  return Object.entries(STATE.inputs || {})
-    .filter(([, val]) => val && val.type === "media")
-    .map(([key, val]) => ({ key, ref: val?.data ?? null }));
-}
-
-function getMediaOutputKeys() {
-  return Object.entries(STATE.outputs || {})
-    .filter(([, val]) => val && val.type === "media")
-    .map(([key]) => key);
-}
-
-async function setLocalState(nextState, { publishOutputs = false } = {}) {
-  STATE.state = nextState;
-  publishHeartbeat();
-  if (publishOutputs) {
-    publishAllOutputs();
-  }
-}
-
-async function downloadMediaInputs(entries) {
-  if (!entries.length) return;
-  ensureMediaLocalDir();
-  const errors = [];
-  for (const entry of entries) {
-    const ref = entry.ref || "";
-    if (!ref) {
-      errors.push(`Media reference missing: ${entry.key}`);
-      continue;
-    }
-    try {
-      const resolvedName = await resolveRemoteMediaName(ref);
-      const targetPath = path.join(resolveLocalPath(MEDIA_LOCAL_DIR), resolvedName);
-      await downloadMediaFile(resolvedName, targetPath);
-    } catch (err) {
-      errors.push(`Media download failed for ${entry.key}: ${err.message || err}`);
-    }
-  }
-  return errors;
-}
-
-async function uploadMediaOutputs(keys) {
-  if (!keys.length) return [];
-  ensureMediaLocalDir();
-  const errors = [];
-  for (const key of keys) {
-    const sourcePath = findLocalMediaByKey(key);
-    if (!sourcePath) {
-      errors.push(`Media file not found: ${key}`);
-      continue;
-    }
-    try {
-      await uploadMediaFile(sourcePath, path.basename(sourcePath));
-    } catch (err) {
-      errors.push(`Media upload failed for ${key}: ${err.message || err}`);
-    }
-  }
-  return errors;
-}
-
-async function transitionState(newState) {
-  const desired = newState === "active" ? "running" : newState;
-  if (desired === "starting") {
-    await setLocalState("starting");
-    return;
-  }
-  if (desired === "running") {
-    const mediaInputs = getMediaInputEntries().filter((entry) => {
-      const ref = entry?.ref ?? "";
-      return String(ref).trim().length > 0;
+function applyInitKeys(payload) {
+  const existingOutputs = { ...STATE.outputs };
+  if (Array.isArray(payload.inputs)) {
+    STATE.inputs = {};
+    payload.inputs.forEach((inp) => {
+      const key = inp.key || inp.name;
+      if (!key) return;
+      STATE.inputs[key] = { type: normalizeType(inp.type), data: "", present: false };
     });
-    if (mediaInputs.length) {
-      await setLocalState("downloading");
-      const errors = await downloadMediaInputs(mediaInputs);
-      if (errors.length) {
-        console.warn("Media download errors:", errors.join(" | "));
-      }
-    }
-    await setLocalState("running");
-    return;
   }
-  if (desired === "solved") {
-    const mediaOutputs = getMediaOutputKeys();
-    if (mediaOutputs.length) {
-      await setLocalState("uploading");
-      const errors = await uploadMediaOutputs(mediaOutputs);
-      if (errors.length) {
-        console.warn("Media upload errors:", errors.join(" | "));
-      }
-    }
-    await setLocalState("solved", { publishOutputs: true });
-    return;
-  }
-  if (["locked", "uploading", "downloading"].includes(desired)) {
-    await setLocalState(desired);
-    return;
-  }
-  await setLocalState(desired);
-}
-
-async function handleRestartCommand() {
-  triggerRestartCommand();
-  if (NEED_RESTART) {
-    await setLocalState("starting");
-  }
-  const mediaInputs = getMediaInputEntries().filter((entry) => {
-    const ref = entry?.ref ?? "";
-    return String(ref).trim().length > 0;
-  });
-  if (mediaInputs.length) {
-    await setLocalState("downloading");
-    const errors = await downloadMediaInputs(mediaInputs);
-    if (errors.length) {
-      console.warn("Media download errors:", errors.join(" | "));
-    }
-  }
-  if (!NEED_RESTART) {
-    await setLocalState("running");
+  if (Array.isArray(payload.outputs)) {
+    STATE.outputs = {};
+    payload.outputs.forEach((out) => {
+      const key = out.key || out.name;
+      if (!key) return;
+      const type = normalizeType(out.type);
+      const previous = existingOutputs[key];
+      STATE.outputs[key] = previous ? { type, data: previous.data, present: previous.present } : { type, data: "", present: false };
+    });
   }
 }
 
-// Helpers
 function sendJson(res, status, payload) {
   const data = Buffer.from(JSON.stringify(payload));
-  logDebug("Response", status, payload);
   res.writeHead(status, {
     "Content-Type": "application/json",
     "Content-Length": data.length,
-    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Origin": "*"
   });
   res.end(data);
+}
+
+function sendFile(res, filePath) {
+  const ext = path.extname(filePath).toLowerCase();
+  const contentTypes = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".svg": "image/svg+xml",
+    ".mp3": "audio/mpeg",
+    ".wav": "audio/wav",
+    ".ogg": "audio/ogg",
+    ".mp4": "video/mp4",
+    ".webm": "video/webm"
+  };
+  const contentType = contentTypes[ext] || "application/octet-stream";
+  fs.stat(filePath, (err, stat) => {
+    if (err || !stat.isFile()) {
+      return sendJson(res, 404, { error: "File not found" });
+    }
+    res.writeHead(200, {
+      "Content-Type": contentType,
+      "Content-Length": stat.size,
+      "Access-Control-Allow-Origin": "*"
+    });
+    fs.createReadStream(filePath).pipe(res);
+  });
 }
 
 function parseBody(req) {
   return new Promise((resolve) => {
     let body = "";
-    req.on("data", (chunk) => (body += chunk));
+    req.on("data", (chunk) => body += chunk);
     req.on("end", () => {
-      try {
-        const parsed = body ? JSON.parse(body) : {};
-        logDebug("Request", req.method, req.url, parsed);
-        resolve(parsed);
-      } catch (e) {
-        resolve({});
-      }
+      try { resolve(body ? JSON.parse(body) : {}); } catch (e) { resolve({}); }
     });
   });
 }
 
-// --- DO NOT TOUCH BELOW (internal server/MQTT/state sync) ---
-// Server
 function createServer(port) {
   const server = http.createServer(async (req, res) => {
-    // CORS preflight
     if (req.method === "OPTIONS") {
       res.writeHead(204, {
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type",
+        "Access-Control-Allow-Headers": "Content-Type"
       });
       return res.end();
     }
 
     const parsed = url.parse(req.url, true);
-    const path = parsed.pathname || "/";
+    const requestPath = parsed.pathname || "/";
+    const body = req.method === "POST" ? await parseBody(req) : {};
 
-    if (req.method === "GET" && path === "/getState") {
-      return sendJson(res, 200, { state: STATE.state });
+    if (req.method === "GET" && requestPath === "/getState") return sendJson(res, 200, { state: getState() });
+    if (req.method === "POST" && requestPath === "/setState") {
+      const ok = setState(body.state);
+      return sendJson(res, ok ? 200 : 400, { ok, state: getState() });
     }
 
-    if (req.method === "GET" && path === "/getParam") {
-      const type = parsed.query.type;
-      return sendJson(res, 200, { type, data: STATE.inputs[type] });
+    if (req.method === "GET" && (requestPath === "/getInput" || requestPath === "/getParam")) {
+      const key = parsed.query.key || parsed.query.type;
+      return sendJson(res, 200, { key, type: getInputType(key), data: getInput(key), present: inputAvailable(key) });
+    }
+    if (req.method === "GET" && requestPath === "/inputAvailable") {
+      const key = parsed.query.key;
+      return sendJson(res, 200, { key, available: inputAvailable(key) });
+    }
+    if (req.method === "POST" && requestPath === "/deleteInput") {
+      deleteInput(body.key);
+      return sendJson(res, 200, { ok: true });
+    }
+    if (req.method === "POST" && requestPath === "/sendParam") {
+      const key = body.key || body.name || body.type;
+      if (!key) return sendJson(res, 400, { error: "key required" });
+      setInput(key, body.type, body.data);
+      return sendJson(res, 200, { ok: true, key, type: getInputType(key), data: getInput(key) });
     }
 
-    const body = await parseBody(req);
-
-    if (req.method === "POST" && path === "/setState") {
-      const newState = body.state;
-      if (!["locked", "starting", "running", "solved", "uploading", "downloading"].includes(newState)) {
-        return sendJson(res, 400, { error: "Invalid state" });
-      }
-      try {
-        await transitionState(newState);
-        return sendJson(res, 200, { ok: true, state: STATE.state });
-      } catch (e) {
-        return sendJson(res, 500, { error: e.message || "State transition failed" });
-      }
+    if (req.method === "POST" && requestPath === "/setOutput") {
+      const key = body.key;
+      if (!key) return sendJson(res, 400, { error: "key required" });
+      const ok = setOutput(key, body.data ?? body.value, { type: body.type });
+      return sendJson(res, ok ? 200 : 400, { ok, key, output: STATE.outputs[key] || null });
+    }
+    if (req.method === "POST" && requestPath === "/sendOutput") {
+      const key = body.key;
+      if (!key) return sendJson(res, 400, { error: "key required" });
+      publishData(key);
+      return sendJson(res, 200, { ok: true });
+    }
+    if (req.method === "POST" && requestPath === "/sendAllOutputs") {
+      publishAllOutputs();
+      return sendJson(res, 200, { ok: true });
+    }
+    if (req.method === "GET" && requestPath === "/getOutput") {
+      const key = parsed.query.key;
+      return sendJson(res, 200, { key, output: STATE.outputs[key] || null });
     }
 
-    if (req.method === "POST" && path === "/sendParam") {
-      const { key, type, data } = body;
-      const finalKey = key || type;
-      if (!finalKey) return sendJson(res, 400, { error: "key or type required" });
-      setInput(finalKey, type, data);
-      return sendJson(res, 200, { ok: true, stored: { key: finalKey, type: type || "string", data } });
+    if (req.method === "POST" && requestPath === "/sendCustom") {
+      publishCustom(body?.value ?? body?.data ?? body?.text ?? "");
+      return sendJson(res, 200, { ok: true, custom: getCustom() });
     }
-
-    if (req.method === "POST" && path === "/sendHeartbeat") {
-      const { name, state } = body;
-      STATE.heartbeat = { name, state };
-      publishMqtt(MQTT_TOPIC_HEARTBEAT, { name, state, deviceId: DEVICE_ID, ip: LOCAL_IP });
+    if (req.method === "GET" && requestPath === "/getCustom") return sendJson(res, 200, { value: getCustom(), available: customAvailable() });
+    if (req.method === "GET" && requestPath === "/customAvailable") return sendJson(res, 200, { available: customAvailable() });
+    if (req.method === "POST" && requestPath === "/deleteCustom") {
+      deleteCustom();
       return sendJson(res, 200, { ok: true });
     }
 
-    if (req.method === "POST" && path === "/sendCustom") {
-      publishCustom(body?.value ?? body?.data ?? body?.text ?? "");
-      return sendJson(res, 200, { ok: true, custom: getCustomValue() });
+    if (req.method === "POST" && requestPath === "/triggerExternalCheck") {
+      triggerExternalCheck(body.value, { active: body.active !== false });
+      return sendJson(res, 200, { ok: true, externalCheck: getExternalCheck() });
     }
+    if (req.method === "GET" && requestPath === "/getExternalCheck") return sendJson(res, 200, { externalCheck: getExternalCheck() });
 
-    if (req.method === "GET" && path === "/getCustom") {
-      return sendJson(res, 200, { custom: getCustomValue() });
-    }
-
-    if (req.method === "POST" && path === "/restartComplete") {
-      if (STATE.state === "starting") {
-        await setLocalState("running");
-      }
-      return sendJson(res, 200, { ok: true, state: STATE.state });
-    }
-
-    if (req.method === "POST" && path === "/restartConfig") {
+    if (req.method === "POST" && requestPath === "/restartComplete") return sendJson(res, 200, { ok: restartComplete(), state: getState() });
+    if (req.method === "POST" && requestPath === "/restartConfig") {
       setRestartRequired(body?.needRestart);
       return sendJson(res, 200, { ok: true, needRestart: NEED_RESTART });
     }
 
-    if (req.method === "POST" && path === "/media/upload") {
-      const { localPath, remoteName } = body;
+    if (req.method === "POST" && requestPath === "/setMedia") {
+      const ok = setMedia(body.key, body.sourcePath || body.localPath);
+      return sendJson(res, ok ? 200 : 400, { ok });
+    }
+    if (req.method === "POST" && requestPath === "/sendMedia") {
       try {
-        const result = await uploadMediaFile(localPath, remoteName);
+        const ok = await sendMedia(body.key);
+        return sendJson(res, ok ? 200 : 400, { ok });
+      } catch (e) {
+        return sendJson(res, 500, { error: e.message || "sendMedia failed" });
+      }
+    }
+    if (req.method === "GET" && requestPath === "/getMedia") {
+      const key = parsed.query.key;
+      return sendJson(res, 200, { key, path: getMedia(key) });
+    }
+    if (req.method === "GET" && requestPath === "/media/file") {
+      const key = parsed.query.key;
+      const mediaPath = getMedia(key);
+      if (!mediaPath) return sendJson(res, 404, { error: "Media not found" });
+      return sendFile(res, mediaPath);
+    }
+    if (req.method === "POST" && requestPath === "/deleteMedia") {
+      return sendJson(res, deleteMedia(body.key) ? 200 : 400, { ok: true });
+    }
+
+    if (req.method === "POST" && requestPath === "/media/upload") {
+      try {
+        const result = await uploadMediaFile(body.localPath, body.remoteName);
         return sendJson(res, 200, result);
       } catch (e) {
         return sendJson(res, 500, { error: e.message || "Upload failed" });
       }
     }
-
-    if (req.method === "POST" && path === "/media/download") {
-      const { remoteName, localPath } = body;
+    if (req.method === "POST" && requestPath === "/media/download") {
       try {
-        const result = await downloadMediaFile(remoteName, localPath);
+        const result = await downloadMediaFile(body.remoteName, body.localPath);
         return sendJson(res, 200, result);
       } catch (e) {
         return sendJson(res, 500, { error: e.message || "Download failed" });
       }
     }
 
-    if (req.method === "POST" && path === "/setOutput") {
-      const { key, type, data } = body;
-      const finalKey = key || type;
-      if (!finalKey) return sendJson(res, 400, { error: "key or type required" });
-      const ok = setOutput(finalKey, type, data);
-      if (!ok) {
-        return sendJson(res, 400, { error: `Unknown output key "${finalKey}". Configure outputs in Hub I/O first.` });
-      }
-      publishData(finalKey);
-      return sendJson(res, 200, { ok: true, stored: { key: finalKey, type: type || "string", data: STATE.outputs[finalKey] } });
+    if (req.method === "POST" && requestPath === "/sendHeartbeat") {
+      publishHeartbeat();
+      return sendJson(res, 200, { ok: true });
     }
-
-    if (req.method === "GET" && path === "/getOutput") {
-      const key = parsed.query.key || parsed.query.type;
-      return sendJson(res, 200, { key, data: STATE.outputs[key] });
-    }
-
-    if (req.method === "GET" && path === "/getExternalCheck") {
-      return sendJson(res, 200, { externalCheck: getExternalCheckValue() });
-    }
-
-    if (req.method === "GET" && path === "/getAll") {
-      return sendJson(res, 200, { inputs: STATE.inputs, outputs: STATE.outputs, state: STATE.state });
-    }
-
-    if (req.method === "POST" && path === "/triggerExternalCheck") {
-      const { value, active } = body;
-      triggerExternalCheck(value, { active });
-      return sendJson(res, 200, { ok: true, externalCheck: getExternalCheckValue() });
-    }
+    if (req.method === "GET" && requestPath === "/getAll") return sendJson(res, 200, { state: STATE.state, inputs: STATE.inputs, outputs: STATE.outputs, custom: STATE.custom, externalCheck: STATE.externalCheck });
 
     return sendJson(res, 404, { error: "Not found" });
   });
@@ -841,21 +725,42 @@ function main() {
     port = parseInt(args[portIdx + 1], 10) || 5001;
   }
   LOCAL_IP = detectLocalIp();
-  // Default deviceId to local IP if not provided
   setDeviceId(DEVICE_ID || LOCAL_IP || "puzzle-1");
   console.log(`Device ID: ${DEVICE_ID}`);
-  loadParamsFromConfig();
   ensureMediaLocalDir();
   initMqtt();
   createServer(port);
-
-  // Auto-heartbeat (MQTT only; no HTTP call)
   if (HEARTBEAT_INTERVAL_MS > 0) {
-    setInterval(() => {
-      publishHeartbeat();
-    }, HEARTBEAT_INTERVAL_MS);
+    setInterval(() => publishHeartbeat(), HEARTBEAT_INTERVAL_MS);
   }
 }
+
+module.exports = {
+  start: main,
+  run: () => {},
+  stop: () => { try { MQTT_CLIENT?.end?.(); } catch (e) {} },
+  getState,
+  setState,
+  sendCustom: (value) => { publishCustom(value); return true; },
+  getCustom,
+  customAvailable,
+  deleteCustom,
+  getInput,
+  inputAvailable,
+  deleteInput: clearInput,
+  getInputType,
+  setOutput: (key, value) => setOutput(key, value),
+  sendOutput: (key) => { publishData(key); return true; },
+  sendAllOutputs: () => { publishAllOutputs(); return true; },
+  triggerExternalCheck: (value, active = true) => { triggerExternalCheck(value, { active }); return true; },
+  restartComplete,
+  setMedia,
+  sendMedia,
+  getMedia,
+  deleteMedia,
+  uploadMediaFile,
+  downloadMediaFile
+};
 
 if (require.main === module) {
   main();
